@@ -1,0 +1,237 @@
+{
+  "name": "assistant",
+  "title": "AI assistant",
+  "version": "1.0.0",
+  "summary": "Chat with an AI assistant that can read the user's data in the app through scoped tools, with streamed replies, quotas, consent and reporting.",
+  "requires": [
+    "moderation"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 1600,
+  "env": [
+    {
+      "name": "ASSISTANT_PROVIDER",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "anthropic",
+      "dev": "mock",
+      "doc": "AI provider: anthropic, openai, or mock (scripted replies, development only)."
+    },
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "secret": true,
+      "doc": "Anthropic API key; without it (and with ASSISTANT_PROVIDER=anthropic) assistant routes return 503.",
+      "source": "https://platform.claude.com/settings/keys"
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "secret": true,
+      "doc": "OpenAI API key, used when ASSISTANT_PROVIDER=openai.",
+      "source": "https://platform.openai.com/api-keys"
+    },
+    {
+      "name": "ANTHROPIC_BASE_URL",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "https://api.anthropic.com",
+      "doc": "Anthropic API base URL (change only for a proxy that passes beta fields through)."
+    },
+    {
+      "name": "OPENAI_BASE_URL",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "https://api.openai.com/v1",
+      "doc": "OpenAI API base URL."
+    },
+    {
+      "name": "ASSISTANT_MODEL",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "claude-sonnet-5-5",
+      "doc": "Chat model; defaults to claude-sonnet-5-5 (anthropic) or gpt-6-sol (openai)."
+    },
+    {
+      "name": "ASSISTANT_TITLE_MODEL",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "claude-haiku-5-5",
+      "doc": "Cheaper model for titles and history summaries; defaults to claude-haiku-5-5 (anthropic) or gpt-6-luna (openai)."
+    },
+    {
+      "name": "ASSISTANT_EFFORT",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "low",
+      "doc": "Reasoning effort for chat turns: low, medium, high, xhigh or max."
+    },
+    {
+      "name": "ASSISTANT_ANTHROPIC_FALLBACK",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "true",
+      "doc": "Ask Anthropic to retry a refused turn on its recommended fallback model (turn off for models without server-side fallback)."
+    },
+    {
+      "name": "ASSISTANT_ALLOW_WRITES",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "false",
+      "doc": "Offer the model tools that change data (ReadOnly=false); read-only tools are always offered."
+    },
+    {
+      "name": "ASSISTANT_MAX_TOOL_ROUNDS",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "10",
+      "doc": "Rounds of tool calls per reply before the model must answer."
+    },
+    {
+      "name": "ASSISTANT_CONTEXT_TOKENS",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "150000",
+      "doc": "Prompt size in tokens past which earlier turns are compacted into a summary."
+    },
+    {
+      "name": "ASSISTANT_DAILY_MESSAGES",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "200",
+      "doc": "Messages per user per UTC day (0 = unlimited; admins are unlimited)."
+    },
+    {
+      "name": "ASSISTANT_DAILY_TOKENS",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "2000000",
+      "doc": "Tokens per user per UTC day, excluding cache reads (0 = unlimited)."
+    },
+    {
+      "name": "ASSISTANT_MAX_MESSAGE_CHARS",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "8000",
+      "doc": "Longest user message accepted, in characters."
+    },
+    {
+      "name": "ASSISTANT_TURN_TIMEOUT",
+      "tier": "backend",
+      "group": "assistant",
+      "required": "optional",
+      "default": "5m",
+      "doc": "Longest a single reply may run, tool calls included."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/assistant",
+      "dst": "backend/internal/assistant"
+    },
+    {
+      "src": "backend/feature_assistant.go",
+      "dst": "backend/internal/api/feature_assistant.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/assistant"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/assistant"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/assistant"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./assistant\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { assistantAdminNav, assistantHomeTile, assistantNav, assistantSettings } from \"./assistant/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "assistantNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "assistantHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "assistantAdminNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "assistantSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { assistantHome, assistantSettings } from \"./assistant/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "assistantHome,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "assistantSettings,"
+    }
+  ],
+  "stitch": [
+    "Rewrite the product sections of staticPrompt in backend/internal/assistant/prompt.go (identity, scope, writing) for this app; keep Trust and safety unchanged.",
+    "Name the AI provider and what is sent to it in the privacy policy (packages/shared/src/legal) before launch.",
+    "Decide ASSISTANT_ALLOW_WRITES: leave it off unless the app's write tools are safe for a model to call on the user's say-so.",
+    "Set daily limits (ASSISTANT_DAILY_MESSAGES, ASSISTANT_DAILY_TOKENS) from your cost model, and add a prices row in pricing.go for any model you configure that isn't listed.",
+    "Make sure each feature you want the assistant to use implements app.ToolProvider with clear, prescriptive tool descriptions.",
+    "Mobile: the assistant is a Home row; if it is central to the app, give it a tab in mobile/app/(tabs) instead."
+  ]
+}

@@ -1,0 +1,58 @@
+# Development services for scripts/dev-up/dev-up.sh. Start them through dev-up,
+# which passes this project's ports (a bare `docker compose up` stops with an
+# error instead of grabbing a port another stack may own).
+#   db     fallback when no Postgres 17 binaries are installed (same port and
+#          URL as the private cluster: trust auth, role scaffoldapp)
+#   minio  --s3: S3-compatible storage on DEV_MINIO_PORT (bucket scaffoldapp-dev)
+#   redis  --redis: realtime broker on DEV_REDIS_PORT
+# Everything binds to 127.0.0.1 only. Data lives in named volumes
+# (scaffoldapp_db, scaffoldapp_minio); `docker compose down -v` deletes it.
+name: scaffoldapp
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: scaffoldapp
+      POSTGRES_DB: scaffoldapp_dev
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - synchronous_commit=off
+      - -c
+      - max_wal_size=256MB
+      - -c
+      - min_wal_size=64MB
+    ports:
+      - "127.0.0.1:${DEV_PG_PORT:?start it through scripts/dev-up/dev-up.sh}:5432"
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scaffoldapp"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    profiles: ["s3"]
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: scaffoldapp-dev
+      MINIO_ROOT_PASSWORD: scaffoldapp-dev-secret
+    ports:
+      - "127.0.0.1:${DEV_MINIO_PORT:?start it through scripts/dev-up/dev-up.sh}:9000"
+    volumes:
+      - minio:/data
+
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${DEV_REDIS_PORT:?start it through scripts/dev-up/dev-up.sh}:6379"
+
+volumes:
+  db:
+  minio:

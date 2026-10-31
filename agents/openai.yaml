@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scaffold"
+  short_description: "Build apps on the house stack: concrete foundation + feature-belt modules."
+  default_prompt: "Use $scaffold to start this app (or add a feature) on the concrete foundation with the scaffold CLI."

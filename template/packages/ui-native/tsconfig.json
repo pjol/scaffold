@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "module": "preserve",
+    "jsx": "react-jsx",
+    "customConditions": ["react-native"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

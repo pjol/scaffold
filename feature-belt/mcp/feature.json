@@ -1,0 +1,75 @@
+{
+  "name": "mcp",
+  "title": "MCP and API keys",
+  "version": "1.0.0",
+  "summary": "Users create personal API keys so their agents can call the app's tools over MCP as them.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web"
+  ],
+  "migration_block": 600,
+  "env": [
+    {
+      "name": "MCP_RATE_LIMIT_PER_MINUTE",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "120",
+      "doc": "MCP requests allowed per API key per minute."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/mcp",
+      "dst": "backend/internal/mcp"
+    },
+    {
+      "src": "backend/feature_mcp.go",
+      "dst": "backend/internal/api/feature_mcp.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/mcp"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/mcp"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./mcp\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { mcpAdminNav, mcpSettings } from \"./mcp/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "mcpAdminNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "mcpSettings,"
+    }
+  ],
+  "stitch": [
+    "Make sure each feature agents should use implements app.ToolProvider with prescriptive descriptions; write tools are offered only to keys with the write scope.",
+    "Rewrite the server instructions and card description in backend/internal/mcp/mcp.go for this app.",
+    "Expose the API's /mcp and /.well-known/mcp.json on a public URL agents can reach (PUBLIC_API_URL is what the server card advertises)."
+  ]
+}

@@ -1,0 +1,9 @@
+.bin/
+.DS_Store
+node_modules/
+.next/
+.expo/
+.data/
+logs/
+*.tsbuildinfo
+template/backend/uploads/

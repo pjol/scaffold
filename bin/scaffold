@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Runs the scaffold CLI from source: rebuilds .bin/scaffold when cli/ changed,
+# then execs it with SCAFFOLD_HOME pointing at this checkout.
+set -euo pipefail
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+BIN="$ROOT/.bin/scaffold"
+if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/cli" -newer "$BIN" \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print -quit)" ]; then
+  mkdir -p "$ROOT/.bin"
+  (cd "$ROOT/cli" && go build -o "$BIN" ./cmd/scaffold)
+fi
+SCAFFOLD_HOME="$ROOT" exec "$BIN" "$@"
