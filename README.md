@@ -27,7 +27,7 @@ Agents: load `SKILL.md`. As an MCP server: `claude mcp add scaffold -- /abs/path
 
 ## Install as skills
 
-The three `SKILL.md` files (root, `concrete/`, `feature-belt/`) are valid skills (each with `agents/openai.yaml` for Codex). Symlink the directory into a skills folder, e.g. `ln -s ~/scaffold ~/.claude/skills/scaffold`, or publish alongside `github.com/pjol/SKILLS`. It supersedes `backend-setup` and `user-facing-app-context` there.
+The three `SKILL.md` files (root, `concrete/`, `feature-belt/`) are valid skills (each with `agents/openai.yaml` for Codex). This repo is `github.com/pjol/scaffold` (private), cloned at `~/scaffold`; projects built from it refer to that path. `github.com/pjol/SKILLS` lists it through a pointer entry (`scaffold/`), which replaced `backend-setup` and `user-facing-app-context`. To load it as an installed skill, symlink the directory into a skills folder: `ln -s ~/scaffold ~/.claude/skills/scaffold`.
 
 ## Requirements
 
