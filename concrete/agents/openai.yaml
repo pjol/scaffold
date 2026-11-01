@@ -1,0 +1,4 @@
+interface:
+  display_name: "Concrete"
+  short_description: "Foundation rules: Go/Next/Expo stack, design system, env, dev-up, compliance."
+  default_prompt: "Use $concrete before changing backend, UI, copy, env, dev tooling or compliance in this app."

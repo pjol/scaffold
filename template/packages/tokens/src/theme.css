@@ -1,0 +1,414 @@
+/*
+ * @scaffoldapp/tokens: Tailwind v4 theme.
+ *
+ * Usage (web/app/globals.css):
+ *   @import "tailwindcss";
+ *   @import "@scaffoldapp/tokens/theme.css";
+ *
+ * Every value points at an `--app-*` variable from generated/tokens.css, so switching
+ * palette (data-palette) or mode (data-theme / OS) re-themes everything. Tailwind's
+ * default color palette is removed: `bg-red-500` does not compile. Use `bg-danger`,
+ * `text-fg-muted`, `border-border`, …
+ */
+
+@import "./generated/tokens.css";
+
+/* `dark:` = explicit [data-theme=dark], or the OS setting unless [data-theme=light]. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:not([data-theme="light"], [data-theme="light"] *)) {
+      @slot;
+    }
+  }
+}
+
+@theme inline {
+  /* ── colors ─────────────────────────────────────────────────────────── */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-canvas: var(--app-canvas);
+  --color-surface: var(--app-surface);
+  --color-surface-raised: var(--app-surface-raised);
+  --color-sunken: var(--app-sunken);
+  --color-overlay: var(--app-overlay);
+  --color-border: var(--app-border);
+  --color-border-strong: var(--app-border-strong);
+  --color-ring: var(--app-ring);
+
+  --color-fg: var(--app-text);
+  --color-fg-muted: var(--app-text-muted);
+  --color-fg-subtle: var(--app-text-subtle);
+  --color-fg-inverse: var(--app-text-inverse);
+  --color-inverse: var(--app-inverse);
+
+  --color-primary: var(--app-primary);
+  --color-primary-fg: var(--app-primary-fg);
+  --color-primary-soft: var(--app-primary-soft);
+  --color-primary-strong: var(--app-primary-strong);
+
+  --color-accent: var(--app-accent);
+  --color-accent-fg: var(--app-accent-fg);
+  --color-accent-soft: var(--app-accent-soft);
+  --color-accent-strong: var(--app-accent-strong);
+
+  --color-success: var(--app-success);
+  --color-success-fg: var(--app-success-fg);
+  --color-success-soft: var(--app-success-soft);
+  --color-success-strong: var(--app-success-strong);
+
+  --color-warning: var(--app-warning);
+  --color-warning-fg: var(--app-warning-fg);
+  --color-warning-soft: var(--app-warning-soft);
+  --color-warning-strong: var(--app-warning-strong);
+
+  --color-danger: var(--app-danger);
+  --color-danger-fg: var(--app-danger-fg);
+  --color-danger-soft: var(--app-danger-soft);
+  --color-danger-strong: var(--app-danger-strong);
+
+  --color-info: var(--app-info);
+  --color-info-fg: var(--app-info-fg);
+  --color-info-soft: var(--app-info-soft);
+  --color-info-strong: var(--app-info-strong);
+
+  --color-ink-50: var(--app-ink-50);
+  --color-ink-100: var(--app-ink-100);
+  --color-ink-200: var(--app-ink-200);
+  --color-ink-300: var(--app-ink-300);
+  --color-ink-400: var(--app-ink-400);
+  --color-ink-500: var(--app-ink-500);
+  --color-ink-600: var(--app-ink-600);
+  --color-ink-700: var(--app-ink-700);
+  --color-ink-800: var(--app-ink-800);
+  --color-ink-900: var(--app-ink-900);
+  --color-ink-950: var(--app-ink-950);
+
+  /* ── type ───────────────────────────────────────────────────────────── */
+  --font-display: var(--app-font-display);
+  --font-body: var(--app-font-body);
+  --font-sans: var(--app-font-body);
+  --default-font-family: var(--app-font-body);
+
+  --text-caption: var(--app-type-caption-size);
+  --text-caption--line-height: var(--app-type-caption-line);
+  --text-caption--letter-spacing: var(--app-type-caption-tracking);
+  --text-caption--font-weight: var(--app-type-caption-weight);
+  --text-label: var(--app-type-label-size);
+  --text-label--line-height: var(--app-type-label-line);
+  --text-label--letter-spacing: var(--app-type-label-tracking);
+  --text-label--font-weight: var(--app-type-label-weight);
+  --text-body: var(--app-type-body-size);
+  --text-body--line-height: var(--app-type-body-line);
+  --text-body--letter-spacing: var(--app-type-body-tracking);
+  --text-body-lg: var(--app-type-body-lg-size);
+  --text-body-lg--line-height: var(--app-type-body-lg-line);
+  --text-body-lg--letter-spacing: var(--app-type-body-lg-tracking);
+  --text-title-sm: var(--app-type-title-sm-size);
+  --text-title-sm--line-height: var(--app-type-title-sm-line);
+  --text-title-sm--letter-spacing: var(--app-type-title-sm-tracking);
+  --text-title-sm--font-weight: var(--app-type-title-sm-weight);
+  --text-title: var(--app-type-title-size);
+  --text-title--line-height: var(--app-type-title-line);
+  --text-title--letter-spacing: var(--app-type-title-tracking);
+  --text-title--font-weight: var(--app-type-title-weight);
+  --text-headline: var(--app-type-headline-size);
+  --text-headline--line-height: var(--app-type-headline-line);
+  --text-headline--letter-spacing: var(--app-type-headline-tracking);
+  --text-headline--font-weight: var(--app-type-headline-weight);
+  --text-display: var(--app-type-display-size);
+  --text-display--line-height: var(--app-type-display-line);
+  --text-display--letter-spacing: var(--app-type-display-tracking);
+  --text-display--font-weight: var(--app-type-display-weight);
+  --text-hero: var(--app-type-hero-fluid);
+  --text-hero--line-height: calc(1em + 0.25rem);
+  --text-hero--letter-spacing: var(--app-type-hero-tracking);
+  --text-hero--font-weight: var(--app-type-hero-weight);
+
+  /* ── spacing: 4px base; semantic names never sm/md/lg/xl ──────────────
+     Approved steps: 0 px 0.5 1 1.5 2 3 4 5 6 8 10 12 16 20 24 32. */
+  --spacing: 0.25rem;
+  --spacing-tight: var(--app-space-tight);
+  --spacing-related: var(--app-space-related);
+  --spacing-group: var(--app-space-group);
+  --spacing-block: var(--app-space-block);
+  --spacing-section: var(--app-space-section);
+  --spacing-band: var(--app-space-band);
+  --spacing-gutter: var(--app-space-gutter);
+  --spacing-card: var(--app-space-card);
+
+  /* sizes: h-control, h-row, h-topbar … (data-density=compact shrinks controls) */
+  --spacing-control-sm: var(--app-size-control-sm);
+  --spacing-control: var(--app-size-control);
+  --spacing-control-lg: var(--app-size-control-lg);
+  --spacing-row: var(--app-size-row);
+  --spacing-topbar: var(--app-size-topbar);
+
+  /* touch targets: min-h-tap, size-tap-lg … */
+  --spacing-tap-sm: var(--app-tap-sm);
+  --spacing-tap: var(--app-tap);
+  --spacing-tap-lg: var(--app-tap-lg);
+  --spacing-tap-xl: var(--app-tap-xl);
+
+  /* max-w-content, max-w-form */
+  --container-content: var(--app-container-content);
+  --container-form: var(--app-container-form);
+
+  /* ── shape / depth ──────────────────────────────────────────────────── */
+  --radius-xs: var(--app-radius-xs);
+  --radius-sm: var(--app-radius-sm);
+  --radius-md: var(--app-radius-md);
+  --radius-lg: var(--app-radius-lg);
+  --radius-xl: var(--app-radius-xl);
+  --radius-2xl: var(--app-radius-2xl);
+  --radius-pill: var(--app-radius-pill);
+
+  --shadow-xs: var(--app-shadow-xs);
+  --shadow-sm: var(--app-shadow-sm);
+  --shadow-md: var(--app-shadow-md);
+  --shadow-lg: var(--app-shadow-lg);
+  --shadow-xl: var(--app-shadow-xl);
+
+  /* ── motion ─────────────────────────────────────────────────────────── */
+  --ease-standard: var(--app-ease-standard);
+  --ease-out: var(--app-ease-out);
+  --ease-in: var(--app-ease-in);
+  --ease-in-out: var(--app-ease-in-out);
+  --ease-emphasized: var(--app-ease-emphasized);
+  --ease-spring-snappy: var(--app-spring-snappy);
+  --ease-spring-gentle: var(--app-spring-gentle);
+  --ease-spring-bouncy: var(--app-spring-bouncy);
+  --ease-spring-sheet: var(--app-spring-sheet);
+  --ease-spring-press: var(--app-spring-press);
+  --default-transition-duration: var(--app-duration-fast);
+  --default-transition-timing-function: var(--app-ease-standard);
+
+  --animate-shimmer: app-shimmer var(--app-duration-shimmer) linear infinite;
+  --animate-fade-in: app-fade-in var(--app-duration-base) var(--app-ease-out) both;
+  --animate-fade-out: app-fade-out var(--app-duration-fast) var(--app-ease-in) both;
+  --animate-pop-in: app-pop-in var(--app-duration-fast) var(--app-ease-out) both;
+  --animate-pop-out: app-pop-out var(--app-duration-instant) var(--app-ease-in) both;
+  --animate-slide-up: app-slide-up var(--app-duration-base) var(--app-ease-out) both;
+  --animate-slide-down: app-slide-down var(--app-duration-base) var(--app-ease-out) both;
+
+  @keyframes app-shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+  @keyframes app-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes app-fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes app-pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes app-pop-out {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+  @keyframes app-slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+  }
+  @keyframes app-slide-down {
+    from {
+      opacity: 0;
+      transform: translateY(-12px);
+    }
+  }
+}
+
+/* ── type-* : one class = a full type role (family, size, line, weight, tracking) ── */
+@utility type-caption {
+  font-family: var(--app-type-caption-family);
+  font-size: var(--app-type-caption-size);
+  line-height: var(--app-type-caption-line);
+  font-weight: var(--app-type-caption-weight);
+  letter-spacing: var(--app-type-caption-tracking);
+}
+@utility type-label {
+  font-family: var(--app-type-label-family);
+  font-size: var(--app-type-label-size);
+  line-height: var(--app-type-label-line);
+  font-weight: var(--app-type-label-weight);
+  letter-spacing: var(--app-type-label-tracking);
+}
+@utility type-body {
+  font-family: var(--app-type-body-family);
+  font-size: var(--app-type-body-size);
+  line-height: var(--app-type-body-line);
+  font-weight: var(--app-type-body-weight);
+  letter-spacing: var(--app-type-body-tracking);
+}
+@utility type-body-lg {
+  font-family: var(--app-type-body-lg-family);
+  font-size: var(--app-type-body-lg-size);
+  line-height: var(--app-type-body-lg-line);
+  font-weight: var(--app-type-body-lg-weight);
+  letter-spacing: var(--app-type-body-lg-tracking);
+}
+@utility type-title-sm {
+  font-family: var(--app-type-title-sm-family);
+  font-size: var(--app-type-title-sm-size);
+  line-height: var(--app-type-title-sm-line);
+  font-weight: var(--app-type-title-sm-weight);
+  letter-spacing: var(--app-type-title-sm-tracking);
+}
+@utility type-title {
+  font-family: var(--app-type-title-family);
+  font-size: var(--app-type-title-size);
+  line-height: var(--app-type-title-line);
+  font-weight: var(--app-type-title-weight);
+  letter-spacing: var(--app-type-title-tracking);
+}
+@utility type-headline {
+  font-family: var(--app-type-headline-family);
+  font-size: var(--app-type-headline-size);
+  line-height: var(--app-type-headline-line);
+  font-weight: var(--app-type-headline-weight);
+  letter-spacing: var(--app-type-headline-tracking);
+}
+@utility type-display {
+  font-family: var(--app-type-display-family);
+  font-size: var(--app-type-display-size);
+  line-height: var(--app-type-display-line);
+  font-weight: var(--app-type-display-weight);
+  letter-spacing: var(--app-type-display-tracking);
+}
+/* Fluid: display size on phones → hero size at 1024px; line height stays size + 4px. */
+@utility type-hero {
+  font-family: var(--app-type-hero-family);
+  font-size: var(--app-type-hero-fluid);
+  line-height: calc(1em + 0.25rem);
+  font-weight: var(--app-type-hero-weight);
+  letter-spacing: var(--app-type-hero-tracking);
+  text-wrap: balance;
+}
+
+/* ── spring-* : CSS transitions that move like the JS springs (linear() easing) ── */
+@utility spring-snappy {
+  --tw-ease: var(--app-spring-snappy);
+  --tw-duration: var(--app-spring-snappy-duration);
+  transition-timing-function: var(--app-spring-snappy);
+  transition-duration: var(--app-spring-snappy-duration);
+}
+@utility spring-gentle {
+  --tw-ease: var(--app-spring-gentle);
+  --tw-duration: var(--app-spring-gentle-duration);
+  transition-timing-function: var(--app-spring-gentle);
+  transition-duration: var(--app-spring-gentle-duration);
+}
+@utility spring-bouncy {
+  --tw-ease: var(--app-spring-bouncy);
+  --tw-duration: var(--app-spring-bouncy-duration);
+  transition-timing-function: var(--app-spring-bouncy);
+  transition-duration: var(--app-spring-bouncy-duration);
+}
+@utility spring-sheet {
+  --tw-ease: var(--app-spring-sheet);
+  --tw-duration: var(--app-spring-sheet-duration);
+  transition-timing-function: var(--app-spring-sheet);
+  transition-duration: var(--app-spring-sheet-duration);
+}
+@utility spring-press {
+  --tw-ease: var(--app-spring-press);
+  --tw-duration: var(--app-spring-press-duration);
+  transition-timing-function: var(--app-spring-press);
+  transition-duration: var(--app-spring-press-duration);
+}
+
+/* Skeleton fill; pair with animate-shimmer. */
+@utility shimmer {
+  background-color: var(--app-sunken);
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in oklab, var(--app-surface-raised) 70%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+@utility pt-safe {
+  padding-top: max(env(safe-area-inset-top), 0px);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background-color: var(--app-canvas);
+    color: var(--app-text);
+    font-family: var(--app-font-body);
+    font-size: var(--app-type-body-size);
+    line-height: var(--app-type-body-line);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv11", "calt";
+  }
+  :focus-visible {
+    outline: 3px solid var(--app-ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background-color: var(--app-primary-soft);
+    color: var(--app-text);
+  }
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

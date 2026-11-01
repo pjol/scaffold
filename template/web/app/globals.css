@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@import "@scaffoldapp/tokens/theme.css";
+/* Workspace packages live outside web/, so Tailwind must be told to scan them. */
+@source "../../packages/ui-web/src";
+
+/*
+ * The base palette uses Inter (loaded in app/layout.tsx as --app-face-body) for display
+ * type too. A palette with its own display face: load it in layout.tsx with
+ * `variable: "--app-face-display"`, add its class to <html>, and delete this rule.
+ */
+:root {
+  --app-face-display: var(--app-face-body);
+}
+
+/* App-level styles go here: tokens only (see packages/tokens/src/theme.css). */

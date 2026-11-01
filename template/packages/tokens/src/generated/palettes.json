@@ -1,0 +1,21 @@
+{
+  "default": "base",
+  "palettes": {
+    "base": {
+      "id": "base",
+      "name": "Base",
+      "splash": {
+        "light": "#F7F5F0",
+        "dark": "#141311"
+      },
+      "primary": {
+        "light": "#4338CA",
+        "dark": "#8F8AF5"
+      },
+      "primaryFg": {
+        "light": "#FFFFFF",
+        "dark": "#110F2E"
+      }
+    }
+  }
+}

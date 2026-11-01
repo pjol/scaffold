@@ -1,0 +1,23 @@
+/* MapLibre chrome themed from tokens (places feature). Only variables, no raw colours. */
+.places-map .maplibregl-ctrl-attrib {
+  background: color-mix(in oklab, var(--app-surface) 88%, transparent);
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-sm);
+  font-family: var(--app-font-body);
+  font-size: 12px;
+  line-height: 16px;
+}
+.places-map .maplibregl-ctrl-attrib a {
+  color: inherit;
+}
+.places-map .maplibregl-ctrl-attrib-button {
+  background-color: var(--app-surface);
+  border-radius: var(--app-radius-pill);
+}
+.places-map .maplibregl-canvas:focus-visible {
+  outline: 2px solid var(--app-ring);
+  outline-offset: -2px;
+}
+.places-map .maplibregl-marker:focus-within {
+  z-index: 2;
+}

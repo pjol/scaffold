@@ -1,0 +1,138 @@
+{
+  "name": "identity",
+  "title": "Identity verification",
+  "version": "1.0.1",
+  "summary": "Verify a user's identity through Persona or manual staff review of an ID photo and selfie, and show a verified badge.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 500,
+  "env": [
+    {
+      "name": "PERSONA_API_KEY",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "secret": true,
+      "doc": "Persona API key. Set → Persona hosted verification; empty → manual review by staff.",
+      "source": "Persona dashboard → API → API keys (use the sandbox key outside production)"
+    },
+    {
+      "name": "PERSONA_TEMPLATE_ID",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "doc": "Inquiry template id (itmpl_…) new inquiries use. Required when PERSONA_API_KEY is set.",
+      "source": "Persona dashboard → Inquiries → Templates"
+    },
+    {
+      "name": "PERSONA_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "secret": true,
+      "doc": "Signing secret of the Persona webhook pointed at /webhooks/persona. Required when PERSONA_API_KEY is set.",
+      "source": "Persona dashboard → Webhooks → your endpoint (events: inquiry.completed, approved, declined, failed, expired, marked-for-review)"
+    },
+    {
+      "name": "PERSONA_ENVIRONMENT_ID",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "doc": "Persona environment id (env_…) passed to the hosted flow and to clients for the embedded flow.",
+      "source": "Persona dashboard → API → Environments"
+    },
+    {
+      "name": "IDENTITY_MAX_ATTEMPTS",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "3",
+      "doc": "Rejected attempts before a user must contact support to verify."
+    },
+    {
+      "name": "IDENTITY_VERIFICATION_TTL",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "0",
+      "doc": "How long a verification lasts, as a Go duration (8760h = a year). 0 never expires."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/identity",
+      "dst": "backend/internal/identity"
+    },
+    {
+      "src": "backend/feature_identity.go",
+      "dst": "backend/internal/api/feature_identity.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/identity"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/identity"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/identity"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./identity\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { identityAdminNav, identitySettings } from \"./identity/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "identitySettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "identityAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { identitySettings } from \"./identity/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "identitySettings,"
+    }
+  ],
+  "stitch": [
+    "Decide what requires verification and gate it with identity.IsVerified (return identity.ErrVerificationRequired).",
+    "Show the verified badge where people judge each other (profiles, listings, messages) with GET /v1/identity/users/{id}/badge or identity.VerifiedSet.",
+    "Persona: create a template, point a webhook at https://<api>/webhooks/persona, set the 4 PERSONA_* variables, and name Persona in the privacy policy.",
+    "Manual mode: staff the admin queue; photos are deleted as soon as a decision is made.",
+    "Allow the hosted-flow return: web origins come from CORS_ALLOWED_ORIGINS/PUBLIC_WEB_URL, mobile uses scaffoldapp://."
+  ]
+}
