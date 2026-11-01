@@ -336,7 +336,7 @@ func (s *Service) updateHandler(w http.ResponseWriter, r *http.Request) error {
 	}
 	if oldCover != nil {
 		key := *oldCover
-		s.afterCommit(ctx, func(ctx context.Context) { _ = s.d.Storage.Delete(ctx, key) })
+		s.afterCommit(ctx, "events.delete_cover", func(ctx context.Context) { _ = s.d.Storage.Delete(ctx, key) })
 	}
 	e, _, err := s.loadEvent(ctx, eid, caller.UserID)
 	if err != nil {
@@ -345,7 +345,7 @@ func (s *Service) updateHandler(w http.ResponseWriter, r *http.Request) error {
 	s.publish(ctx, eid, EventUpdated, map[string]any{"event_id": eid, "status": e.Status})
 	s.publishCounts(ctx, eid)
 	when := whenText(e.StartsAt, e.Timezone)
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "events.notify_updated", func(ctx context.Context) {
 		s.notifyPromoted(ctx, eid, title, promoted)
 		s.notifyAll(ctx, caller.UserID, notifyTo, notify.Notification{
 			Kind: NotifyUpdated, Title: title + " changed", Body: "Now " + when + ".",
@@ -421,7 +421,7 @@ func (s *Service) cancelHandler(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Service) afterCancel(ctx context.Context, actor, eid uuid.UUID, title, body string, users []uuid.UUID) {
 	s.publish(ctx, eid, EventUpdated, map[string]any{"event_id": eid, "status": "cancelled"})
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "events.notify_cancelled", func(ctx context.Context) {
 		s.notifyAll(ctx, actor, users, notify.Notification{
 			Kind: NotifyCancelled, Title: title + " is cancelled", Body: body,
 			Link: eventLink(eid), Data: map[string]any{"event_id": eid},

@@ -172,7 +172,7 @@ func (s *Service) afterRSVP(ctx context.Context, caller *auth.Identity, eid uuid
 	if name == "" {
 		name = "Someone"
 	}
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "events.notify_rsvp", func(ctx context.Context) {
 		s.notifyPromoted(ctx, eid, ev.title, promoted)
 		if status == RSVPGoing && prev != RSVPGoing {
 			s.notifyAll(ctx, caller.UserID, []uuid.UUID{ev.host}, notify.Notification{

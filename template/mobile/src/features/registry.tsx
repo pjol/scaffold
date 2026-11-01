@@ -19,11 +19,14 @@
  *   export const chatSettings: SettingsSection = { id: "chat", items: [{ id: "chat", title: "Chat", icon: MessageCircle, href: "/chat/settings" }] };
  *
  * Settings renders: Profile · Appearance · <these sections, in order> · Account · Legal · Support.
+ * Once any section has a `group`, it renders headed groups instead: You (Profile, Appearance,
+ * its sections, Account) · Workspace · AI agents · Developer · sections without a group (each
+ * under its own `title`, untitled ones under "Other") · Legal · Support.
  * A feature that needs a bottom tab wires `app/(tabs)/_layout.tsx` instead (5 tabs at most).
  */
 import type { Href } from "expo-router";
 import type { LucideIcon } from "lucide-react-native";
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 // scaffold:imports
 
 export interface HomeEntry {
@@ -51,12 +54,67 @@ export interface SettingsItem {
   useBadge?: () => number | string | undefined;
 }
 
+/** Settings headings, in the order Settings shows them (labels: app/(tabs)/settings.tsx). Same ids as web. */
+export type SettingsGroup = "you" | "workspace" | "agents" | "developer";
+
 export interface SettingsSection {
   id: string;
-  /** Group heading; omit for a single self-explanatory row. */
+  /** Group heading; omit for a single self-explanatory row. Not shown when `group` is set. */
   title?: string;
+  /** The heading the items join: "you" (personal preferences), "workspace" (org, teams), "agents" (AI agents, connected services), "developer" (API keys, git access). */
+  group?: SettingsGroup;
   items: SettingsItem[];
 }
+
+/** What a ⋮ menu is about: a whole feature section, or one resource in it. */
+export interface ResourceMenuContext {
+  /** Module name ("docs", "files"): agent scopes key on it. */
+  feature: string;
+  /** Access resource kind ("docs.page") and id, when the menu is for one resource. */
+  kind?: string;
+  id?: string;
+  /** Resource title: the sheet's heading and dialog copy. */
+  title?: string;
+  orgId?: string;
+}
+
+export interface ResourceMenuChoice {
+  id: string;
+  label: string;
+  checked?: boolean;
+  /** InfoTip text explaining the option. */
+  hint?: string;
+  disabled?: boolean;
+  onSelect: () => void;
+}
+
+export interface ResourceMenuAction {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  /** Short current value shown at the end of the row ("Read"). */
+  hint?: string;
+  /** Runs after the sheet closes. */
+  onSelect?: () => void;
+  /** A second sheet of options instead of onSelect. */
+  choices?: ResourceMenuChoice[];
+  destructive?: boolean;
+  disabled?: boolean;
+}
+
+/**
+ * Rows a feature adds to every ⋮ menu (`ResourceMenu`, src/components/resource): return no
+ * actions where you don't apply; `element` renders beside the menu (a sheet an action
+ * opens). The hook is called on every render of a menu, in registry order.
+ */
+export interface ResourceMenuProvider {
+  id: string;
+  useActions: (ctx: ResourceMenuContext) => { actions: ResourceMenuAction[]; element?: ReactNode };
+}
+
+export const resourceMenuProviders: readonly ResourceMenuProvider[] = [
+  // scaffold:resource-menu
+];
 
 export const homeEntries: HomeEntry[] = [
   // scaffold:home

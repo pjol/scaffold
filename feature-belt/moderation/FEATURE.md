@@ -36,7 +36,7 @@ Actions: `dismiss` (restores auto-hidden content when the target supports it), `
 
 Realtime: `moderation.case_opened` / `moderation.case_closed` on `admin:live`; `moderation.blocks_changed` on the blocker's `user:` topic. Notifications: `moderation.outcome` to reporters (link `/settings/safety`), `moderation.notice` to authors. Not registered with notifications (moderation doesn't require it): they deliver with push on, email off.
 
-Agent tools: `moderation_list_blocks`, `moderation_list_reports`, `moderation_block_user` (write), `moderation_queue_summary` (staff).
+Agent tools (read-only): `moderation_list_blocks`, `moderation_list_reports`, `moderation_queue_summary` (staff). Agents never block: a block changes who may reach the person and whose content they see.
 
 ## Screens
 
@@ -111,4 +111,5 @@ Unverified: mobile screens were typechecked and bundled (`expo export`), not dri
 
 ## Changes
 
+- 1.0.1: the `moderation_block_user` agent tool is gone (it had no preview or rate limit, and a block changes who may reach the person, which AI agents never change); blocking stays in the app.
 - 1.0.0: first release (backend, shared hooks, web and mobile UI).

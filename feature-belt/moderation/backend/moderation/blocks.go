@@ -111,7 +111,7 @@ func (s *Service) block(w http.ResponseWriter, r *http.Request) error {
 
 // Block records that blocker blocked blocked (idempotent) and returns the
 // row. It is exported for stitching code (e.g. "block and report" in one
-// tap) and the agent tool.
+// tap); agents never block (see Tools).
 func Block(ctx context.Context, q db.Querier, blocker, blocked uuid.UUID) (BlockedUser, error) {
 	var b BlockedUser
 	err := q.QueryRow(ctx, `

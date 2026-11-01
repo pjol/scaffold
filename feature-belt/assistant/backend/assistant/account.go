@@ -23,6 +23,7 @@ import (
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	s.turns.cancelUser(userID, errStopped)
 	for _, q := range []string{
+		`DELETE FROM assistant_tool_decisions WHERE user_id = $1`,
 		`DELETE FROM assistant_messages WHERE user_id = $1`,
 		`DELETE FROM assistant_conversations WHERE user_id = $1`,
 		`DELETE FROM assistant_usage_daily WHERE user_id = $1`,
@@ -36,14 +37,14 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 }
 
 type exportMessage struct {
-	Role       string     `json:"role"`
-	Text       string     `json:"text"`
-	Tools      []string   `json:"tools,omitempty"`
-	Status     string     `json:"status"`
-	Provider   string     `json:"provider,omitempty"`
-	Model      string     `json:"model,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	RemovedAt  *time.Time `json:"removed_at,omitempty"`
+	Role      string     `json:"role"`
+	Text      string     `json:"text"`
+	Tools     []string   `json:"tools,omitempty"`
+	Status    string     `json:"status"`
+	Provider  string     `json:"provider,omitempty"`
+	Model     string     `json:"model,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	RemovedAt *time.Time `json:"removed_at,omitempty"`
 }
 
 type exportConversation struct {
@@ -113,7 +114,11 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		}
 		m.Text = displayText(parts)
 		for _, a := range activity {
-			m.Tools = append(m.Tools, a.Name+": "+a.Summary)
+			name := a.Name
+			if a.Source != "" {
+				name = a.Source + " · " + a.Name
+			}
+			m.Tools = append(m.Tools, name+" ("+a.Status+"): "+a.Summary)
 		}
 		if i, ok := index[convID]; ok {
 			out.Conversations[i].Messages = append(out.Conversations[i].Messages, m)

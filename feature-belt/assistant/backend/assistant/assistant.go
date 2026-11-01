@@ -131,6 +131,7 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RequireActive).Patch("/assistant/conversations/{id}", httpx.Handler(s.renameConversation))
 	r.Delete("/assistant/conversations/{id}", httpx.Handler(s.deleteConversation))
 	r.Post("/assistant/conversations/{id}/stop", httpx.Handler(s.stop))
+	r.With(auth.RequireActive, auth.RateLimit(60, time.Minute)).Post("/assistant/conversations/{id}/tool-calls/{call_id}", httpx.Handler(s.decideToolCall))
 }
 
 // MountStream holds the routes that answer with server-sent events (same

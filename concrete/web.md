@@ -60,18 +60,20 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 | `// scaffold:nav` | `featureNav: NavItem[]` | `{ href, label, icon: LucideIcon, match?, useBadge? }` |
 | `// scaffold:home` | `homeTiles: HomeTile[]` | NavItem without `match` (tiles on Home) |
 | `// scaffold:admin-nav` | `adminNav: NavItem[]` | admin tabs after Overview · Users · Audit log |
-| `// scaffold:settings` | `settingsSections: SettingsSection[]` | `{ href, label, icon }`, shown between Appearance and Account |
+| `// scaffold:settings` | `settingsSections: SettingsSection[]` | `{ href, label, icon, group? }`; `group` is `"you"` (personal preferences) · `"workspace"` (org, teams, permissions) · `"agents"` (AI agents, connected services) · `"developer"` (API keys, git access). Without groups: shown between Appearance and Account |
 | `// scaffold:account-menu` | `accountMenuItems: AccountMenuItem[]` | link `{ id, href, label, icon }` or slot `{ id, Component }` (renders its own `MenuLabel`/`MenuItem`/`MenuSeparator`, e.g. an org switcher); above Settings and Sign out |
 | `// scaffold:session` | `sessionMounts: ComponentType[]` | mounted once inside the data providers while signed in (realtime listeners, notification toasts); remount on identity change |
 | `// scaffold:header-actions` | `headerActions: { id, Component }[]` | top-bar controls before the account menu (a bell); 40 px labelled targets |
 | `// scaffold:consent-routes` | `consentRoutes: string[]` | whole-path regex sources (`"/support(/.*)?"`) AppFrame shows instead of the consent screen |
 | `// scaffold:support-links` | `supportLinks: { id, href, label, icon }[]` | consent screen, suspended banner, blocked-account screen (next to the support email), Settings → Support. Add the route to `consentRoutes` if it must open before consent; point at a public page if banned users need it |
+| `// scaffold:resource-menu` | `resourceMenuProviders: { id, useActions(ctx) → { actions, element? } }[]` | rows added to every ⋮ menu. Every resource and section screen puts its secondary actions in `ResourceMenu` (`src/components/resource/ResourceMenu.tsx`: `feature`, optional access `kind`/`id`, `title`, its own `actions`), so cross-feature controls (Share…, AI agent access) sit in the same place everywhere. `choices` renders a submenu (ui-web `MenuSub`/`MenuChoice`; inline under a heading row below 640 px) |
 
 `useBadge` (nav, home tiles, admin tabs) is a hook returning a count; it runs on every render, so read a cache, never fetch.
 
 ## Settings and admin
 
 - Settings: side tabs ≥ 1024 (`/settings` shows Profile there), a list on phones with a back link on each section. Order: Profile (photo via `useUpload` purpose `avatar`, name) · Appearance (System/Light/Dark; palette picker when the build ships more than one) · feature sections · Account (Download my data → JSON file; Delete account: 3 taps, `requireText="DELETE"`, says what is deleted and kept, then signs out) · Legal · Support · Admin (staff).
+- **Settings groups**: once any `settingsSections` entry has a `group`, Settings shows headed groups (side-tab headings ≥ 1024, one card per group on phones), in this order and with these labels (`screens/settings/links.ts`): **You** (Profile, Appearance, its sections, Account) · **Workspace** · **AI agents** · **Developer** · **Other** (sections without a group), then Legal · Support · Admin without a heading. Empty groups are left out; hrefs and anchors don't change. An app assigns groups on its own registry lines (`{ ...chatSettings, group: "you" }`); belt features don't set one. Long side tabs scroll inside the sticky column.
 - Admin (`/admin`, `data-density="compact"`): staff only by `me.admin_role` (the API guards every route). Overview (counts, recent actions) · Users (search, status filter, keyset list, detail: status for staff, role and delete for admins, never yourself) · Audit log (filter by target, "only this target") · `adminNav`. Every change confirms in a `ConfirmDialog` naming the person and the consequence.
 
 ## Screens, states and copy

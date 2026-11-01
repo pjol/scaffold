@@ -129,13 +129,13 @@
   --text-hero--letter-spacing: var(--app-type-hero-tracking);
   --text-hero--font-weight: var(--app-type-hero-weight);
 
-  /* ── spacing: 4px base; semantic names never sm/md/lg/xl ──────────────
+  /* ── spacing: 4px base; names never complete a Tailwind class (pnpm check)
      Approved steps: 0 px 0.5 1 1.5 2 3 4 5 6 8 10 12 16 20 24 32. */
   --spacing: 0.25rem;
   --spacing-tight: var(--app-space-tight);
   --spacing-related: var(--app-space-related);
   --spacing-group: var(--app-space-group);
-  --spacing-block: var(--app-space-block);
+  --spacing-subsection: var(--app-space-subsection);
   --spacing-section: var(--app-space-section);
   --spacing-band: var(--app-space-band);
   --spacing-gutter: var(--app-space-gutter);

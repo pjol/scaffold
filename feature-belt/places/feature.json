@@ -1,7 +1,7 @@
 {
   "name": "places",
   "title": "Places",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "summary": "Browse places on a map and in a list, search by area, text or distance, submit places for review, save favourites.",
   "requires": [],
   "surfaces": [

@@ -1,8 +1,8 @@
 {
   "name": "assistant",
   "title": "AI assistant",
-  "version": "1.0.0",
-  "summary": "Chat with an AI assistant that can read the user's data in the app through scoped tools, with streamed replies, quotas, consent and reporting.",
+  "version": "1.1.2",
+  "summary": "Chat with an AI assistant that reads the user's data in the app and in services they connected, through scoped tools, with streamed replies, approval for outside changes, quotas, consent and reporting.",
   "requires": [
     "moderation"
   ],
@@ -229,7 +229,7 @@
   "stitch": [
     "Rewrite the product sections of staticPrompt in backend/internal/assistant/prompt.go (identity, scope, writing) for this app; keep Trust and safety unchanged.",
     "Name the AI provider and what is sent to it in the privacy policy (packages/shared/src/legal) before launch.",
-    "Decide ASSISTANT_ALLOW_WRITES: leave it off unless the app's write tools are safe for a model to call on the user's say-so.",
+    "Decide ASSISTANT_ALLOW_WRITES: leave it off unless the app's write tools are safe for a model to call on the user's say-so. With the agents feature installed, turn it on and let each user's AI agent scope decide (read only by default). External tools from connected services follow each connection's changes switch and per-call approval instead.",
     "Set daily limits (ASSISTANT_DAILY_MESSAGES, ASSISTANT_DAILY_TOKENS) from your cost model, and add a prices row in pricing.go for any model you configure that isn't listed.",
     "Make sure each feature you want the assistant to use implements app.ToolProvider with clear, prescriptive tool descriptions.",
     "Mobile: the assistant is a Home row; if it is central to the app, give it a tab in mobile/app/(tabs) instead."

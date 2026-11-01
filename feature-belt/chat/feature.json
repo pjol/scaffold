@@ -1,7 +1,7 @@
 {
   "name": "chat",
   "title": "Chat",
-  "version": "1.0.2",
+  "version": "1.0.6",
   "summary": "People message each other one to one and in groups, with photos and files, replies, reactions, read state and live delivery.",
   "requires": [
     "notifications",

@@ -1,8 +1,8 @@
 {
   "name": "mcp",
-  "title": "MCP and API keys",
-  "version": "1.0.0",
-  "summary": "Users create personal API keys so their agents can call the app's tools over MCP as them.",
+  "title": "MCP, connected apps and API keys",
+  "version": "1.1.0",
+  "summary": "People connect agents (Claude, ChatGPT, Cursor, Claude Code) by URL and sign in, or use personal API keys; the agent calls the app's tools over MCP as them.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -17,6 +17,46 @@
       "required": "optional",
       "default": "120",
       "doc": "MCP requests allowed per API key per minute."
+    },
+    {
+      "name": "MCP_OAUTH_ACCESS_TTL",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "1h",
+      "doc": "How long an OAuth access token lasts (1m to 24h)."
+    },
+    {
+      "name": "MCP_OAUTH_REFRESH_TTL",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "720h",
+      "doc": "How long a refresh token lasts; each refresh issues a new one, so a connection unused this long ends."
+    },
+    {
+      "name": "MCP_OAUTH_REGISTRATIONS_PER_HOUR",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "60",
+      "doc": "Dynamic client registrations allowed per IP per hour."
+    },
+    {
+      "name": "MCP_OAUTH_MAX_UNUSED_CLIENTS",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "5000",
+      "doc": "Registered OAuth clients that have never been used, at most; registration pauses at the cap until the hourly prune."
+    },
+    {
+      "name": "MCP_OAUTH_CLIENT_METADATA_ENABLED",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "true",
+      "doc": "Accept https client_id URLs (client ID metadata documents), which the server fetches through a private-address guard."
     }
   ],
   "files": [
@@ -54,7 +94,12 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { mcpAdminNav, mcpSettings } from \"./mcp/nav\";"
+      "insert": "import { mcpAdminNav, mcpConnectedAppsSettings, mcpConnectionsAdminNav, mcpSettings } from \"./mcp/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "mcpConnectionsAdminNav,"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -64,12 +109,25 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "settings",
+      "insert": "mcpConnectedAppsSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
       "insert": "mcpSettings,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/connect\","
     }
   ],
   "stitch": [
-    "Make sure each feature agents should use implements app.ToolProvider with prescriptive descriptions; write tools are offered only to keys with the write scope.",
-    "Rewrite the server instructions and card description in backend/internal/mcp/mcp.go for this app.",
-    "Expose the API's /mcp and /.well-known/mcp.json on a public URL agents can reach (PUBLIC_API_URL is what the server card advertises)."
+    "Make sure each feature agents should use implements app.ToolProvider with prescriptive descriptions; write tools are offered only to connections with the write scope.",
+    "Install the agents feature if people should set AI agent scope (off, read, suggest, edit per feature and resource); without it every call runs with the connection's scope only.",
+    "Rewrite the server instructions, resource_name and card description in backend/internal/mcp/mcp.go and the consent copy in web/src/features/mcp/ConnectScreen.tsx for this app.",
+    "Serve the API at the origin PUBLIC_API_URL names (no path prefix): /mcp, /.well-known/* and /oauth/* live at its root, and PUBLIC_API_URL is the OAuth issuer.",
+    "Set PUBLIC_WEB_URL: /oauth/authorize sends people to its /connect page to sign in and consent. OAuth is off without it.",
+    "Decide whether hosted clients may use client ID metadata documents (MCP_OAUTH_CLIENT_METADATA_ENABLED); turn it off if the API must make no outbound requests."
   ]
 }

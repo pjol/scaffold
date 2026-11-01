@@ -35,7 +35,7 @@ function Reply({ message, onRetry }: { message: AssistantMessage; onRetry?: (() 
   }
   return (
     <article aria-busy={streaming || undefined} className="flex min-w-0 flex-col gap-3">
-      <ToolActivity activity={message.activity} />
+      <ToolActivity activity={message.activity} conversationId={message.conversation_id} messageId={message.id} />
       {text ? <Markdown text={text} /> : streaming && message.activity.length === 0 ? <Spinner size={18} label="Writing a reply" /> : null}
       {message.error ? (
         <Banner

@@ -609,7 +609,7 @@ func (s *Service) updateConversation(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 	s.announce(r.Context(), head, events...)
-	s.kickObjectCleanup()
+	s.kickObjectCleanup(r.Context())
 	d, err := s.detail(r.Context(), me, id)
 	if err != nil {
 		return err

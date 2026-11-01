@@ -8,8 +8,8 @@ import { APP_NAME } from "@/lib/app";
  */
 export function AppMark({ className, href = "/" }: { className?: string; href?: string }) {
   return (
-    <Link href={href} className={cn("flex min-h-control items-center rounded-sm type-title-sm text-fg", className)}>
-      {APP_NAME}
+    <Link href={href} className={cn("flex min-h-control min-w-0 items-center rounded-sm type-title-sm text-fg", className)}>
+      <span className="truncate">{APP_NAME}</span>
     </Link>
   );
 }

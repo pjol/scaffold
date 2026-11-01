@@ -89,12 +89,12 @@ func New(d *app.Deps) *Service {
 	httpx.RedactPathPrefix("/v1/events/feed/")
 	storage.RegisterPurpose(storage.Purpose{Name: CoverPurpose, Public: true, Types: storage.ImageTypes})
 
-	notifications.RegisterKind(notifications.Kind{ID: NotifyInvite, Label: "Event invitations", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyReminder, Label: "Event reminders", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyCancelled, Label: "Cancelled events", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyUpdated, Label: "Event changes", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyPromoted, Label: "Spots from the waitlist", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyRSVP, Label: "RSVPs to your events", Push: false})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyInvite, Label: "Event invitations", Push: true, AgentTarget: eventTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyReminder, Label: "Event reminders", Push: true, AgentTarget: eventTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyCancelled, Label: "Cancelled events", Push: true, AgentTarget: eventTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyUpdated, Label: "Event changes", Push: true, AgentTarget: eventTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyPromoted, Label: "Spots from the waitlist", Push: true, AgentTarget: eventTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyRSVP, Label: "RSVPs to your events", Push: false, AgentTarget: eventTarget})
 	return s
 }
 

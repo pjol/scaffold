@@ -1,0 +1,159 @@
+{
+  "name": "calendar",
+  "title": "Calendar",
+  "version": "1.1.3",
+  "summary": "Personal calendars with recurring events, invitations and RSVPs, reminders, busy time from other calendars, colleagues' free/busy, and booking links (members-only or public) with race-safe bookings.",
+  "requires": [
+    "orgs",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 2100,
+  "env": [
+    {
+      "name": "CALENDAR_SECRET_KEY",
+      "tier": "backend",
+      "group": "calendar",
+      "required": "prod",
+      "secret": true,
+      "dev": "Y2FsZW5kYXItZGV2LWtleS1ub3QtYS1zZWNyZXQtMzI=",
+      "doc": "32 random bytes, base64. Encrypts subscribed calendars' secret addresses and signs RSVP and booking-manage links (so every email carries a working link). Unset in development = calendar subscriptions off and links rotate per email. The development value is refused elsewhere.",
+      "source": "openssl rand -base64 32"
+    },
+    {
+      "name": "CALENDAR_ALLOW_PRIVATE_URLS",
+      "tier": "backend",
+      "group": "calendar",
+      "required": "optional",
+      "default": "false",
+      "dev": "true",
+      "doc": "Let subscribed calendar addresses point at this machine or a private network (to test with a local .ics server). Refused unless APP_ENV=development."
+    },
+    {
+      "name": "CALENDAR_SUBSCRIPTION_INTERVAL",
+      "tier": "backend",
+      "group": "calendar",
+      "required": "optional",
+      "default": "30m",
+      "doc": "How often each subscribed calendar is re-read (5m to 24h). Failures back off up to a day."
+    },
+    {
+      "name": "CALENDAR_SUBSCRIPTION_MAX_MB",
+      "tier": "backend",
+      "group": "calendar",
+      "required": "optional",
+      "default": "5",
+      "doc": "Largest subscribed calendar file read, in MB (1 to 50)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/calendar",
+      "dst": "backend/internal/calendar"
+    },
+    {
+      "src": "backend/feature_calendar.go",
+      "dst": "backend/internal/api/feature_calendar.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/calendar"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/calendar"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/calendar"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./calendar\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { calendarHomeTile, calendarNav, calendarSettings, calendarZoneSync } from \"./calendar/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "calendarNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "calendarHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "calendarSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "calendarZoneSync,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/book/(.*)\","
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/calendar/rsvp/[^/]+\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { calendarHome, calendarZoneSync } from \"./calendar/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "calendarHome,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "calendarZoneSync,"
+    }
+  ],
+  "stitch": [
+    "Wire video calls: implement calendar.Conferencing (Create/Update/Cancel) over your meetings feature and call calendar.SetConferencing from the stitching file (e.g. internal/api/feature_zz_stitch.go init or the calls feature's New). Honour ConferenceRequest.Audience: external = guests may join without an account; internal = members of OrgID (booking links) or the host and ParticipantIDs (events). Without it, video calls aren't offered.",
+    "Set PUBLIC_WEB_URL: booking pages (/book/<slug>), manage links (/book/manage/<token>) and guest RSVP links (/calendar/rsvp/<token>) in emails are built from it. /book/(.*) and /calendar/rsvp/<token> are wired into web/proxy.ts public paths.",
+    "Generate CALENDAR_SECRET_KEY (openssl rand -base64 32) for every non-development environment; it encrypts subscribed calendars' secret addresses and signs RSVP and manage links. Rotating it breaks links in emails already sent and makes stored subscriptions unreadable (people re-add them).",
+    "Decide who appears in the guest picker and colleague free/busy (default: people who share an organization with you) and who may create internal booking links (default: any member of the org).",
+    "Name booking links in your product's copy (scheduling page, appointment page) and decide whether the calendar is a main nav item (default) or a Home tile only.",
+    "Mobile: add a Calendar tab if scheduling is a primary destination (default: a Home entry); booking pages themselves are web pages shared by URL (EXPO_PUBLIC_WEB_URL).",
+    "Hand scheduling started in other features to the calendar: open calendarNewEventLink({ title, guests, video: true }) (web dialog and mobile form, prefilled) so the event lands on calendars with invitations, RSVP and .ics; and give features that word times for people (calls invitations) each person's zone with calendar.UserZone (e.g. calls.SetUserZone); on the client, pass the settings' zone (useCalendarSettings: timezone when timezone_set) to features that show times (setCallsTimeZone) so every screen reads the same clock.",
+    "Privacy policy: subscribed calendar addresses are fetched by your server; booking emails go to addresses bookers type in. Name your mail provider."
+  ],
+  "deps": {
+    "mobile": {
+      "@react-native-community/datetimepicker": "9.1.0"
+    }
+  }
+}

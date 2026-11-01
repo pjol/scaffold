@@ -1,0 +1,208 @@
+{
+  "name": "calls",
+  "title": "Calls",
+  "version": "1.2.1",
+  "summary": "Video meetings with a shareable link and a lobby for guests, and instant calls that ring people's devices.",
+  "requires": [
+    "orgs",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 2000,
+  "env": [
+    {
+      "name": "LIVEKIT_URL",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "doc": "LiveKit server URL clients connect to (wss://<project>.livekit.cloud, or your self-hosted wss:// URL). Unset with the key and secret = call routes answer 503 calls_unconfigured. dev-up's calls hook runs a local server and fills it.",
+      "source": "cloud.livekit.io → Project → Settings → Project URL, or your self-hosted server's public URL"
+    },
+    {
+      "name": "LIVEKIT_API_KEY",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "doc": "LiveKit API key: signs join tokens and server API calls, and is the issuer LiveKit's webhooks are checked against.",
+      "source": "cloud.livekit.io → Project → Settings → Keys, or the keys: block of your livekit.yaml"
+    },
+    {
+      "name": "LIVEKIT_API_SECRET",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "secret": true,
+      "doc": "LiveKit API secret for LIVEKIT_API_KEY (at least 32 characters outside development). Never sent to clients.",
+      "source": "Shown once when the key is created in LiveKit Cloud; self-hosted: livekit-server generate-keys"
+    },
+    {
+      "name": "LIVEKIT_API_URL",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "doc": "http(s) origin the backend calls LiveKit's server API on, when it differs from LIVEKIT_URL (a private network address). Default: LIVEKIT_URL with https:// (http:// for ws://)."
+    },
+    {
+      "name": "CALLS_TOKEN_TTL",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "10m",
+      "doc": "How long a join token is valid for connecting (Go duration, 1m–6h). LiveKit refreshes tokens for people already in a call."
+    },
+    {
+      "name": "CALLS_RING_TIMEOUT",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "45s",
+      "doc": "How long an instant call rings before it becomes a missed call (Go duration, 10s–5m)."
+    },
+    {
+      "name": "CALLS_MAX_PARTICIPANTS",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "100",
+      "doc": "Most people in one call (2–1000), enforced by the media server."
+    },
+    {
+      "name": "CALLS_LOCAL_LIVEKIT",
+      "tier": "dev",
+      "group": "calls",
+      "required": "optional",
+      "default": "true",
+      "doc": "true: dev-up runs a local LiveKit server on 127.0.0.1 (ports +7 and +8 of the block) and points the backend at it, unless LIVEKIT_URL is set in .env.dev."
+    },
+    {
+      "name": "CALLS_LIVEKIT_DOWNLOAD",
+      "tier": "dev",
+      "group": "calls",
+      "required": "optional",
+      "default": "true",
+      "doc": "true: when livekit-server isn't on PATH, dev-up fetches the pinned release into .data/bin (Linux: the release binary; macOS: builds the release source with Go, about 2 minutes once). Both are checksum-verified. false: install it yourself (brew install livekit)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/calls",
+      "dst": "backend/internal/calls"
+    },
+    {
+      "src": "backend/feature_calls.go",
+      "dst": "backend/internal/api/feature_calls.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/calls"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/calls"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "scripts/dev-up/hooks/calls.sh",
+      "dst": "scripts/dev-up/hooks/calls.sh"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/calls"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    },
+    {
+      "src": "mobile-plugin/calls.js",
+      "dst": "mobile/plugins/calls.js"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./calls\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { callsHome, callsNav, callsRinger } from \"./calls/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "callsNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "callsHome,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "callsRinger,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/meet/(.*)\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { callsHome, callsSession } from \"./calls/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "callsHome,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "callsSession,"
+    },
+    {
+      "file": "mobile/app.config.ts",
+      "anchor": "plugins",
+      "insert": "\"./plugins/calls\","
+    }
+  ],
+  "deps": {
+    "web": {
+      "livekit-client": "^2.23.0",
+      "@livekit/components-react": "^2.9.24"
+    },
+    "mobile": {
+      "@livekit/react-native": "^3.1.0",
+      "@livekit/react-native-webrtc": "^150.1.1",
+      "@livekit/react-native-expo-plugin": "^1.1.0",
+      "@config-plugins/react-native-webrtc": "^15.0.2",
+      "@livekit/components-react": "^2.9.24",
+      "livekit-client": "^2.23.0"
+    }
+  },
+  "stitch": [
+    "Production media: create a LiveKit Cloud project (or self-host livekit-server), set LIVEKIT_URL (wss://), LIVEKIT_API_KEY and LIVEKIT_API_SECRET, and add the webhook <PUBLIC_API_URL>/webhooks/livekit in LiveKit (Cloud: Settings → Webhooks, signed with that key; self-hosted: webhook.urls + webhook.api_key in livekit.yaml). Without the webhook, attendance history stays empty.",
+    "Decide who may ring or invite whom: calls.SetCallPolicy (default: people who share an organization) and calls.SetDirectory for the people picker; add block checks there if the app has moderation.",
+    "Calendars and other features create meetings with calls.CreateMeeting(ctx, tx, calls.MeetingInput{…, Source: &calls.Source{Kind: \"calendar.event\", ID: eventID}}) inside their own transaction and send their own invitations (a 409 means the source already has an active meeting: create without one); update or cancel with calls.UpdateMeeting / calls.CancelMeeting, find it again with calls.MeetingBySource. On the client, setCallsScheduleAction (web and mobile, @/features/calls/seams) can send \"Schedule a meeting\" to the calendar's new-event link, and setCallsSourceLink (web and mobile) maps a meeting's source to the page that manages it (\"Open in Calendar\"); Calls never edits or cancels sourced meetings itself.",
+    "Time zones: calls.SetUserZone(fn) gives each person's zone (e.g. calendar.UserZone) so invitations, agent previews and search read in it; without it, invitations use the inviter's device zone (sent as time_zone) and always name the zone. On the client, call setCallsTimeZone(zone) (shared, web and mobile) from a session mount with the person's zone (e.g. their calendar settings' zone) so Calls shows times on the same clock; times in another zone than the device's are labelled.",
+    "Channels and DMs: a \"Start call\" button calls POST /v1/calls/calls {user_ids} (or calls.StartCall from Go) and opens /meet/<code>?autojoin=1. Keep the product words the same everywhere: Start call (an instant call), New meeting (a link), Video call (a calendar location type).",
+    "Set PUBLIC_WEB_URL: join links are PUBLIC_WEB_URL/meet/<code> (public on web: guests knock there). Mobile: configure universal links for /meet/* to open the app's meet/[code] route.",
+    "Privacy policy: name LiveKit (or your SFU host) as a processor of call audio and video; calls aren't recorded. Mobile: the plugin adds camera and microphone purpose strings and iOS background audio; rebuild the dev client.",
+    "Mobile placement: Calls is a Home row; give it a tab if calls are a primary destination."
+  ]
+}

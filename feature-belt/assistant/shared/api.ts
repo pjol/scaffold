@@ -31,6 +31,9 @@ export const assistantEndpoints = (http: HttpClient) => ({
   messages: (id: string, params: { cursor?: string; limit?: number } = {}, o?: CallOptions) =>
     http.get<Page<AssistantMessage>>(`${conv(id)}/messages`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
   stop: (id: string) => http.post<void>(`${conv(id)}/stop`),
+  /** Approve or decline a change in a connected service the running reply is waiting on. */
+  decideToolCall: (id: string, callId: string, approved: boolean) =>
+    http.post<void>(`${conv(id)}/tool-calls/${encodeURIComponent(callId)}`, { approved }),
 
   admin: {
     usage: (days?: number, o?: CallOptions) => http.get<Page<AssistantDailyTotals>>("/v1/admin/assistant/usage", { ...o, query: { days } }),

@@ -19,13 +19,15 @@ import (
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Personal API keys. A key is "scaffoldapp_sk_" + 40 random base62
-// characters, shown once at creation. Only its SHA-256 is stored, with a
+// Personal API keys. A key is "agt_scaffoldapp_sk_" + 40 random base62
+// characters, shown once at creation. The agt_ prefix (auth.AgentCredentialPrefix)
+// marks it as an agent credential: the core auth middleware refuses it on
+// every user route, so it opens /mcp and nothing else. Only its SHA-256 is stored, with a
 // short display prefix. Keys are managed with the user's normal session
 // (Clerk), never with another API key.
 
 const (
-	keyPrefix    = "scaffoldapp_sk_"
+	keyPrefix    = auth.AgentCredentialPrefix + "scaffoldapp_sk_"
 	secretLength = 40
 	shownChars   = 6
 	maxKeys      = 10
@@ -299,37 +301,80 @@ func (s *Service) adminRevokeKey(w http.ResponseWriter, r *http.Request) error {
 
 // ---- resolution ------------------------------------------------------------
 
-// principal is an authenticated MCP caller.
+// principal is an authenticated MCP caller: an API key's owner, or the
+// person behind an OAuth grant.
 type principal struct {
 	identity *auth.Identity
-	keyID    uuid.UUID
+	via      string    // "key" or "oauth"
+	id       uuid.UUID // the key or the grant: rate limits and last-use writes
 	scopes   []string
+	client   string // the key's name or the OAuth client's name
+	clientID string // the key id or the OAuth client_id
 }
 
 func (p *principal) canWrite() bool { return slices.Contains(p.scopes, ScopeWrite) }
 
+// agentScopes reports whether scopes are exactly what an agent credential
+// may carry: read, optionally write, nothing else.
+func agentScopes(scopes []string) bool {
+	if !slices.Contains(scopes, ScopeRead) {
+		return false
+	}
+	for _, sc := range scopes {
+		if sc != ScopeRead && sc != ScopeWrite {
+			return false
+		}
+	}
+	return true
+}
+
+// agent is the marker every tool call carries (auth.WithAgent), so handlers
+// and the agents feature's policy apply the person's agent scope.
+func (p *principal) agent() auth.Agent {
+	return auth.Agent{Via: "mcp", Client: p.client, ClientID: p.clientID}
+}
+
 var (
 	errBadKey = httpx.NewError(http.StatusUnauthorized, "unauthenticated",
-		"Send a valid API key as Authorization: Bearer <key>.")
+		"Send a valid API key or OAuth access token as Authorization: Bearer <token>.")
 	errInactive = httpx.NewError(http.StatusForbidden, "account_suspended",
-		"This account can't use API keys. Contact support.")
+		"This account can't use agents. Contact support.")
 )
 
-// resolveKey turns a bearer secret into a principal. Suspended, banned and
-// deleted accounts are refused.
-func (s *Service) resolveKey(ctx context.Context, secret string) (*principal, error) {
-	if !strings.HasPrefix(secret, keyPrefix) || len(secret) != len(keyPrefix)+secretLength {
+const identityCols = `u.id, u.auth_subject, u.email, u.display_name, u.admin_role, u.status,
+	COALESCE(u.terms_version_accepted, ''), COALESCE(u.privacy_version_accepted, '')`
+
+// resolve turns a bearer value into a principal by its shape: an API key, or
+// an OAuth access token this server issued. Only agent credentials pass:
+// people's session tokens, refresh tokens, unknown, expired, revoked and
+// wrong-audience tokens are one answer (401); suspended, banned and deleted
+// accounts are refused (403), checked live on every call.
+func (s *Service) resolve(ctx context.Context, bearer string) (*principal, error) {
+	if !auth.IsAgentCredential(bearer) {
 		return nil, errBadKey
 	}
-	p := &principal{identity: &auth.Identity{}}
+	switch {
+	case strings.HasPrefix(bearer, keyPrefix):
+		return s.resolveKey(ctx, bearer)
+	case strings.HasPrefix(bearer, accessPrefix) && s.oauthEnabled():
+		return s.resolveAccessToken(ctx, bearer)
+	}
+	return nil, errBadKey
+}
+
+// resolveKey turns an API key into a principal.
+func (s *Service) resolveKey(ctx context.Context, secret string) (*principal, error) {
+	if len(secret) != len(keyPrefix)+secretLength {
+		return nil, errBadKey
+	}
+	p := &principal{identity: &auth.Identity{}, via: "key"}
 	var role *string
 	id := p.identity
 	err := s.d.Pool.QueryRow(ctx, `
-		SELECT k.id, k.scopes, u.id, u.auth_subject, u.email, u.display_name, u.admin_role, u.status,
-		       COALESCE(u.terms_version_accepted, ''), COALESCE(u.privacy_version_accepted, '')
+		SELECT k.id, k.scopes, k.name, `+identityCols+`
 		FROM mcp_api_keys k JOIN users u ON u.id = k.user_id
 		WHERE k.secret_hash = $1 AND k.revoked_at IS NULL`, hashSecret(secret),
-	).Scan(&p.keyID, &p.scopes, &id.UserID, &id.Subject, &id.Email, &id.DisplayName, &role, &id.Status,
+	).Scan(&p.id, &p.scopes, &p.client, &id.UserID, &id.Subject, &id.Email, &id.DisplayName, &role, &id.Status,
 		&id.TermsVersion, &id.PrivacyVersion)
 	if db.IsNoRows(err) {
 		return nil, errBadKey
@@ -340,13 +385,62 @@ func (s *Service) resolveKey(ctx context.Context, secret string) (*principal, er
 	if role != nil {
 		id.AdminRole = *role
 	}
+	if !agentScopes(p.scopes) {
+		return nil, errBadKey
+	}
 	if id.Status != "active" {
 		return nil, errInactive
 	}
+	p.clientID = p.id.String()
 	// At most one write a minute per key.
 	if _, err := s.d.Pool.Exec(ctx, `
 		UPDATE mcp_api_keys SET last_used_at = now()
-		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, p.keyID); err != nil {
+		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, p.id); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// resolveAccessToken turns an OAuth access token into a principal. The
+// token must be live, its grant unrevoked, and its audience this server
+// (RFC 8707): a token minted for another resource is refused here.
+func (s *Service) resolveAccessToken(ctx context.Context, token string) (*principal, error) {
+	p := &principal{identity: &auth.Identity{}, via: "oauth"}
+	var role *string
+	var resource string
+	id := p.identity
+	err := s.d.Pool.QueryRow(ctx, `
+		SELECT g.id, t.scopes, g.resource, c.client_name, c.client_id, `+identityCols+`
+		FROM mcp_oauth_tokens t
+		JOIN mcp_oauth_grants g ON g.id = t.grant_id
+		JOIN mcp_oauth_clients c ON c.id = g.client_ref
+		JOIN users u ON u.id = g.user_id
+		WHERE t.access_hash = $1 AND t.revoked_at IS NULL AND t.access_expires_at > now() AND g.revoked_at IS NULL`,
+		hashSecret(token),
+	).Scan(&p.id, &p.scopes, &resource, &p.client, &p.clientID, &id.UserID, &id.Subject, &id.Email, &id.DisplayName, &role, &id.Status,
+		&id.TermsVersion, &id.PrivacyVersion)
+	if db.IsNoRows(err) {
+		return nil, errBadKey
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Audience (RFC 8707): only tokens issued for this MCP endpoint.
+	if mcp, _ := canonicalResource(s.resourceURL()); resource != mcp || !agentScopes(p.scopes) {
+		return nil, errBadKey
+	}
+	if p.client == "" {
+		p.client = "Unnamed app"
+	}
+	if role != nil {
+		id.AdminRole = *role
+	}
+	if id.Status != "active" {
+		return nil, errInactive
+	}
+	if _, err := s.d.Pool.Exec(ctx, `
+		UPDATE mcp_oauth_grants SET first_used_at = coalesce(first_used_at, now()), last_used_at = now()
+		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`, p.id); err != nil {
 		return nil, err
 	}
 	return p, nil

@@ -80,18 +80,18 @@ type antBlockBinding struct {
 }
 
 type antRequest struct {
-	Model        string        `json:"model"`
-	MaxTokens    int           `json:"max_tokens"`
-	System       []antSystem   `json:"system,omitempty"`
-	Messages     []antMessage  `json:"messages"`
-	Tools        []antTool     `json:"tools,omitempty"`
-	ToolChoice   *antChoice    `json:"tool_choice,omitempty"`
-	Thinking     *antThinking  `json:"thinking,omitempty"`
-	OutputConfig *antOutput    `json:"output_config,omitempty"`
-	Metadata     *antMetadata  `json:"metadata,omitempty"`
-	CacheControl *antCache     `json:"cache_control,omitempty"`
-	Fallbacks    string        `json:"fallbacks,omitempty"`
-	Stream       bool          `json:"stream,omitempty"`
+	Model        string       `json:"model"`
+	MaxTokens    int          `json:"max_tokens"`
+	System       []antSystem  `json:"system,omitempty"`
+	Messages     []antMessage `json:"messages"`
+	Tools        []antTool    `json:"tools,omitempty"`
+	ToolChoice   *antChoice   `json:"tool_choice,omitempty"`
+	Thinking     *antThinking `json:"thinking,omitempty"`
+	OutputConfig *antOutput   `json:"output_config,omitempty"`
+	Metadata     *antMetadata `json:"metadata,omitempty"`
+	CacheControl *antCache    `json:"cache_control,omitempty"`
+	Fallbacks    string       `json:"fallbacks,omitempty"`
+	Stream       bool         `json:"stream,omitempty"`
 }
 
 type antChoice struct {

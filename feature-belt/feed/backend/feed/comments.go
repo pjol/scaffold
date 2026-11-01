@@ -200,7 +200,7 @@ func (s *Service) createCommentHandler(w http.ResponseWriter, r *http.Request) e
 	link := "/feed/posts/" + pid.String()
 	data := map[string]any{"post_id": pid, "comment_id": cid}
 	body := preview(req.Body)
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "feed.notify_comment", func(ctx context.Context) {
 		// One notification per person: a reply beats a comment beats a mention.
 		sent := map[uuid.UUID]bool{caller.UserID: true}
 		send := func(to uuid.UUID, kind, title string) {
@@ -299,7 +299,7 @@ func (s *Service) updateCommentHandler(w http.ResponseWriter, r *http.Request) e
 		"comment_count": s.commentCount(ctx, postID), "deleted": false,
 	})
 	name := actorName(caller.DisplayName)
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "feed.notify_mentions", func(ctx context.Context) {
 		for _, m := range added {
 			s.notifyUser(ctx, caller.UserID, notify.Notification{
 				UserID: m.userID, Kind: NotifyMention, Title: name + " mentioned you", Body: preview(req.Body),

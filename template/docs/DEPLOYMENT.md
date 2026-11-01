@@ -7,17 +7,17 @@ Three environments: `development` (dev-up), `staging`, `production`. Staging mir
 - One container from `backend/Dockerfile` (distroless, non-root). Any host that runs containers with health checks: Railway, Fly.io, Render, ECS.
 - Health check `GET /readyz` (database + storage). Liveness `GET /healthz`.
 - Migrations run on boot under an advisory lock; deploys are safe with several instances. Never edit an applied migration (the boot fails outside development if one changes).
-- More than one instance needs `REDIS_URL` (realtime fan-out). `RUN_WORKERS=true` on every instance is fine (jobs take advisory locks).
+- More than one instance needs `REDIS_URL` (realtime fan-out). `RUN_WORKERS=true` on every instance is fine: each job runs once per interval wherever it runs (a lease row per job in `job_leases`, which also shows its last run and error).
 - Behind a proxy or load balancer, set `TRUSTED_PROXY_HOPS` so rate limits key on the real client IP.
 - Required outside development (the boot refuses otherwise): see `ENV.md` rows marked `prod`/`always`.
 
 ## Database
 
-Managed Postgres 17 (Neon, Supabase, RDS, Railway). Daily backups with point-in-time recovery. `DB_MAX_CONNS` × instances below the server's connection limit; behind PgBouncer use transaction pooling (the migration and job locks are transaction-scoped and safe).
+Managed Postgres 17 (Neon, Supabase, RDS, Railway). Daily backups with point-in-time recovery. `DB_MAX_CONNS` × instances below the server's connection limit; behind PgBouncer use transaction pooling (the migration lock is transaction-scoped and job leases are plain rows, so both are safe).
 
 ## Object storage
 
-One bucket per environment. Bucket policy: public-read for purposes registered as public (`avatar/`, and features' public purposes), private for everything else. CORS on the bucket: `PUT` and `GET` from the web origin (presigned uploads). `S3_PUBLIC_URL` → a CDN in front of the bucket.
+One bucket per environment. Bucket policy: public-read for purposes registered as public (`avatar/`, and features' public purposes), private for everything else, no anonymous listing. `server -bucket-policy` (run with the environment's variables) prints exactly that policy for the installed features; re-apply it when a feature adds a public purpose. CORS on the bucket: `PUT` and `GET` from the web origin (presigned uploads; private downloads and inline PDF previews come from the bucket origin, so don't send `X-Frame-Options` from a CDN in front of it). `S3_PUBLIC_URL` → a CDN in front of the public prefixes. With `S3_ENDPOINT` set (R2, Tigris, MinIO) the SDK sends and checks CRC32 checksums only where S3 requires them. `STORAGE_TEST_S3_ENDPOINT=… go test ./internal/storage/` runs the storage package against a real bucket (`dev-up --s3` runs MinIO with this policy).
 
 ## Web (Next.js)
 

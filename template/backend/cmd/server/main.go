@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"scaffoldapp/backend/internal/api"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/config"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/mail"
@@ -26,7 +29,13 @@ import (
 )
 
 func main() {
+	bucketPolicy := flag.Bool("bucket-policy", false, "print the S3 bucket policy for this build's upload purposes and exit")
+	flag.Parse()
 	cfg := config.Load()
+	if *bucketPolicy {
+		printBucketPolicy(cfg)
+		return
+	}
 	setupLogging(cfg)
 	for _, w := range cfg.Warnings {
 		slog.Warn("config: " + w)
@@ -113,6 +122,28 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	// Requests are done; let the work they started (push, email, fan-out)
+	// finish before the broker and pool close.
+	if err := bg.Wait(shutdownCtx); err != nil {
+		slog.Warn("shutdown: background work cut off", "err", err)
+	}
+}
+
+// printBucketPolicy builds the modules (they register their upload purposes
+// in New) without a database or bucket, then prints the policy for
+// S3_BUCKET: public purposes public-read, everything else private
+// (docs/DEPLOYMENT.md). dev-up applies it to MinIO.
+func printBucketPolicy(cfg *config.Config) {
+	if cfg.S3Bucket == "" {
+		fmt.Fprintln(os.Stderr, "-bucket-policy: set S3_BUCKET")
+		os.Exit(2)
+	}
+	broker := realtime.NewMemory()
+	api.Build(&app.Deps{
+		Cfg: cfg, Broker: broker, Auth: auth.New(nil, nil, cfg.AdminEmails, false),
+		Mail: mail.Log{}, Notify: notify.Realtime{Broker: broker},
+	}, nil)
+	fmt.Println(string(storage.BucketPolicy(cfg.S3Bucket)))
 }
 
 // setupLogging writes JSON to stdout outside development (the host collects

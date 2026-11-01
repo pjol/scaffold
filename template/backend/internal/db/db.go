@@ -232,30 +232,3 @@ func IsUniqueViolation(err error, constraint ...string) bool {
 	}
 	return false
 }
-
-// TryAdvisoryLock runs fn only if this instance wins the advisory lock for
-// key — the pattern for singleton background jobs across N instances.
-// Returns false when another instance holds the lock.
-//
-// The lock is transaction-scoped (pg_try_advisory_xact_lock) on a transaction
-// held open while fn runs, then ended — so it is released with that
-// transaction and never outlives or strays from its server connection, which
-// keeps it correct behind PgBouncer transaction pooling. fn does
-// its own work on the pool; the lock transaction stays idle meanwhile, so the
-// database's idle_in_transaction_session_timeout (if set) must exceed the
-// longest worker run.
-func TryAdvisoryLock(ctx context.Context, pool *pgxpool.Pool, key int64, fn func(ctx context.Context) error) (bool, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(context.Background()) //nolint:errcheck // releases the lock; no-op after commit
-	var got bool
-	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&got); err != nil {
-		return false, err
-	}
-	if !got {
-		return false, nil
-	}
-	return true, fn(ctx)
-}

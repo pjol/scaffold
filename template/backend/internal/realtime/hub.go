@@ -280,7 +280,7 @@ func (h *Hub) control(ev Event) {
 	h.mu.RLock()
 	var targets []*conn
 	for c := range h.topics[m.Topic] {
-		if c.userID == m.UserID {
+		if m.UserID == uuid.Nil || c.userID == m.UserID { // no user id: every subscriber (RevokeTopic)
 			targets = append(targets, c)
 		}
 	}

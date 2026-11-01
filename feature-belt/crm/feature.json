@@ -1,0 +1,92 @@
+{
+  "name": "crm",
+  "title": "CRM",
+  "version": "1.1.1",
+  "summary": "Companies, contacts and deals per org with pipelines, a deals board, custom properties, tags, a timeline of activities and tasks with mentions and reminders, saved views, duplicates and merge, CSV import and export, and a dashboard; every record is shared through access.",
+  "requires": [
+    "access",
+    "orgs",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 1900,
+  "env": [],
+  "files": [
+    {
+      "src": "backend/crm",
+      "dst": "backend/internal/crm"
+    },
+    {
+      "src": "backend/feature_crm.go",
+      "dst": "backend/internal/api/feature_crm.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/crm"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/crm"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/crm"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./crm\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { crmHomeTile, crmNav } from \"./crm/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "crmNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "crmHomeTile,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { crmHome } from \"./crm/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "crmHome,"
+    }
+  ],
+  "stitch": [
+    "Decide the default record access for new orgs (crm_settings.record_access defaults to everyone_edits; admins change it in CRM settings) and whether members hold crm.import / crm.delete (defaults: owners and admins) in Settings → Permissions.",
+    "Place CRM in the navigation: it ships a main-nav entry and a Home tile on web and a Home entry on mobile. Move it to a mobile tab (expo-router Tabs.Screen for crm/index) if the product is CRM-first.",
+    "Link to records from other features with the app paths /crm/companies/<id>, /crm/contacts/<id> and /crm/deals/<id>; notifications and search results already use them.",
+    "Adjust the default pipeline (Qualified, Meeting booked, Proposal sent, Negotiation, Won, Lost) and the seeded custom properties to the product's sales motion; bootstrap creates the default pipeline once per org.",
+    "Review the copy of record access modes (CRM_RECORD_ACCESS in shared/format.ts) and the lifecycle stages if the team doesn't use HubSpot's terms.",
+    "If the agents feature is installed, its per-resource scopes apply to CRM records through access (crm.team and crm.workspace are their parents); nothing to wire. Without it, agents get the user's own level capped at edit."
+  ]
+}

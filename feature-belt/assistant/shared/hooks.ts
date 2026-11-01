@@ -123,6 +123,26 @@ export function useAssistantMessages(conversationId: string | null | undefined, 
   );
 }
 
+/**
+ * Approve or decline a change in a connected service that a running reply waits on. The
+ * call shows as running (approved) or declined at once; the stream confirms.
+ */
+export function useDecideAssistantToolCall(): UseMutationResult<void, ApiError, { conversationId: string; messageId: string; callId: string; approved: boolean }> {
+  const ep = useEndpoints(assistantEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { conversationId: string; messageId: string; callId: string; approved: boolean }>({
+    mutationFn: ({ conversationId, callId, approved }) => ep.decideToolCall(conversationId, callId, approved),
+    onSuccess: (_r, { conversationId, messageId, callId, approved }) => {
+      patchMessage(qc, conversationId, messageId, (m) => ({
+        ...m,
+        activity: m.activity.map((a) =>
+          a.call_id === callId && a.status === "awaiting_approval" ? { ...a, status: approved ? "running" : "denied", summary: approved ? "" : "Declined" } : a,
+        ),
+      }));
+    },
+  });
+}
+
 /** Daily totals across users (admin). */
 export function useAdminAssistantUsage(days = 30, options?: QueryOverrides<Page<AssistantDailyTotals>>): UseQueryResult<Page<AssistantDailyTotals>, ApiError> {
   const ep = useEndpoints(assistantEndpoints);
@@ -173,15 +193,42 @@ export function applyAssistantEvent(qc: QueryClient, conversationId: string, e: 
       patchMessage(qc, conversationId, d.message_id, (m) =>
         m.activity.some((a) => a.call_id === d.call_id)
           ? m
-          : { ...m, activity: [...m.activity, { call_id: d.call_id, name: d.name, status: "running", summary: "", input: d.input, started_at: d.started_at, duration_ms: 0 }] },
+          : {
+              ...m,
+              activity: [
+                ...m.activity,
+                { call_id: d.call_id, name: d.name, ...(d.source ? { source: d.source } : {}), status: "running", summary: "", input: d.input, started_at: d.started_at, duration_ms: 0 },
+              ],
+            },
       );
+      return;
+    }
+    case "tool_approval": {
+      const d = e.data;
+      patchMessage(qc, conversationId, d.message_id, (m) => ({
+        ...m,
+        activity: m.activity.map((a) => (a.call_id === d.call_id ? { ...a, source: d.source, status: "awaiting_approval", input: d.input, approval_expires_at: d.expires_at } : a)),
+      }));
+      return;
+    }
+    case "tool_decision": {
+      const d = e.data;
+      if (!d.approved) return; // a declined call ends with tool_end (denied)
+      patchMessage(qc, conversationId, d.message_id, (m) => ({
+        ...m,
+        activity: m.activity.map((a) => (a.call_id === d.call_id && a.status === "awaiting_approval" ? { ...a, status: "running" } : a)),
+      }));
       return;
     }
     case "tool_end": {
       const d = e.data;
       patchMessage(qc, conversationId, d.message_id, (m) => ({
         ...m,
-        activity: m.activity.map((a) => (a.call_id === d.call_id ? { ...a, name: d.name, status: d.status, summary: d.summary, duration_ms: d.duration_ms } : a)),
+        activity: m.activity.map((a) =>
+          a.call_id === d.call_id
+            ? { ...a, name: d.name, status: d.status, summary: d.summary, duration_ms: d.duration_ms, ...(d.suggestion_id ? { suggestion_id: d.suggestion_id } : {}) }
+            : a,
+        ),
       }));
       return;
     }

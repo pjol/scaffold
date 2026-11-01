@@ -1,11 +1,11 @@
 "use client";
 
-import { useAdminOrg, useAdminOrgs } from "@scaffoldapp/shared";
-import { Badge, Card, EmptyState, ErrorState, ListRow, Skeleton, SkeletonGroup } from "@scaffoldapp/ui-web";
-import { Building2, ChevronLeft, SearchX } from "lucide-react";
+import { errorMessage, orgsNoun, orgsNounTitle, useAdminOrg, useAdminOrgs, useAdminReleaseOrgDomain, useMe, type AdminOrgDetail, type AdminOrgDomain } from "@scaffoldapp/shared";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, ListRow, Skeleton, SkeletonGroup, toast } from "@scaffoldapp/ui-web";
+import { AtSign, Building2, ChevronLeft, SearchX } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { SearchInput } from "@/components/admin/SearchInput";
 import { Table, TableSkeleton, TD, TH, THead, TR } from "@/components/admin/Table";
 import { AppAvatar } from "@/components/shell/AppAvatar";
@@ -13,7 +13,7 @@ import { LoadMore } from "@/components/shell/LoadMore";
 import { PageHeader, Section } from "@/components/shell/PageHeader";
 import { formatDate } from "@/lib/format";
 import { useUrlState } from "@/lib/url-state";
-import { ROLE_LABEL, ROLE_TONE } from "./labels";
+import { DOMAIN_POLICY_LABEL, ROLE_LABEL, ROLE_TONE } from "./labels";
 
 /** Admin → Organizations: search by name, URL name or id; newest first. */
 export function AdminOrgsScreen() {
@@ -25,21 +25,21 @@ export function AdminOrgsScreen() {
   const filtered = !!q || !!memberId;
   return (
     <div className="flex flex-col gap-section">
-      <PageHeader title="Organizations" />
+      <PageHeader title={orgsNounTitle("many")} />
       <div className="flex flex-col gap-4">
-        <SearchInput value={q} onSearch={setQ} placeholder="Name, URL name or ID" label="Search organizations" className="sm:max-w-sm" />
+        <SearchInput value={q} onSearch={setQ} placeholder="Name, URL name, ID or domain" label={`Search ${orgsNoun("many")}`} className="sm:max-w-sm" />
         <Card padding="none">
           {orgs.isPending ? (
             <TableSkeleton rows={6} cols={3} />
           ) : orgs.isError ? (
-            <ErrorState compact title="Couldn't load organizations" info={orgs.error.message} onRetry={() => void orgs.refetch()} retrying={orgs.isFetching} />
+            <ErrorState compact title={`Couldn't load ${orgsNoun("many")}`} info={orgs.error.message} onRetry={() => void orgs.refetch()} retrying={orgs.isFetching} />
           ) : rows.length === 0 ? (
-            <EmptyState compact icon={filtered ? <SearchX /> : <Building2 />} title={filtered ? "No matching organizations" : "No organizations yet"} />
+            <EmptyState compact icon={filtered ? <SearchX /> : <Building2 />} title={filtered ? `No matching ${orgsNoun("many")}` : `No ${orgsNoun("many")} yet`} />
           ) : (
             <>
-              <Table label="Organizations">
+              <Table label={orgsNounTitle("many")}>
                 <THead>
-                  <TH>Organization</TH>
+                  <TH>{orgsNounTitle()}</TH>
                   <TH className="hidden sm:table-cell">URL name</TH>
                   <TH align="right">Members</TH>
                   <TH className="hidden md:table-cell" align="right" info="Pending email invites that haven't expired.">
@@ -94,17 +94,70 @@ function BackToOrgs() {
   return (
     <Link href="/admin/orgs" className="flex min-h-control items-center gap-1 self-start rounded-sm pr-2 type-label font-semibold text-fg-muted hover:text-fg pointer-coarse:min-h-tap">
       <ChevronLeft className="size-4" aria-hidden />
-      Organizations
+      {orgsNounTitle("many")}
     </Link>
   );
 }
 
-/** Admin → organization: facts plus its owners and admins (links to their user pages). */
+/** Claimed email domains; admins can release one (a dispute over who owns it). */
+function AdminDomains({ org }: { org: AdminOrgDetail }) {
+  const me = useMe();
+  const release = useAdminReleaseOrgDomain(org.id);
+  const [releasing, setReleasing] = useState<AdminOrgDomain | null>(null);
+  const canRelease = me.data?.admin_role === "admin";
+  return (
+    <Section title="Email domains" info="People whose verified email is on a verified domain can join without an invite.">
+      <Card padding="none" className="p-1">
+        {org.domains.length === 0 ? (
+          <EmptyState compact icon={<AtSign />} title="No domains" />
+        ) : (
+          <ul className="flex flex-col">
+            {org.domains.map((d) => (
+              <li key={d.id}>
+                <ListRow
+                  title={d.domain}
+                  info={d.verified_at ? `Verified by ${d.verify_method === "dns" ? "DNS record" : "an admin's email"} on ${formatDate(d.verified_at)}. ${DOMAIN_POLICY_LABEL[d.policy]}.` : `Added ${formatDate(d.created_at)}, not verified.`}
+                  trailing={
+                    <span className="flex items-center gap-2">
+                      <Badge tone={d.verified_at ? "success" : "warning"}>{d.verified_at ? "Verified" : "Not verified"}</Badge>
+                      {canRelease && (
+                        <Button variant="danger-ghost" size="sm" onClick={() => setReleasing(d)}>
+                          Release
+                        </Button>
+                      )}
+                    </span>
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+      <ConfirmDialog
+        open={releasing !== null}
+        onOpenChange={(o) => !o && setReleasing(null)}
+        title={releasing ? `Release ${releasing.domain} from ${org.name}?` : ""}
+        tone="danger"
+        confirmLabel="Release"
+        errorText={(e) => errorMessage(e, "Couldn't release the domain. Try again.")}
+        onConfirm={async () => {
+          if (!releasing) return;
+          await release.mutateAsync(releasing.id);
+          toast.success(`${releasing.domain} released`);
+        }}
+      >
+        <p>Its people can no longer join through it, and another {orgsNoun()} can claim it. Members stay. This is recorded in the audit log.</p>
+      </ConfirmDialog>
+    </Section>
+  );
+}
+
+/** Admin → organization: facts, its owners and admins (links to their user pages), and its email domains. */
 export function AdminOrgScreen({ id }: { id: string }) {
   const org = useAdminOrg(id);
   if (org.isPending) {
     return (
-      <SkeletonGroup label="Loading organization" className="flex flex-col gap-section">
+      <SkeletonGroup label={`Loading ${orgsNoun()}`} className="flex flex-col gap-section">
         <Skeleton className="h-10 w-32" />
         <Skeleton className="h-14 w-72" />
         <Skeleton className="h-40" />
@@ -117,9 +170,9 @@ export function AdminOrgScreen({ id }: { id: string }) {
         <BackToOrgs />
         <Card padding="compact">
           {org.error.status === 404 ? (
-            <EmptyState compact icon={<Building2 />} title="Organization not found" />
+            <EmptyState compact icon={<Building2 />} title={`${orgsNounTitle()} not found`} />
           ) : (
-            <ErrorState compact title="Couldn't load this organization" info={org.error.message} onRetry={() => void org.refetch()} retrying={org.isFetching} />
+            <ErrorState compact title={`Couldn't load this ${orgsNoun()}`} info={org.error.message} onRetry={() => void org.refetch()} retrying={org.isFetching} />
           )}
         </Card>
       </div>
@@ -169,6 +222,7 @@ export function AdminOrgScreen({ id }: { id: string }) {
             )}
           </Card>
         </Section>
+        <AdminDomains org={o} />
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"scaffoldapp/backend/internal/app"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/config"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/mail"
@@ -160,15 +161,35 @@ func (s *Sender) deliver(ctx context.Context, n notify.Notification, opts delive
 			slog.WarnContext(ctx, "notifications: count devices", "err", err)
 		}
 		out.Devices = count
-		if count > 0 {
-			bg := context.WithoutCancel(ctx)
-			go s.push(bg, n.UserID, item, unread)
+	}
+	pushOn := push && out.Devices > 0
+	if !pushOn && !out.Email {
+		return out, nil
+	}
+	// Push, email and delivery filters (AddDeliveryFilter) run in the
+	// background (bg.Go), so Send never waits on them and shutdown waits for
+	// them. Staff test sends skip filters, as they skip preferences.
+	sendPush := func(ctx context.Context) error { s.push(ctx, n.UserID, item, unread); return nil }
+	sendEmail := func(ctx context.Context) error { s.email(ctx, email, kind, item); return nil }
+	if opts.forcePush || !hasFilters() {
+		if pushOn {
+			bg.Go(ctx, "notifications.push", sendPush)
 		}
+		if out.Email {
+			bg.Go(ctx, "notifications.email", sendEmail)
+		}
+		return out, nil
 	}
-	if out.Email {
-		bg := context.WithoutCancel(ctx)
-		go s.email(bg, email, kind, item)
-	}
+	bg.Go(ctx, "notifications.deliver", func(ctx context.Context) error {
+		pushOn, mailOn := applyFilters(ctx, n, pushOn, out.Email)
+		if mailOn {
+			bg.Go(ctx, "notifications.email", sendEmail)
+		}
+		if pushOn {
+			return sendPush(ctx)
+		}
+		return nil
+	})
 	return out, nil
 }
 

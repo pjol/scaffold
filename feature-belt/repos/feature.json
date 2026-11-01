@@ -1,0 +1,164 @@
+{
+  "name": "repos",
+  "title": "Repositories",
+  "version": "1.0.3",
+  "summary": "Git repositories in the drive: clone, pull and push over HTTPS with personal git credentials, browse and edit code in the app, branches with protection, and pull requests with line comments, reviews and merges; agents work through branch \u2192 commit \u2192 pull request.",
+  "requires": [
+    "files",
+    "access",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 2400,
+  "env": [
+    {
+      "name": "REPOS_DIR",
+      "tier": "backend",
+      "group": "repos",
+      "required": "prod",
+      "default": ".data/repos",
+      "dev": ".data/repos",
+      "doc": "Directory holding the bare git repositories. Production: a persistent volume mounted on the one instance that serves /git and repository writes."
+    },
+    {
+      "name": "REPOS_GIT_BIN",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "git",
+      "doc": "The git executable (2.38 or newer). Checked at boot; too old or missing fails the boot outside development."
+    },
+    {
+      "name": "REPOS_MAX_PUSH_BYTES",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "104857600",
+      "doc": "Largest push (request body and pack) in bytes; also the largest folder turned into a repository."
+    },
+    {
+      "name": "REPOS_MAX_EDIT_BYTES",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "1048576",
+      "doc": "Largest file shown and edited in the browser, in bytes (64 KB to 16 MB)."
+    },
+    {
+      "name": "REPOS_MAX_COMMIT_BYTES",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "26214400",
+      "doc": "Largest in-browser commit (edits and uploads together), in bytes."
+    },
+    {
+      "name": "REPOS_GIT_TIMEOUT",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "30s",
+      "doc": "Time limit for each git process the API runs (reads, commits, merges)."
+    },
+    {
+      "name": "REPOS_HTTP_TIMEOUT",
+      "tier": "backend",
+      "group": "repos",
+      "required": "optional",
+      "default": "30m",
+      "doc": "Time limit for one clone, fetch or push over HTTPS."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/repos",
+      "dst": "backend/internal/repos"
+    },
+    {
+      "src": "backend/feature_repos.go",
+      "dst": "backend/internal/api/feature_repos.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/repos"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/repos"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/repos"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./repos\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { reposCredentialsSettings, reposNav } from \"./repos/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "reposNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "reposCredentialsSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { reposCredentialsInfo, reposHomeEntry } from \"./repos/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "reposHomeEntry,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "reposCredentialsInfo,"
+    }
+  ],
+  "deps": {
+    "web": {
+      "highlight.js": "^11.11.1",
+      "marked": "^15.0.12"
+    },
+    "mobile": {
+      "highlight.js": "^11.11.1",
+      "marked": "^15.0.12"
+    },
+    "shared": {
+      "highlight.js": "^11.11.1",
+      "marked": "^15.0.12"
+    }
+  },
+  "stitch": [
+    "Mount REPOS_DIR on a persistent volume and run one instance for /git and repository writes (repositories live on that disk); install git 2.38+ in the image."
+  ]
+}

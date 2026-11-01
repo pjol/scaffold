@@ -524,7 +524,7 @@ func (s *Service) deleteMessage(w http.ResponseWriter, r *http.Request) error {
 	if msg, err := s.message(ctx, s.d.Pool, msgID, false); err == nil {
 		s.publishUpdated(ctx, msg, true)
 	}
-	s.kickObjectCleanup()
+	s.kickObjectCleanup(ctx)
 	httpx.NoContent(w)
 	return nil
 }
@@ -729,15 +729,15 @@ func (s *Service) attachmentURL(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var key string
+	var key, contentType, fileName string
 	var sender uuid.UUID
 	err = s.d.Pool.QueryRow(ctx, `
-		SELECT a.storage_key, m.sender_id
+		SELECT a.storage_key, a.content_type, a.file_name, m.sender_id
 		FROM chat_attachments a
 		JOIN chat_messages m ON m.id = a.message_id
 		JOIN chat_members mb ON mb.conversation_id = m.conversation_id AND mb.user_id = $2 AND mb.left_at IS NULL
 		WHERE a.id = $1 AND m.deleted_at IS NULL AND (mb.cleared_at IS NULL OR m.created_at > mb.cleared_at)`, id, me).
-		Scan(&key, &sender)
+		Scan(&key, &contentType, &fileName, &sender)
 	notFound := httpx.NotFound("File not found.")
 	if db.IsNoRows(err) {
 		return notFound
@@ -751,7 +751,7 @@ func (s *Service) attachmentURL(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
-	u, err := s.d.Storage.PresignGet(ctx, key, attachmentURLTTL)
+	u, err := s.signAttachment(ctx, key, contentType, fileName, attachmentURLTTL)
 	if err != nil {
 		return err
 	}

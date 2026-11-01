@@ -33,6 +33,8 @@
 
 Realtime on `user:<id>`: `notification` (inbox item + `user_id` + `unread_count`, a superset of core's `InAppNotification`) and `notifications.unread` `{unread_count}` after every change. Push `data` = the notification's `data` + `notification_id`, `kind`, `link`; `badge` = unread count.
 
+Agent tools: `notifications_list_inbox`, `notifications_get_preferences` (read) and `notifications_mark_read` (write, previewed with the titles it marks). The inbox quotes every feature, so an AI agent reading it for the person (`auth.WithAgent`) sees only notifications about what their agent scope lets agents read, counts only those, and marks only those read.
+
 Shared (`@scaffoldapp/shared`): `notificationsEndpoints`, `notificationKeys`, `useInbox(unreadOnly)`, `useUnreadNotificationCount`, `useMarkNotificationsRead` (optimistic), `useNotificationPreferences`, `useUpdateNotificationPreference` (optimistic), `groupPreferences`, `groupLabel`, `useRegisterDevice`, `useUnregisterDevice`, `useNotificationStats`, `useSendTestNotification`. Realtime handlers update the inbox and count caches; reconnect refetches.
 
 ## Screens
@@ -71,8 +73,19 @@ Push modes: `expo` outside development or with a token; in development without o
 
 ## Extending
 
+- Delivery filters hold back push and email without this feature importing yours (Do Not Disturb, muted channels). The inbox row and realtime event always go out; filters only remove channels the kind and preferences turned on. They run in the background after `Send` returns, 2 s each; an error, panic or timeout is logged and the preferences stand. Staff test sends skip them. Register from your `New` (or `feature_<name>.go` if you don't require notifications); the same name replaces:
+
+```go
+notifications.AddDeliveryFilter("presence.dnd", func(ctx context.Context, n notify.Notification) (notifications.Hold, error) {
+	on, err := presence.IsDND(ctx, d.Pool, n.UserID)
+	return notifications.Hold{Push: on, Email: on}, err
+})
+```
+
+  Keep filters to an indexed lookup; read ids from `n.Data` (`channel_id`). Held pushes are not sent later; the inbox has them.
 - `Sender` is the `notify.Sender`; add channels in `sender.go` (web push for `platform = web`; the Expo sender skips web tokens).
 - Kinds only through `RegisterKind`; put ids in `data`, not new columns. Don't call Expo from other modules.
+- Agent scope: give a kind `AgentTarget` naming the item its notifications are about, `notifications.DataTarget("channels.channel", "channel_id")`, so an agent sees them only while that item is readable at the person's agent scope (item → ancestors → feature → default). Without it, data `{"kind", "id"}` is used when present (access shares), else the kind's feature (its prefix) decides as a whole; a kind about another feature's item also needs its own feature readable.
 - Web toasts: `web/src/features/notifications/toasts.ts`; mobile lifecycle: `mobile/src/features/notifications/lifecycle.ts`.
 
 ## Provenance
@@ -86,3 +99,6 @@ Push modes: `expo` outside development or with a token; in development without o
 
 - 1.0.0: shared hooks, web and mobile screens, admin page, retention validation.
 - 1.0.1: web top-bar bell (`headerActions`) replaces the nav entry; toasts and the mobile push lifecycle move to `sessionMounts`; `expo-notifications` plugin wired through `scaffold:plugins`.
+- 1.1.0: `AddDeliveryFilter` (`DeliveryFilter`, `Hold`): other features hold back push and email per notification; fails open.
+- 1.1.1: agent scope for the inbox tools: an AI agent sees, counts and marks read only notifications about what the person lets agents read (`Kind.AgentTarget`, `DataTarget`, else data `{kind, id}`, else the kind's feature); before, the inbox quoted messages and titles from features and items set to Off. `notifications_mark_read` has a preview.
+- 1.1.2: push, email and delivery filters run through core `bg.Go` instead of bare goroutines, so server shutdown and `cmd/seed` wait for them (needs the template's `internal/bg`).

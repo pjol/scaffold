@@ -37,6 +37,14 @@ type Scope interface {
 	EachMember(ctx context.Context, audience string, fn func(ids []uuid.UUID) error) error
 }
 
+// AudienceNamer is optional on a Scope: it names an audience for people
+// (global search shows a post's context as "<name> · Feed") and says which
+// org it belongs to (uuid.Nil for none), so search scoped to an org keeps
+// only that org's posts.
+type AudienceNamer interface {
+	AudienceName(ctx context.Context, audience string) (name string, orgID uuid.UUID, err error)
+}
+
 var (
 	scopeMu      sync.Mutex
 	scopeFactory func(d *app.Deps) Scope

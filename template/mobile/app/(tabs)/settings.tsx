@@ -4,12 +4,23 @@ import { router, useScrollToTop } from "expo-router";
 import { FileText, FlaskConical, LifeBuoy, LogOut, Palette, ShieldCheck, UserCog } from "lucide-react-native";
 import { useRef, useState } from "react";
 import { View, type ScrollView } from "react-native";
-import { settingsSections, type SettingsItem } from "@/features/registry";
+import { settingsSections, type SettingsGroup, type SettingsItem, type SettingsSection } from "@/features/registry";
 import { usePreferences } from "@/lib/preferences";
 import { useSignOut } from "@/lib/session";
 import { appVersion, buildNumber } from "@/lib/version";
 
 const MODE_LABEL = { system: "System", light: "Light", dark: "Dark" } as const;
+
+/** Settings headings in order (same ids and labels as web). "You" also holds Profile, Appearance and Account. */
+const GROUPS: readonly { id: SettingsGroup; title: string }[] = [
+  { id: "you", title: "You" },
+  { id: "workspace", title: "Workspace" },
+  { id: "agents", title: "AI agents" },
+  { id: "developer", title: "Developer" },
+];
+
+/** Whether any registry section names a group: then Settings renders headed groups. */
+const GROUPED = settingsSections.some((section) => section.group);
 
 function ItemRow({ item }: { item: SettingsItem }) {
   const theme = useTheme();
@@ -26,7 +37,17 @@ function ItemRow({ item }: { item: SettingsItem }) {
   );
 }
 
-/** Settings: Profile · Appearance · feature sections · Account · Legal · Support · Sign out. No admin on mobile. */
+/** The rows of every section in `group`, in registry order. */
+function itemsIn(sections: readonly SettingsSection[], group: SettingsGroup): SettingsItem[] {
+  return sections.filter((section) => section.group === group).flatMap((section) => section.items);
+}
+
+/**
+ * Settings: Profile · Appearance · feature sections · Account · Legal · Support · Sign out.
+ * Once registry sections use groups: You (Profile, Appearance, its sections, Account) ·
+ * Workspace · AI agents · Developer · sections without a group (untitled ones under
+ * "Other") · Legal · Support · Sign out. No admin on mobile.
+ */
 export default function SettingsScreen() {
   const theme = useTheme();
   const c = theme.colors;
@@ -44,6 +65,13 @@ export default function SettingsScreen() {
   const sections = settingsSections.map((section) => ({ ...section, items: section.items.filter((i) => !i.staffOnly || isStaff) })).filter((section) => section.items.length > 0);
   const name = me.data?.display_name || me.data?.email || "Profile";
   const build = buildNumber();
+  const ungrouped = sections.filter((section) => !section.group);
+  const other = ungrouped.filter((section) => !section.title).flatMap((section) => section.items);
+  const profileRow = <ListRow key="profile" title={name} leading={<Avatar name={name} src={me.data?.avatar_url ?? null} size="md" />} accessibilityHint="Opens your profile" onPress={() => router.push("/settings/profile")} />;
+  const appearanceRow = (
+    <ListRow key="appearance" title="Appearance" leading={icon(Palette)} trailing={<Text tone="muted">{MODE_LABEL[prefs.appearance]}</Text>} onPress={() => router.push("/settings/appearance")} />
+  );
+  const accountRow = <ListRow key="account" title="Account" leading={icon(UserCog)} info="Download your data or delete your account." onPress={() => router.push("/settings/account")} />;
 
   return (
     <Screen ref={ref} edges={["top"]} gap={s[6]}>
@@ -57,22 +85,59 @@ export default function SettingsScreen() {
         {isStaff ? <Banner tone="info" title="Admin tools are in the web app." /> : null}
       </View>
 
-      <ListGroup>
-        <ListRow title={name} leading={<Avatar name={name} src={me.data?.avatar_url ?? null} size="md" />} accessibilityHint="Opens your profile" onPress={() => router.push("/settings/profile")} />
-        <ListRow title="Appearance" leading={icon(Palette)} trailing={<Text tone="muted">{MODE_LABEL[prefs.appearance]}</Text>} onPress={() => router.push("/settings/appearance")} />
-      </ListGroup>
-
-      {sections.map((section) => (
-        <ListGroup key={section.id} {...(section.title ? { title: section.title } : {})}>
-          {section.items.map((item) => (
-            <ItemRow key={item.id} item={item} />
+      {GROUPED ? (
+        <>
+          <ListGroup title="You">
+            {profileRow}
+            {appearanceRow}
+            {itemsIn(sections, "you").map((item) => (
+              <ItemRow key={item.id} item={item} />
+            ))}
+            {accountRow}
+          </ListGroup>
+          {GROUPS.slice(1).map(({ id, title }) => {
+            const items = itemsIn(sections, id);
+            return items.length > 0 ? (
+              <ListGroup key={id} title={title}>
+                {items.map((item) => (
+                  <ItemRow key={item.id} item={item} />
+                ))}
+              </ListGroup>
+            ) : null;
+          })}
+          {ungrouped
+            .filter((section) => section.title)
+            .map((section) => (
+              <ListGroup key={section.id} {...(section.title ? { title: section.title } : {})}>
+                {section.items.map((item) => (
+                  <ItemRow key={item.id} item={item} />
+                ))}
+              </ListGroup>
+            ))}
+          {other.length > 0 ? (
+            <ListGroup title="Other">
+              {other.map((item) => (
+                <ItemRow key={item.id} item={item} />
+              ))}
+            </ListGroup>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <ListGroup>
+            {profileRow}
+            {appearanceRow}
+          </ListGroup>
+          {sections.map((section) => (
+            <ListGroup key={section.id} {...(section.title ? { title: section.title } : {})}>
+              {section.items.map((item) => (
+                <ItemRow key={item.id} item={item} />
+              ))}
+            </ListGroup>
           ))}
-        </ListGroup>
-      ))}
-
-      <ListGroup>
-        <ListRow title="Account" leading={icon(UserCog)} info="Download your data or delete your account." onPress={() => router.push("/settings/account")} />
-      </ListGroup>
+          <ListGroup>{accountRow}</ListGroup>
+        </>
+      )}
 
       <ListGroup title="Legal">
         <ListRow title="Terms of Service" leading={icon(FileText)} onPress={() => legal("terms")} />

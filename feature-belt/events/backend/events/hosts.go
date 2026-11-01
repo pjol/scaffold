@@ -102,7 +102,7 @@ func (s *Service) addCoHostHandler(w http.ResponseWriter, r *http.Request) error
 	}
 	if added {
 		name := displayName(caller)
-		s.afterCommit(ctx, func(ctx context.Context) {
+		s.afterCommit(ctx, "events.notify_cohost", func(ctx context.Context) {
 			s.notifyAll(ctx, caller.UserID, []uuid.UUID{req.UserID}, notify.Notification{
 				Kind: NotifyInvite, Title: name + " made you a co-host", Body: title,
 				Link: eventLink(eid), Data: map[string]any{"event_id": eid},
@@ -230,7 +230,7 @@ func (s *Service) inviteHandler(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	name := displayName(caller)
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "events.notify_invited", func(ctx context.Context) {
 		s.notifyAll(ctx, caller.UserID, invited, notify.Notification{
 			Kind: NotifyInvite, Title: name + " invited you", Body: title,
 			Link: eventLink(eid), Data: map[string]any{"event_id": eid},
@@ -289,7 +289,7 @@ func (s *Service) uninviteHandler(w http.ResponseWriter, r *http.Request) error 
 	}
 	_ = realtime.Revoke(ctx, s.d.Broker, uid, "events:"+eid.String())
 	s.publishCounts(ctx, eid)
-	s.afterCommit(ctx, func(ctx context.Context) { s.notifyPromoted(ctx, eid, ev.title, promoted) })
+	s.afterCommit(ctx, "events.notify_promoted", func(ctx context.Context) { s.notifyPromoted(ctx, eid, ev.title, promoted) })
 	httpx.NoContent(w)
 	return nil
 }

@@ -212,7 +212,7 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 			rows.Close()
 			return nil, err
 		}
-		if a.URL, err = s.d.Storage.PresignGet(ctx, key, 24*time.Hour); err != nil {
+		if a.URL, err = s.signAttachment(ctx, key, a.ContentType, a.FileName, 24*time.Hour); err != nil {
 			rows.Close()
 			return nil, err
 		}

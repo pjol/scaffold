@@ -1,6 +1,6 @@
 "use client";
 
-import { useActiveOrg } from "@scaffoldapp/shared";
+import { orgsNounTitle, useActiveOrg } from "@scaffoldapp/shared";
 import { MenuItem, MenuLabel, MenuSeparator } from "@scaffoldapp/ui-web";
 import { Building2, Check } from "lucide-react";
 import Link from "next/link";
@@ -17,7 +17,7 @@ export function OrgMenuItems() {
       {orgs.length > 0 && (
         <>
           <MenuLabel>
-            <span className="type-caption font-semibold text-fg-muted">Organization</span>
+            <span className="type-caption font-semibold text-fg-muted">{orgsNounTitle()}</span>
           </MenuLabel>
           {orgs.map((o) => (
             <MenuItem key={o.id} icon={o.id === org?.id ? <Check aria-hidden /> : <span className="block size-4" aria-hidden />} onSelect={() => setActive(o.id)}>
@@ -29,7 +29,7 @@ export function OrgMenuItems() {
       <MenuItem asChild>
         <Link href={org ? `/settings/orgs/${org.id}` : "/settings/orgs"}>
           <Building2 aria-hidden />
-          {orgs.length > 0 ? "Organization settings" : "Organizations"}
+          {orgs.length > 0 ? `${orgsNounTitle()} settings` : orgsNounTitle("many")}
         </Link>
       </MenuItem>
       <MenuSeparator />

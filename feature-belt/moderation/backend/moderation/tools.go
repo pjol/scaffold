@@ -11,9 +11,10 @@ import (
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Tools exposes the caller's blocks and reports, blocking (a protective,
-// reversible write) and, for staff, the queue summary. Unblocking and
-// filing reports stay in the app, where a person confirms them.
+// Tools exposes the caller's blocks and reports and, for staff, the queue
+// summary, all read-only. Blocking, unblocking and filing reports stay in
+// the app, where the person decides: a block changes who may reach them and
+// whose content they see, which AI agents never change.
 func (s *Service) Tools() []app.Tool {
 	limitSchema := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}`)
 	return []app.Tool{
@@ -33,23 +34,6 @@ func (s *Service) Tools() []app.Tool {
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				return myReports(ctx, s.d.Pool, caller.UserID, nil, uuid.Nil, toolLimit(input))
-			},
-		},
-		{
-			Name:        "moderation_block_user",
-			Description: "Block a person for the user: hides their content and stops messages in both directions. Unblocking is done in the app.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"user_id":{"type":"string","format":"uuid"}},"required":["user_id"],"additionalProperties":false}`),
-			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
-				var in struct {
-					UserID uuid.UUID `json:"user_id"`
-				}
-				if err := json.Unmarshal(input, &in); err != nil || in.UserID == uuid.Nil {
-					return nil, httpx.BadRequest("user_id must be a user id.")
-				}
-				if in.UserID == caller.UserID {
-					return nil, httpx.BadRequest("You can't block yourself.")
-				}
-				return Block(ctx, s.d.Pool, caller.UserID, in.UserID)
 			},
 		},
 		{

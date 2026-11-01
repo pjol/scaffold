@@ -1,7 +1,7 @@
 {
   "name": "feed",
   "title": "Feed",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "summary": "People post text, photos, videos, documents and links to a shared feed, comment and reply, react, mention each other, and see staff announcements pinned on top.",
   "requires": [
     "notifications",

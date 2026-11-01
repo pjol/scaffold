@@ -50,7 +50,7 @@ Realtime: topic `events:<event id>`, allowed for anyone who can see the event. `
 
 Notifications: `events.invite`, `events.reminder`, `events.cancelled`, `events.updated`, `events.promoted` (push on), `events.rsvp` (to the creator, push off).
 
-Agent tools: `events_list_upcoming`, `events_get` (read-only).
+Agent tools: `events_list_upcoming`, `events_get` (read-only; `events_get` targets the event, and both leave out events the caller's agent scope hides). Notification kinds name the event (`AgentTarget`) for the inbox's agent scope.
 
 ## Screens
 
@@ -102,6 +102,9 @@ Verified: backend build/vet and curl of every route; web flows in Chromium at 37
 
 ## Changes
 
+- 1.0.4: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: `afterCommit` takes a task name (`events.notify_updated`, `events.delete_cover`, …) and runs on `bg.Go`.
+- 1.0.3: agent scope in the tools: `events_get` has a `Target` (the event) and `events_list_upcoming` drops events set to Off, which both returned before; search checks a page in one query; notification kinds carry `AgentTarget` (needs notifications ≥ 1.1.1).
+- 1.0.2: Global search: `app.SearchProvider` (kind `events.event`) over events visible under `GET /events` rules (title, details, location; past and upcoming, upcoming first); agent calls also need the event readable at the caller's agent scope.
 - 1.0.1: mobile invite links use `EXPO_PUBLIC_WEB_URL` when set, else the app link.
 - 1.0.0: web and mobile UI, shared client and time-zone helpers, feed path redacted in logs, `config.Problem` for bad offsets, public `/e/<id>` page.
 - 0.1.0: backend.

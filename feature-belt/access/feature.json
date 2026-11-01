@@ -1,0 +1,102 @@
+{
+  "name": "access",
+  "title": "Access and teams",
+  "version": "1.3.1",
+  "summary": "Teams inside an org, one sharing model every content feature uses (people, teams, the whole org, inherited from parents, public links), and org permissions admins assign to roles, teams and people.",
+  "requires": [
+    "orgs",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 700,
+  "env": [],
+  "files": [
+    {
+      "src": "backend/access",
+      "dst": "backend/internal/access"
+    },
+    {
+      "src": "backend/feature_access.go",
+      "dst": "backend/internal/api/feature_access.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/access"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/access"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/access"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./access\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { accessPermissionsSettings, accessShareMenu, accessTeamsSettings } from \"./access/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "accessTeamsSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "accessPermissionsSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { accessShareMenu, accessTeamsSettings } from \"./access/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "accessTeamsSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "resource-menu",
+      "insert": "accessShareMenu,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "resource-menu",
+      "insert": "accessShareMenu,"
+    }
+  ],
+  "stitch": [
+    "Register each shareable kind in the owning feature's New with access.RegisterKind (Name, Label, Title, Link; PublicPath to allow public links). Decide AdminsManage: default false keeps private items private from org admins; CRM-style shared data usually wants true. Set Permission when an org permission opens the feature at all (crm.access) and LinkPermission when publishing needs its own permission (docs.publish).",
+    "Write the registry row in the same transaction as the feature's row: access.CreateResource (Parent for nested items), access.MoveResource (then access.Changed after commit), access.DeleteResource. Grants, owner changes and public links the feature makes itself (a creator's grant, a handover, a seed) go through access.AddGrant / SetGrant / RemoveGrant, access.SetOwnerTree / SetOwner and access.CreateLink; never write access tables.",
+    "Guard every client-supplied id with access.Require(ctx, q, userID, kind, id, access.View|Comment|Edit|Manage) and filter lists in SQL with access_level($1, kind, id, $2) >= 1 (bounded lists) or JOIN access_visible($1, kind, $2) (everything I can see, search), passing $2 = access.ViaAgent(ctx).",
+    "Put secondary actions in ResourceMenu (web and mobile src/components/resource) with kind and id so Share… appears; use ShareButton/ShareDialog (web) or ShareSheet (mobile) where sharing is a primary action; gate controls with useAccessResource(kind, id).data?.my_level.",
+    "Kinds with public links ship a public page at their PublicPath that resolves the token with access.ResolveLink / access.LinkLevel, and add the path to web/proxy.ts public paths and mobile publicRoutes.",
+    "Register the org permissions the product needs (access.RegisterPermission), guard {orgID} routes with access.RequirePermission, and gate UI with useAccessPermission(orgId, key).",
+    "Register an access.OnChange hook that revokes the feature's realtime topics (realtime.Revoke per user, realtime.RevokeTopic when users is nil)."
+  ]
+}

@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
@@ -48,12 +51,14 @@ type turn struct {
 	createdAt          time.Time
 	cancel             context.CancelCauseFunc
 
-	mu       sync.Mutex
-	text     strings.Builder
-	activity []Activity
-	subs     map[chan sseEvent]struct{}
-	closed   bool
-	done     chan struct{}
+	mu        sync.Mutex
+	text      strings.Builder
+	activity  []Activity
+	subs      map[chan sseEvent]struct{}
+	closed    bool
+	done      chan struct{}
+	decisions map[string]chan bool // calls waiting for the user's approval
+	flushNow  chan struct{}        // save progress now (an approval is waiting)
 }
 
 type turnSet struct {
@@ -115,14 +120,41 @@ func (t *turn) emit(name string, data any) {
 	case deltaEvent:
 		t.text.WriteString(d.Text)
 	case toolStartEvent:
-		t.activity = append(t.activity, Activity{CallID: d.CallID, Name: d.Name, Status: "running", Input: d.Input, StartedAt: d.StartedAt})
+		t.activity = append(t.activity, Activity{CallID: d.CallID, Name: d.Name, Source: d.Source, Status: "running", Input: d.Input, StartedAt: d.StartedAt})
 	case toolEndEvent:
 		for i := range t.activity {
 			if t.activity[i].CallID == d.CallID {
 				t.activity[i].Name, t.activity[i].Status = d.Name, d.Status
 				t.activity[i].Summary, t.activity[i].DurationMS = d.Summary, d.DurationMS
+				t.activity[i].ApprovalExpiresAt, t.activity[i].SuggestionID = nil, d.SuggestionID
 			}
 		}
+	case toolApprovalEvent:
+		for i := range t.activity {
+			if t.activity[i].CallID == d.CallID {
+				exp := d.ExpiresAt
+				t.activity[i].Status, t.activity[i].Input, t.activity[i].ApprovalExpiresAt = "awaiting_approval", d.Input, &exp
+			}
+		}
+		if t.decisions != nil {
+			if _, ok := t.decisions[d.CallID]; !ok {
+				t.decisions[d.CallID] = make(chan bool, 1)
+			}
+		}
+		select { // other instances and reconnecting clients read the row
+		case t.flushNow <- struct{}{}:
+		default:
+		}
+	case toolDecisionEvent:
+		for i := range t.activity {
+			if t.activity[i].CallID == d.CallID {
+				t.activity[i].ApprovalExpiresAt = nil
+				if d.Approved {
+					t.activity[i].Status = "running"
+				}
+			}
+		}
+		delete(t.decisions, d.CallID)
 	}
 	for ch := range t.subs {
 		select {
@@ -179,6 +211,33 @@ func (t *turn) isClosed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.closed
+}
+
+// awaiting reports whether callID waits for the user's decision here.
+func (t *turn) awaiting(callID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.decisions[callID]
+	return ok
+}
+
+// decide hands the user's decision to the waiting call (no-op otherwise).
+func (t *turn) decide(callID string, approved bool) {
+	t.mu.Lock()
+	ch, ok := t.decisions[callID]
+	t.mu.Unlock()
+	if ok {
+		select {
+		case ch <- approved:
+		default:
+		}
+	}
+}
+
+func (t *turn) decisionChan(callID string) chan bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.decisions[callID]
 }
 
 func (t *turn) progress() ([]DisplayPart, []Activity) {
@@ -395,7 +454,8 @@ func (s *Service) sendMessage(w http.ResponseWriter, r *http.Request) error {
 	base, cancelCause := context.WithCancelCause(context.WithoutCancel(ctx))
 	turnCtx, cancelTimeout := context.WithTimeoutCause(base, s.cfg.turnTimeout, errTimeout)
 	t := &turn{id: asstID, convID: convID, userID: id.UserID, provider: s.provider.Name(), model: s.cfg.model,
-		createdAt: asstCreated, cancel: cancelCause, subs: map[chan sseEvent]struct{}{}, done: make(chan struct{})}
+		createdAt: asstCreated, cancel: cancelCause, subs: map[chan sseEvent]struct{}{}, done: make(chan struct{}),
+		decisions: map[string]chan bool{}, flushNow: make(chan struct{}, 1)}
 	if !s.turns.add(t) {
 		cancelTimeout()
 		cancelCause(nil)
@@ -452,8 +512,43 @@ func (s *Service) executeTurn(ctx context.Context, t *turn, caller *auth.Identit
 		return
 	}
 	rn := &runner{s: s, emit: t.emit, in: turnInput{caller: caller, convID: convID, messageID: t.id,
-		system: system, canary: c, history: history, reg: s.registry()}}
+		system: system, canary: c, history: history, reg: s.turnRegistry(ctx, caller), policy: app.FindAgentPolicy(s.d.Modules),
+		approve: func(ctx context.Context, callID string, deadline time.Time) *bool {
+			return s.awaitDecision(ctx, t, callID, deadline)
+		}}}
 	res = rn.run(ctx)
+}
+
+// awaitDecision waits for the user's approve/decline of an external write:
+// from this instance directly, or from the decisions table (written by
+// whichever instance took the request). nil when the deadline or the turn
+// ends first.
+func (s *Service) awaitDecision(ctx context.Context, t *turn, callID string, deadline time.Time) *bool {
+	local := t.decisionChan(callID)
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	poll := time.NewTicker(pollInterval)
+	defer poll.Stop()
+	for {
+		select {
+		case v := <-local:
+			return &v
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+			return nil
+		case <-poll.C:
+			var approved bool
+			err := s.d.Pool.QueryRow(ctx, `SELECT approved FROM assistant_tool_decisions WHERE message_id = $1 AND call_id = $2`,
+				t.id, callID).Scan(&approved)
+			if err == nil {
+				return &approved
+			}
+			if !isNoRows(err) && ctx.Err() == nil {
+				slog.WarnContext(ctx, "assistant: reading a decision failed", "message_id", t.id, "err", err)
+			}
+		}
+	}
 }
 
 // flushLoop saves progress every 2.5 s and notices a stop requested from
@@ -468,6 +563,7 @@ func (s *Service) flushLoop(ctx context.Context, t *turn, stop <-chan struct{}) 
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+		case <-t.flushNow:
 		}
 		parts, activity := t.progress()
 		tag, err := s.d.Pool.Exec(ctx, `
@@ -719,19 +815,100 @@ func (s *Service) pollStream(r *http.Request, sse *sseWriter, m *MessageDTO) err
 		for _, a := range cur.Activity {
 			prev, seen := sent[a.CallID]
 			if !seen {
-				if sse.event("tool_start", toolStartEvent{MessageID: cur.ID, CallID: a.CallID, Name: a.Name, Input: displayInput(a.Input), StartedAt: a.StartedAt}) != nil {
+				if sse.event("tool_start", toolStartEvent{MessageID: cur.ID, CallID: a.CallID, Name: a.Name, Source: a.Source,
+					Input: displayInput(a.Input), StartedAt: a.StartedAt}) != nil {
 					return nil
 				}
 			}
-			if a.Status != "running" && prev != a.Status {
+			if a.Status == "awaiting_approval" && prev != a.Status && a.ApprovalExpiresAt != nil {
+				if sse.event("tool_approval", toolApprovalEvent{MessageID: cur.ID, CallID: a.CallID, Name: a.Name, Source: a.Source,
+					Input: a.Input, ExpiresAt: *a.ApprovalExpiresAt}) != nil {
+					return nil
+				}
+				sent[a.CallID] = a.Status
+				continue
+			}
+			if prev == "awaiting_approval" && a.Status == "running" {
+				if sse.event("tool_decision", toolDecisionEvent{MessageID: cur.ID, CallID: a.CallID, Approved: true}) != nil {
+					return nil
+				}
+			}
+			if a.Status != "running" && a.Status != "awaiting_approval" && prev != a.Status {
 				if sse.event("tool_end", toolEndEvent{MessageID: cur.ID, CallID: a.CallID, Name: a.Name, Status: a.Status,
-					Summary: a.Summary, DurationMS: a.DurationMS}) != nil {
+					Summary: a.Summary, DurationMS: a.DurationMS, SuggestionID: a.SuggestionID}) != nil {
 					return nil
 				}
 			}
 			sent[a.CallID] = a.Status
 		}
 	}
+	return nil
+}
+
+// ---- approvals -------------------------------------------------------------
+
+var callIDRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,200}$`)
+
+type decisionReq struct {
+	Approved *bool `json:"approved"`
+}
+
+// decideToolCall is POST …/tool-calls/{call_id}: the user approves or
+// declines an external write the running reply is waiting on. The decision
+// is stored (any instance may be running the turn; it polls the table) and
+// handed straight to the turn when it runs here.
+func (s *Service) decideToolCall(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	id := auth.MustFromContext(ctx)
+	convID, err := httpx.URLParamUUID(r, "id")
+	if err != nil {
+		return err
+	}
+	callID := chi.URLParam(r, "call_id")
+	if !callIDRE.MatchString(callID) {
+		return httpx.BadRequest("Invalid call id.")
+	}
+	var req decisionReq
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	if req.Approved == nil {
+		return httpx.BadRequest("Send approved: true or false.")
+	}
+	if _, err := s.loadConv(ctx, s.d.Pool, id.UserID, convID, false); err != nil {
+		return err
+	}
+	notWaiting := httpx.NewError(http.StatusNotFound, "tool_call_not_found", "That action isn't waiting for a decision anymore.")
+	var msgID uuid.UUID
+	var activity []Activity
+	err = s.d.Pool.QueryRow(ctx, `SELECT id, activity FROM assistant_messages
+		WHERE conversation_id = $1 AND role = 'assistant' AND status = 'streaming'
+		ORDER BY created_at DESC, id DESC LIMIT 1`, convID).Scan(&msgID, &activity)
+	if isNoRows(err) {
+		return notWaiting
+	}
+	if err != nil {
+		return err
+	}
+	t := s.turns.get(convID)
+	waiting := t != nil && t.id == msgID && t.awaiting(callID)
+	for _, a := range activity {
+		if a.CallID == callID && a.Status == "awaiting_approval" {
+			waiting = true
+		}
+	}
+	if !waiting {
+		return notWaiting
+	}
+	if _, err := s.d.Pool.Exec(ctx, `
+		INSERT INTO assistant_tool_decisions (message_id, call_id, user_id, approved) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (message_id, call_id) DO NOTHING`, msgID, callID, id.UserID, *req.Approved); err != nil {
+		return err
+	}
+	if t != nil && t.id == msgID {
+		t.decide(callID, *req.Approved)
+	}
+	httpx.NoContent(w)
 	return nil
 }
 

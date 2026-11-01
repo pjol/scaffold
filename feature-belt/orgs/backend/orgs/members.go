@@ -128,14 +128,14 @@ func (s *Service) updateMember(w http.ResponseWriter, r *http.Request) error {
 	}
 	var (
 		orgName string
+		current string
 		changed bool
 	)
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		if orgName, err = lockOrg(ctx, tx, m.OrgID); err != nil {
 			return err
 		}
-		current, err := RoleOf(ctx, tx, m.OrgID, target)
-		if err != nil {
+		if current, err = RoleOf(ctx, tx, m.OrgID, target); err != nil {
 			return err
 		}
 		if current == "" {
@@ -153,7 +153,7 @@ func (s *Service) updateMember(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 			if n <= 1 {
-				return httpx.Conflict("An organization needs at least 1 owner. Make someone else an owner first.")
+				return httpx.Conflict(capital(NounA()) + " needs at least 1 owner. Make someone else an owner first.")
 			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE org_members SET role = $3, updated_at = now() WHERE org_id = $1 AND user_id = $2`,
@@ -170,6 +170,7 @@ func (s *Service) updateMember(w http.ResponseWriter, r *http.Request) error {
 	if changed {
 		bg := context.WithoutCancel(ctx)
 		s.membershipChanged(bg, m.OrgID, target, EventMemberUpdated, map[string]any{"role": req.Role})
+		fireRoleChanged(bg, m.OrgID, roleChange{target, current, req.Role})
 		if target != me {
 			s.notifyRole(bg, target, m.OrgID, orgName, req.Role)
 		}
@@ -220,19 +221,22 @@ func (s *Service) removeMember(w http.ResponseWriter, r *http.Request) error {
 					return err
 				}
 				if members <= 1 {
-					return httpx.Conflict("You're the only member. Delete the organization instead.")
+					return httpx.Conflict("You're the only member. Delete the " + Noun() + " instead.")
 				}
 				return httpx.Conflict("Make someone else an owner before you leave.")
 			}
 		}
-		_, err = tx.Exec(ctx, `DELETE FROM org_members WHERE org_id = $1 AND user_id = $2`, m.OrgID, target)
-		return err
+		if _, err := tx.Exec(ctx, `DELETE FROM org_members WHERE org_id = $1 AND user_id = $2`, m.OrgID, target); err != nil {
+			return err
+		}
+		return recordDeparture(ctx, tx, m.OrgID, target, !self)
 	})
 	if err != nil {
 		return err
 	}
 	bg := context.WithoutCancel(ctx)
 	s.membershipChanged(bg, m.OrgID, target, EventMemberRemoved, map[string]any{})
+	fireMemberRemoved(bg, m.OrgID, target)
 	if !self {
 		s.send(bg, notify.Notification{UserID: target, Kind: KindRole, Title: "You were removed from " + orgName, Link: "/settings/orgs",
 			Data: map[string]any{"org_id": m.OrgID}})
@@ -258,19 +262,21 @@ func (s *Service) transferOwnership(w http.ResponseWriter, r *http.Request) erro
 	if req.UserID == uuid.Nil || req.UserID == me {
 		return httpx.BadRequest("Choose another member to make owner.")
 	}
-	var orgName string
+	var orgName, targetWas string
 	err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		var err error
 		if orgName, err = lockOrg(ctx, tx, m.OrgID); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE org_members SET role = 'owner', updated_at = now() WHERE org_id = $1 AND user_id = $2`,
-			m.OrgID, req.UserID)
-		if err != nil {
+		if targetWas, err = RoleOf(ctx, tx, m.OrgID, req.UserID); err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
+		if targetWas == "" {
 			return httpx.NotFound("Member not found.")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE org_members SET role = 'owner', updated_at = now() WHERE org_id = $1 AND user_id = $2`,
+			m.OrgID, req.UserID); err != nil {
+			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE org_members SET role = 'admin', updated_at = now() WHERE org_id = $1 AND user_id = $2`,
 			m.OrgID, me)
@@ -282,6 +288,11 @@ func (s *Service) transferOwnership(w http.ResponseWriter, r *http.Request) erro
 	bg := context.WithoutCancel(ctx)
 	s.membershipChanged(bg, m.OrgID, req.UserID, EventMemberUpdated, map[string]any{"role": RoleOwner})
 	s.membershipChanged(bg, m.OrgID, me, EventMemberUpdated, map[string]any{"role": RoleAdmin})
+	changes := []roleChange{{me, RoleOwner, RoleAdmin}}
+	if targetWas != RoleOwner {
+		changes = append(changes, roleChange{req.UserID, targetWas, RoleOwner})
+	}
+	fireRoleChanged(bg, m.OrgID, changes...)
 	s.notifyRole(bg, req.UserID, m.OrgID, orgName, RoleOwner)
 	o, err := s.loadOrg(ctx, m.OrgID, me)
 	if err != nil {

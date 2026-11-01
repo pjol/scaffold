@@ -134,6 +134,18 @@ export interface AdminOrg {
 export interface AdminOrgDetail extends AdminOrg {
   /** Owners and admins, emails included. */
   leaders: OrgMember[];
+  /** Claimed email domains. */
+  domains: AdminOrgDomain[];
+}
+
+/** A claimed email domain as staff see it. */
+export interface AdminOrgDomain {
+  id: string;
+  domain: string;
+  policy: OrgDomainPolicy;
+  verify_method: OrgDomainVerifyMethod | null;
+  verified_at: string | null;
+  created_at: string;
 }
 
 export interface AdminOrgListParams {
@@ -141,6 +153,82 @@ export interface AdminOrgListParams {
   member_id?: string;
   limit?: number;
   cursor?: string;
+}
+
+// ---- email domains -------------------------------------------------------------
+
+/** What a verified domain lets people with an email on it do: join on their own, or ask an admin. */
+export type OrgDomainPolicy = "auto_join" | "request";
+export type OrgDomainVerifyMethod = "email" | "dns";
+/** `taken`: another organization verified this domain with its DNS record. One it holds only through an admin's email stays `pending` here: this org's DNS record moves it over. */
+export type OrgDomainStatus = "verified" | "pending" | "taken";
+
+/** An email domain an org claims, as its admins see it. */
+export interface OrgDomain {
+  id: string;
+  org_id: string;
+  domain: string;
+  status: OrgDomainStatus;
+  policy: OrgDomainPolicy;
+  /** What people join as. */
+  role: "member";
+  verify_method: OrgDomainVerifyMethod | null;
+  verified_at: string | null;
+  verified_by_name: string | null;
+  /** The DNS TXT record that proves the domain: name and value. */
+  txt_name: string;
+  txt_value: string;
+  last_checked_at: string | null;
+  /** Why the last DNS check failed (user-facing copy). */
+  last_check_error: string | null;
+  added_by_name: string | null;
+  created_at: string;
+}
+
+export interface AddOrgDomainRequest {
+  /** "example.com" ("@example.com" and URLs are accepted). */
+  domain: string;
+  /** Default `request`. */
+  policy?: OrgDomainPolicy;
+}
+
+/** `join`: join now · `request`: ask an admin · `requested`: waiting for an admin. */
+export type JoinableOrgAction = "join" | "request" | "requested";
+
+/** An org your verified email domain lets you join or ask to join, or one you already asked. */
+export interface JoinableOrg {
+  org: OrgRef;
+  member_count: number;
+  domain: string;
+  action: JoinableOrgAction;
+  request_id: string | null;
+  requested_at: string | null;
+}
+
+/** `POST /v1/orgs/auto-join`: orgs you joined just now. */
+export interface OrgsAutoJoined {
+  joined: Org[];
+}
+
+/** Your own pending request. */
+export interface MyOrgJoinRequest {
+  id: string;
+  org: OrgRef;
+  domain: string;
+  status: "pending";
+  created_at: string;
+}
+
+/** A pending request as org admins see it. */
+export interface OrgJoinRequest {
+  id: string;
+  org_id: string;
+  user_id: string;
+  display_name: string;
+  email: string;
+  avatar_url: string | null;
+  domain: string;
+  created_at: string;
 }
 
 /** The upload purpose for org pictures (public, images, 5 MB). */
@@ -154,5 +242,7 @@ declare module "../types" {
     "orgs.member_updated": { org_id: string; user_id: string; role: OrgRole };
     "orgs.member_removed": { org_id: string; user_id: string };
     "orgs.membership_changed": { org_id: string };
+    "orgs.domains_changed": { org_id: string };
+    "orgs.join_requests_changed": { org_id: string };
   }
 }

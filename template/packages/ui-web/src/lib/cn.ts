@@ -14,7 +14,7 @@ const twMerge = extendTailwindMerge({
         "tight",
         "related",
         "group",
-        "block",
+        "subsection",
         "section",
         "band",
         "gutter",

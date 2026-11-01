@@ -15,6 +15,12 @@ type Kind struct {
 	Label string // "Messages" (settings row)
 	Push  bool   // default on/off per channel
 	Email bool
+	// AgentTarget names the item a notification of this kind is about, read
+	// from its data (DataTarget("channels.channel", "channel_id")), so an AI
+	// agent reading the inbox for the person sees it only while the person's
+	// agent scope lets agents read that item. Nil: data {"kind", "id"} when
+	// present, else the kind's feature (its prefix) decides as a whole.
+	AgentTarget func(data map[string]any) (kind, id string)
 }
 
 // Kinds that are sent but never listed in preferences or subject to them.

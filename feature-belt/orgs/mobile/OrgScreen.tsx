@@ -1,7 +1,9 @@
 import {
   errorMessage,
-  orgRoleAtLeast,
   ORG_AVATAR_PURPOSE,
+  orgRoleAtLeast,
+  orgsNoun,
+  orgsNounTitle,
   topic,
   useCreateInvite,
   useCreateLink,
@@ -52,9 +54,12 @@ import { router, Stack, useLocalSearchParams } from "expo-router";
 import { Building2, Crown, Images, Link2, LogOut, Mail, RotateCw, Send, Share2, ShieldCheck, Trash2, UserMinus, UserRound, Users, X } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Share, View } from "react-native";
+import { JoinRequests } from "./JoinRequests";
 import { ROLE_LABEL, ROLE_TONE } from "./labels";
+import { OrgDomains } from "./OrgDomains";
 
-type TabId = "general" | "members" | "invites";
+type TabId = "general" | "members" | "invites" | "domains";
+const TABS: readonly TabId[] = ["general", "members", "invites", "domains"];
 
 function Loading() {
   return (
@@ -121,9 +126,9 @@ function General({ org }: { org: Org }) {
       ) : null}
 
       <ListGroup>
-        <ListRow title="Leave organization" destructive chevron={false} leading={<LogOut size={22} color={theme.colors.dangerStrong} strokeWidth={2} />} onPress={() => setConfirm("leave")} />
+        <ListRow title={`Leave ${orgsNoun()}`} destructive chevron={false} leading={<LogOut size={22} color={theme.colors.dangerStrong} strokeWidth={2} />} onPress={() => setConfirm("leave")} />
         {org.role === "owner" ? (
-          <ListRow title="Delete organization" destructive chevron={false} leading={<Trash2 size={22} color={theme.colors.dangerStrong} strokeWidth={2} />} onPress={() => setConfirm("delete")} />
+          <ListRow title={`Delete ${orgsNoun()}`} destructive chevron={false} leading={<Trash2 size={22} color={theme.colors.dangerStrong} strokeWidth={2} />} onPress={() => setConfirm("delete")} />
         ) : null}
       </ListGroup>
 
@@ -141,7 +146,7 @@ function General({ org }: { org: Org }) {
           router.back();
         }}
       >
-        <Text tone="muted">You lose access to its content. Someone has to invite you again to rejoin.</Text>
+        <Text tone="muted">You lose access to its content right away.</Text>
       </ConfirmDialog>
 
       <ConfirmDialog
@@ -154,7 +159,7 @@ function General({ org }: { org: Org }) {
         tone="danger"
         confirmLabel="Delete"
         confirmDisabled={typed.trim() !== "DELETE"}
-        errorText={(e) => errorMessage(e, "Couldn't delete the organization. Try again.")}
+        errorText={(e) => errorMessage(e, `Couldn't delete the ${orgsNoun()}. Try again.`)}
         onConfirm={async () => {
           await del.mutateAsync(org.id);
           toast.success(`${org.name} deleted`);
@@ -216,6 +221,7 @@ function Members({ org }: { org: Org }) {
 
   return (
     <>
+      {orgRoleAtLeast(org.role, "admin") ? <JoinRequests org={org} /> : null}
       <ListGroup>
         {members.isPending ? (
           <Loading />
@@ -446,22 +452,22 @@ function Invites({ org }: { org: Org }) {
   );
 }
 
-/** Settings → Organizations → one org: General, Members and (admins) Invites. */
+/** Settings → Organizations → one org: General, Members and (admins) Invites and Domains. `?tab=` picks the first segment (notification links). */
 export function OrgScreen() {
   const theme = useTheme();
   const s = theme.space;
-  const { orgID } = useLocalSearchParams<{ orgID: string }>();
+  const { orgID, tab: initialTab } = useLocalSearchParams<{ orgID: string; tab?: string }>();
   const org = useOrg(orgID);
-  const [tab, setTab] = useState<TabId>("general");
+  const [tab, setTab] = useState<TabId>(TABS.includes(initialTab as TabId) ? (initialTab as TabId) : "general");
   useTopic(org.data ? topic("orgs", orgID) : null);
 
   const o = org.data;
   const admin = orgRoleAtLeast(o?.role, "admin");
-  const current: TabId = tab === "invites" && !admin ? "general" : tab;
+  const current: TabId = (tab === "invites" || tab === "domains") && !admin ? "general" : tab;
 
   return (
     <Screen edges={["bottom"]} gap={s[6]} keyboard>
-      <Stack.Screen options={{ title: o?.name ?? "Organization" }} />
+      <Stack.Screen options={{ title: o?.name ?? orgsNounTitle() }} />
       {org.isPending ? (
         <View style={{ gap: s[4] }} accessibilityLabel="Loading" accessibilityRole="progressbar">
           <Skeleton shape="circle" width={64} height={64} />
@@ -470,9 +476,9 @@ export function OrgScreen() {
         </View>
       ) : org.isError ? (
         org.error.status === 404 ? (
-          <EmptyState icon={Building2} title="Organization not found" />
+          <EmptyState icon={Building2} title={`${orgsNounTitle()} not found`} />
         ) : (
-          <ErrorState title="Couldn't load this organization" info={errorMessage(org.error)} onRetry={() => void org.refetch()} retrying={org.isRefetching} />
+          <ErrorState title={`Couldn't load this ${orgsNoun()}`} info={errorMessage(org.error)} onRetry={() => void org.refetch()} retrying={org.isRefetching} />
         )
       ) : o ? (
         <>
@@ -484,16 +490,17 @@ export function OrgScreen() {
             <Badge tone={ROLE_TONE[o.role]}>{ROLE_LABEL[o.role]}</Badge>
           </View>
           <SegmentedControl<TabId>
-            accessibilityLabel="Organization"
+            accessibilityLabel={orgsNounTitle()}
             value={current}
             onValueChange={setTab}
             options={[
               { value: "general", label: "General" },
-              { value: "members", label: `Members (${o.member_count})` },
-              ...(admin ? [{ value: "invites" as const, label: "Invites" }] : []),
+              // Four segments leave no room for the count at 375 pt.
+              { value: "members", label: admin ? "Members" : `Members (${o.member_count})` },
+              ...(admin ? [{ value: "invites" as const, label: "Invites" }, { value: "domains" as const, label: "Domains" }] : []),
             ]}
           />
-          {current === "general" ? <General org={o} /> : current === "members" ? <Members org={o} /> : <Invites org={o} />}
+          {current === "general" ? <General org={o} /> : current === "members" ? <Members org={o} /> : current === "invites" ? <Invites org={o} /> : <OrgDomains org={o} />}
         </>
       ) : null}
     </Screen>

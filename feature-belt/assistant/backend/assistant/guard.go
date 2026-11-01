@@ -243,6 +243,7 @@ func scanStrings(v any) injectionReport {
 type envelope struct {
 	Trust     string `json:"trust"` // always "untrusted"; first so it is visible at a glance
 	Tool      string `json:"tool,omitempty"`
+	Source    string `json:"source,omitempty"`    // the connected service an external tool belongs to
 	Notice    string `json:"notice,omitempty"`    // server-written warning
 	Truncated string `json:"truncated,omitempty"` // what was cut to fit the budget
 	Data      any    `json:"data,omitempty"`

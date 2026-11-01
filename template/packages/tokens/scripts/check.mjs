@@ -3,6 +3,7 @@
  * `pnpm check` (tokens part). Fails when:
  * - any palette misses a WCAG contrast target (7 body text / 4.5 text / 3 UI) in either mode,
  * - a line height, spacing or size value leaves the 4px grid,
+ * - a theme.css name completes an existing Tailwind class (`--spacing-block` → `inline-block`),
  * - src/generated/* is stale (run `pnpm tokens`).
  *
  *   node scripts/check.mjs            audit + staleness
@@ -10,7 +11,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { generatedFiles, loadTokens, pkgDir } from "./load.mjs";
+import { generatedFiles, loadTokens, pkgDir, srcDir } from "./load.mjs";
+import { tailwindCollisions } from "./tailwind-names.mjs";
 
 const report = process.argv.includes("--report");
 const { tokens, cleanup } = loadTokens();
@@ -41,6 +43,17 @@ try {
     } else {
       console.log(`✓ ${id}: line heights, spacing and sizes on the 4px grid`);
     }
+  }
+
+  const names = await tailwindCollisions(fs.readFileSync(path.join(srcDir, "theme.css"), "utf8"), path.resolve(pkgDir, "../../web"));
+  if (names.skipped) {
+    console.warn(`! Tailwind name check skipped: ${names.skipped}`);
+  } else if (names.collisions.length) {
+    failed = true;
+    console.error(`✗ ${names.collisions.length} theme names complete existing Tailwind classes; rename them`);
+    for (const c of names.collisions) console.error(`   ${c}`);
+  } else {
+    console.log(`✓ theme names clash with no Tailwind class (${names.checked} checked)`);
   }
 
   for (const [file, content] of Object.entries(generatedFiles(tokens))) {

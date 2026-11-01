@@ -1,0 +1,84 @@
+{
+  "name": "files",
+  "title": "Files",
+  "version": "1.1.3",
+  "summary": "An org drive: folders and files with versions, previews, sharing with people, teams and public links, trash, a storage quota, and item types other features add (repositories).",
+  "requires": ["access", "moderation"],
+  "surfaces": ["backend", "web", "mobile"],
+  "migration_block": 1700,
+  "env": [
+    {
+      "name": "FILES_ORG_QUOTA_GB",
+      "tier": "backend",
+      "group": "files",
+      "required": "optional",
+      "default": "100",
+      "doc": "Storage each organization's drive may use, in GB, counting every version and the trash. 0 turns the quota off."
+    },
+    {
+      "name": "FILES_MAX_UPLOAD_MB",
+      "tier": "backend",
+      "group": "files",
+      "required": "optional",
+      "default": "250",
+      "doc": "Largest file one upload may be, in MB (S3 takes up to 5 GB in one upload)."
+    },
+    {
+      "name": "FILES_TRASH_DAYS",
+      "tier": "backend",
+      "group": "files",
+      "required": "optional",
+      "default": "30",
+      "doc": "Days a trashed item stays restorable before it is deleted for good."
+    },
+    {
+      "name": "FILES_DELETED_ACCOUNT_KEEP_DAYS",
+      "tier": "backend",
+      "group": "files",
+      "required": "optional",
+      "default": "30",
+      "doc": "Days a deleted account's private My drive items stay in the org's trash (org admins can restore them) before they are purged. 0 deletes them with the account."
+    },
+    {
+      "name": "FILES_PUBLIC_DOWNLOADS_PER_MIN",
+      "tier": "backend",
+      "group": "files",
+      "required": "optional",
+      "default": "30",
+      "doc": "Public-link previews and downloads one IP address may start per minute."
+    }
+  ],
+  "files": [
+    { "src": "backend/files", "dst": "backend/internal/files" },
+    { "src": "backend/feature_files.go", "dst": "backend/internal/api/feature_files.go" },
+    { "src": "migrations", "dst": "backend/migrations" },
+    { "src": "shared", "dst": "packages/shared/src/files" },
+    { "src": "web", "dst": "web/src/features/files" },
+    { "src": "web-app", "dst": "web/app" },
+    { "src": "mobile", "dst": "mobile/src/features/files" },
+    { "src": "mobile-app", "dst": "mobile/app" }
+  ],
+  "wire": [
+    { "file": "packages/shared/src/index.ts", "anchor": "exports", "insert": "export * from \"./files\";" },
+    { "file": "web/src/features/registry.tsx", "anchor": "imports", "insert": "import { filesAdminNav, filesHome, filesNav } from \"./files/registry\";" },
+    { "file": "web/src/features/registry.tsx", "anchor": "nav", "insert": "filesNav," },
+    { "file": "web/src/features/registry.tsx", "anchor": "home", "insert": "filesHome," },
+    { "file": "web/src/features/registry.tsx", "anchor": "admin-nav", "insert": "filesAdminNav," },
+    { "file": "web/proxy.ts", "anchor": "public-paths", "insert": "\"/f/(.*)\"," },
+    { "file": "mobile/src/features/registry.tsx", "anchor": "imports", "insert": "import { filesHomeEntry } from \"./files/registry\";" },
+    { "file": "mobile/src/features/registry.tsx", "anchor": "home", "insert": "filesHomeEntry," }
+  ],
+  "deps": {
+    "mobile": {
+      "expo-document-picker": "~57.0.3"
+    }
+  },
+  "stitch": [
+    "Decide who may create top-level shared folders: the files.create_shared_folders permission defaults to owners and admins (Settings → Permissions). Members can always share folders from their own drive.",
+    "Set FILES_ORG_QUOTA_GB and FILES_MAX_UPLOAD_MB for your plan, and FILES_DELETED_ACCOUNT_KEEP_DAYS for what happens to a departing person's private files (default: org admins can restore them from the trash for 30 days; 0 deletes them with the account). Say which in the privacy policy.",
+    "Production storage: keep the files/ prefix private in the bucket policy, and allow PUT from the web origin in the bucket's CORS rules (uploads go straight to S3). Downloads are presigned GETs with a forced Content-Type and Content-Disposition, so nothing else needs to be public.",
+    "Put Files where it belongs in navigation: it ships as a web nav entry and Home tile and a mobile Home entry; promote it to a mobile tab if the drive is central (add <Tabs.Screen name=\"files\"> in mobile/app/(tabs)).",
+    "Link to drive items from other features with files.ItemLink(id) (/files/<id>); features with their own item types call files.RegisterItemType in their New (FEATURE.md → Extending).",
+    "Public links open on the web at /f/<token> (wired into web/proxy.ts). Configure universal links for PUBLIC_WEB_URL/f/* only if you add a native public screen."
+  ]
+}

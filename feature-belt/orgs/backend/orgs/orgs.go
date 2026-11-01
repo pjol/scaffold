@@ -1,12 +1,13 @@
 // Package orgs adds organizations: memberships with roles (owner, admin,
-// member), email invites and shareable invite links, and the org-scoped
-// guard other features use (RoleOf, Require). Every org always has at least
-// one owner.
+// member), email invites and shareable invite links, joining through a
+// verified email domain, and the org-scoped guard other features use
+// (RoleOf, Require). Every org always has at least one owner.
 package orgs
 
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/config"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/jobs"
@@ -36,8 +38,9 @@ const (
 
 // Notification kinds.
 const (
-	KindInvite = "orgs.invite" // you were invited (existing account with the invited email)
-	KindRole   = "orgs.role"   // your role changed, or you were removed
+	KindInvite      = "orgs.invite"       // you were invited (existing account with the invited email)
+	KindRole        = "orgs.role"         // your role changed, or you were removed
+	KindJoinRequest = "orgs.join_request" // admins: someone asked to join; requester: the answer
 )
 
 // Realtime events on orgs:<id> (members subscribe), and on user:<id> for the
@@ -64,7 +67,12 @@ const (
 )
 
 type Service struct {
-	d *app.Deps
+	d             *app.Deps
+	resolver      *net.Resolver   // DNS for domain verification
+	publicDomains map[string]bool // email providers no org may claim
+	// autoJoinLimited is autoJoinWork behind its rate limit: autoJoin only
+	// reaches it when there is something to join.
+	autoJoinLimited http.Handler
 }
 
 // pool backs Require, which has no Service to hang off.
@@ -73,9 +81,27 @@ var pool atomic.Pointer[pgxpool.Pool]
 func New(d *app.Deps) *Service {
 	pool.Store(d.Pool)
 	storage.RegisterPurpose(storage.Purpose{Name: AvatarPurpose, Public: true, Types: storage.ImageTypes, MaxBytes: 5 << 20})
-	notifications.RegisterKind(notifications.Kind{ID: KindInvite, Label: "Organization invites", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: KindRole, Label: "Organization roles", Push: true})
-	return &Service{d: d}
+	notifications.RegisterKind(notifications.Kind{ID: KindInvite, Label: NounTitle() + " invites", Push: true})
+	notifications.RegisterKind(notifications.Kind{ID: KindRole, Label: NounTitle() + " roles", Push: true})
+	notifications.RegisterKind(notifications.Kind{ID: KindJoinRequest, Label: "Join requests", Push: true})
+
+	resolverAddr := config.String("ORGS_DNS_RESOLVER", "")
+	if resolverAddr != "" {
+		if _, _, err := net.SplitHostPort(resolverAddr); err != nil {
+			config.Problem("ORGS_DNS_RESOLVER must be host:port (got %q)", resolverAddr)
+			resolverAddr = ""
+		}
+	}
+	public := map[string]bool{}
+	for _, d := range publicEmailDomains {
+		public[d] = true
+	}
+	for _, d := range config.List("ORGS_PUBLIC_EMAIL_DOMAINS", "") {
+		public[strings.TrimPrefix(strings.ToLower(d), "@")] = true
+	}
+	s := &Service{d: d, resolver: newResolver(resolverAddr), publicDomains: public}
+	s.autoJoinLimited = auth.RateLimit(autoJoinsPerHour, time.Hour)(httpx.Handler(s.autoJoinWork))
+	return s
 }
 
 func (s *Service) Name() string { return "orgs" }
@@ -92,6 +118,13 @@ func (s *Service) MountUser(r chi.Router) {
 	active.Post("/orgs/my-invites/{id}/accept", httpx.Handler(s.acceptMyInvite))
 	r.Post("/orgs/my-invites/{id}/decline", httpx.Handler(s.declineMyInvite))
 	active.Post("/orgs/invites/{token}/accept", httpx.Handler(s.acceptToken))
+
+	// Joining through a verified email domain (domains.go, joining.go).
+	r.Get("/orgs/joinable", httpx.Handler(s.listJoinable))
+	active.Post("/orgs/auto-join", httpx.Handler(s.autoJoin)) // rate-limited only when it joins (autoJoinLimited)
+	active.With(auth.RateLimit(domainJoinsPerHour, time.Hour)).Post("/orgs/{orgID}/join", httpx.Handler(s.joinByDomain))
+	active.With(auth.RateLimit(joinRequestsPerHour, time.Hour)).Post("/orgs/{orgID}/join-requests", httpx.Handler(s.createJoinRequest))
+	r.Delete("/orgs/my-join-requests/{id}", httpx.Handler(s.cancelMyJoinRequest))
 
 	member, admin, owner := Require(RoleMember), Require(RoleAdmin), Require(RoleOwner)
 	r.With(member).Get("/orgs/{orgID}", httpx.Handler(s.getOrg))
@@ -111,11 +144,22 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(admin).Get("/orgs/{orgID}/links", httpx.Handler(s.listLinks))
 	active.With(admin, auth.RateLimit(invitesPerHour, time.Hour)).Post("/orgs/{orgID}/links", httpx.Handler(s.createLink))
 	active.With(admin).Delete("/orgs/{orgID}/links/{linkID}", httpx.Handler(s.revokeLink))
+
+	r.With(admin).Get("/orgs/{orgID}/domains", httpx.Handler(s.listDomains))
+	active.With(admin, auth.RateLimit(domainAddsPerHour, time.Hour)).Post("/orgs/{orgID}/domains", httpx.Handler(s.addDomain))
+	active.With(admin, auth.RateLimit(verifyChecksPerHour, time.Hour)).Post("/orgs/{orgID}/domains/{domainID}/verify", httpx.Handler(s.verifyDomain))
+	active.With(admin).Patch("/orgs/{orgID}/domains/{domainID}", httpx.Handler(s.updateDomain))
+	active.With(admin).Delete("/orgs/{orgID}/domains/{domainID}", httpx.Handler(s.removeDomain))
+
+	r.With(admin).Get("/orgs/{orgID}/join-requests", httpx.Handler(s.listJoinRequests))
+	active.With(admin).Post("/orgs/{orgID}/join-requests/{requestID}/approve", httpx.Handler(s.approveJoinRequest))
+	active.With(admin).Post("/orgs/{orgID}/join-requests/{requestID}/deny", httpx.Handler(s.denyJoinRequest))
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
 	r.Get("/orgs", httpx.Handler(s.adminListOrgs))
 	r.Get("/orgs/{orgID}", httpx.Handler(s.adminGetOrg))
+	r.With(auth.RequireAdminRole("admin")).Delete("/orgs/{orgID}/domains/{domainID}", httpx.Handler(s.adminReleaseDomain))
 }
 
 func (s *Service) Start(ctx context.Context) {
@@ -175,6 +219,13 @@ func FromContext(ctx context.Context) (Membership, bool) {
 
 var errOrgNotFound = httpx.NotFound("Organization not found.")
 
+// refreshSentinels rewords the errors callers compare with errors.Is when
+// SetNoun changes the word.
+func refreshSentinels() {
+	errOrgNotFound.Message = NounTitle() + " not found."
+	errDomainTaken.Message = "That domain belongs to another " + Noun() + "."
+}
+
 // Require guards a route with an {orgID} URL param: the caller must be a
 // member with at least minRole (member, admin or owner). Non-members get 404
 // so org ids can't be probed; members without the role get 403. The
@@ -205,7 +256,7 @@ func Require(minRole string) func(http.Handler) http.Handler {
 				httpx.Fail(w, r, errOrgNotFound)
 				return
 			case !RoleAtLeast(role, minRole):
-				httpx.Fail(w, r, httpx.Forbidden("Only "+minRole+"s of this organization can do that."))
+				httpx.Fail(w, r, httpx.Forbidden("Only "+minRole+"s of this "+Noun()+" can do that."))
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKey{}, Membership{OrgID: orgID, Role: role})

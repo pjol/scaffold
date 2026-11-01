@@ -613,10 +613,28 @@ func inviteUnavailable(status string) error {
 	}
 }
 
+// join adds userID through an invite or link and settles any pending
+// domain join request they had.
 func join(ctx context.Context, tx pgx.Tx, orgID, userID uuid.UUID, role string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+	if _, err := joinMember(ctx, tx, orgID, userID, role); err != nil {
+		return err
+	}
+	return closeRequest(ctx, tx, orgID, userID, "approved", nil)
+}
+
+// joinMember adds userID to orgID with role unless they already belong, and
+// forgets any earlier departure (joining again by any route undoes it). It
+// reports whether they were added.
+func joinMember(ctx context.Context, tx pgx.Tx, orgID, userID uuid.UUID, role string) (bool, error) {
+	tag, err := tx.Exec(ctx, `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
 		ON CONFLICT (org_id, user_id) DO NOTHING`, orgID, userID, role)
-	return err
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM org_departures WHERE org_id = $1 AND user_id = $2`, orgID, userID); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *Service) respondJoined(w http.ResponseWriter, r *http.Request, orgID, userID uuid.UUID, joined bool) error {

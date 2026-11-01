@@ -42,7 +42,7 @@ Hours JSON: `{"timezone":"America/Los_Angeles","note":"","weekly":{"mon":[{"open
 | POST / DELETE | `/v1/admin/places/{id}/photos[/{photo_id}]` | support | staff photos (audited) |
 | DELETE | `/v1/admin/places/{id}` | admin | delete (audited) |
 
-Realtime: `places.pending {id}` on `admin:live`. Agent tools: `places_search`, `places_get` (read-only).
+Realtime: `places.pending {id}` on `admin:live`. Agent tools: `places_search`, `places_get` (read-only; `places_get` targets the place, and both leave out places the caller's agent scope hides).
 
 ## Screens
 
@@ -106,5 +106,7 @@ Unverified: expo-maps `onMarkerClick` and `monogram` behaviour on device (export
 
 ## Changes
 
+- 1.0.3: agent scope in the tools: `places_get` has a `Target` (the place) and `places_search` drops places set to Off.
+- 1.0.2: Global search: `app.SearchProvider` (kind `places.place`) over approved places by name or address, the rule of `GET /places?q=`; agent calls also need the place readable at the caller's agent scope.
 - 1.0.0: first release.
 - 1.0.1: the config plugin is wired at `mobile/app.config.ts` `scaffold:plugins` (no manual step).

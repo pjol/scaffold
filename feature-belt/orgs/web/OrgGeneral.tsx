@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, hasErrorCode, orgRoleAtLeast, ORG_AVATAR_PURPOSE, useDeleteOrg, useMe, useRemoveOrgMember, useUpdateOrg, useUpload, type Org } from "@scaffoldapp/shared";
+import { errorMessage, hasErrorCode, ORG_AVATAR_PURPOSE, orgRoleAtLeast, orgsNoun, useDeleteOrg, useMe, useRemoveOrgMember, useUpdateOrg, useUpload, type Org } from "@scaffoldapp/shared";
 import { Button, ConfirmDialog, Field, Input, toast } from "@scaffoldapp/ui-web";
 import { Camera, LogOut, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -156,14 +156,14 @@ export function OrgGeneral({ org }: { org: Org }) {
 
       <Section title="Leave" info={org.role === "owner" ? "Owners can leave once someone else is an owner too." : undefined}>
         <Button variant="danger-ghost" size="auto" leftIcon={<LogOut />} className="self-start" onClick={() => setLeaving(true)}>
-          Leave organization
+          Leave {orgsNoun()}
         </Button>
       </Section>
 
       {org.role === "owner" && (
-        <Section title="Delete organization">
+        <Section title={`Delete ${orgsNoun()}`}>
           <Button variant="danger" size="auto" leftIcon={<Trash2 />} className="self-start" onClick={() => setDeleting(true)}>
-            Delete organization
+            Delete {orgsNoun()}
           </Button>
         </Section>
       )}
@@ -182,7 +182,7 @@ export function OrgGeneral({ org }: { org: Org }) {
           router.replace("/settings/orgs");
         }}
       >
-        <p>You lose access to its content. Someone has to invite you again to rejoin.</p>
+        <p>You lose access to its content right away.</p>
       </ConfirmDialog>
 
       <ConfirmDialog
@@ -190,9 +190,9 @@ export function OrgGeneral({ org }: { org: Org }) {
         onOpenChange={setDeleting}
         title={`Delete ${org.name}?`}
         tone="danger"
-        confirmLabel="Delete organization"
+        confirmLabel={`Delete ${orgsNoun()}`}
         requireText="DELETE"
-        errorText={(e) => errorMessage(e, "Couldn't delete the organization. Try again.")}
+        errorText={(e) => errorMessage(e, `Couldn't delete the ${orgsNoun()}. Try again.`)}
         onConfirm={async () => {
           await del.mutateAsync(org.id);
           toast.success(`${org.name} deleted`);

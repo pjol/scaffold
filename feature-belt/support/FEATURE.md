@@ -78,3 +78,4 @@ No new variables: core `SUPPORT_EMAIL` (alert inbox, Reply-To on reply emails) a
 
 - 1.0.0: consent-exempt attachments, text files, app paths under Settings; shared hooks, web and mobile screens, admin queue.
 - 1.0.1: `supportLinks` and `consentRoutes` on web and mobile (requests open from the consent screen and suspended banner); open-request badge on the admin tab.
+- 1.0.2: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: the new-request email to staff (`support.alert_new_ticket`) and the reply email and notification (`support.deliver_reply`, bounded to a minute).

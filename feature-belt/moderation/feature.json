@@ -1,7 +1,7 @@
 {
   "name": "moderation",
   "title": "Moderation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "summary": "People report content and other users, block anyone, and staff work a review queue; text is filtered before it is posted.",
   "requires": [],
   "surfaces": [

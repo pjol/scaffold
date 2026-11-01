@@ -13,7 +13,7 @@ Values live in each host's secret store (backend host, Vercel, EAS secrets), nev
 ## Getting values
 
 - **Clerk**: dashboard → API keys (publishable + secret); Webhooks → add `https://<api>/webhooks/clerk` with `user.updated`, `user.deleted` → signing secret. Production: add the web origin and the mobile redirect URLs (`scaffoldapp:///` and `scaffoldapp://`).
-- **S3**: any S3-compatible bucket (AWS, Cloudflare R2, Tigris). Public prefixes public-read, everything else private; `S3_PUBLIC_URL` is the CDN or bucket URL for public objects.
+- **S3**: any S3-compatible bucket (AWS, Cloudflare R2, Tigris). Public prefixes public-read, everything else private (`server -bucket-policy` prints the policy); `S3_PUBLIC_URL` is the CDN or bucket URL for public objects.
 - **Resend**: verify the sending domain, then create an API key; `MAIL_FROM` must use that domain.
 
 ## Variables

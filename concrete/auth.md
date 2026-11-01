@@ -51,6 +51,13 @@ The stack must run with zero third-party keys.
 
 Implement `auth.Provider` (`Subject`, `Profile`, `DeleteUser`) for the new provider (e.g. Privy when embedded wallets are needed, or an in-house issuer), add a matching `AuthSession` bridge on web and mobile, and keep everything else. `users.auth_subject` holds whatever the provider calls the user. Never key app data on provider ids outside `users`.
 
+## Agent credentials
+
+AI agents act for a user through one door: the agent endpoint (`/mcp`, the `mcp` feature), where every call is a tool run as the user, marked `auth.WithAgent`, and gated by the user's AI agent scope (`app.AgentPolicy`). The in-app assistant runs tools in-process the same way and holds no credential.
+- Every credential minted for an agent (MCP OAuth access/refresh tokens, personal API keys) starts with `auth.AgentCredentialPrefix` (`agt_<slug>_<kind>_…`). `Authenticator.Middleware` refuses it with 401 `agent_credential` before any provider sees it, so it never opens a user route, an upload, the WebSocket or another feature's API.
+- OAuth access tokens are audience-bound to the agent endpoint (RFC 8707 `resource`); the endpoint refuses tokens for any other audience and refuses people's session tokens.
+- Minting credentials, consenting to a client and changing agent scopes are user routes, so only a person's session reaches them; no agent tool can create, list or widen credentials or scopes.
+
 ## Rules
 
 - The API is the only authority: hiding a button is UX, the guard is security.

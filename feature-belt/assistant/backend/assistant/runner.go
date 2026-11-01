@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 )
 
@@ -50,6 +51,8 @@ type turnInput struct {
 	canary    *canary
 	history   []Message
 	reg       *registry
+	approve   approvalFunc
+	policy    app.AgentPolicy
 }
 
 type runResult struct {
@@ -79,7 +82,7 @@ func (rn *runner) run(ctx context.Context) *runResult {
 	s, in := rn.s, rn.in
 	res := &runResult{model: s.cfg.model}
 	msgs := append([]Message(nil), in.history...)
-	tools := &toolRunner{reg: in.reg, caller: in.caller, messageID: in.messageID, convID: in.convID, emit: rn.emit}
+	tools := &toolRunner{reg: in.reg, caller: in.caller, messageID: in.messageID, convID: in.convID, emit: rn.emit, approve: in.approve, policy: in.policy}
 	scanner := in.canary.scanner()
 
 	var (

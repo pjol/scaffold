@@ -36,7 +36,7 @@ export function TopBar({ leading, children, actions, className }: TopBarProps) {
       )}
     >
       <div className="mx-auto flex h-topbar w-full max-w-content items-center gap-3 px-gutter">
-        {leading && <div className="flex shrink-0 items-center">{leading}</div>}
+        {leading && <div className="flex min-w-0 shrink items-center">{leading}</div>}
         <div className="flex min-w-0 flex-1 items-center">{children}</div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>

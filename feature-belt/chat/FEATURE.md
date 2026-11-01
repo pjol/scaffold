@@ -47,7 +47,9 @@ Rate limits per person: messages `CHAT_MESSAGES_PER_MINUTE`, new conversations `
 
 Realtime: `chat:<conversation id>` (members; revoked on removal, leave and account deletion) carries `chat.message`, `chat.message_updated`, `chat.read`, `chat.typing`, `chat.member`; each member's user topic gets `chat.inbox {conversation_id, reason, message?}`. Topic events aren't filtered per viewer: the shared handlers drop events from `hidden_user_ids`. Removals from the moderation queue publish nothing; clients see them on the next fetch.
 
-Notifications: kind `chat.message` ("Messages", push on) for text messages (not muted, not blocked, not your own) and "<name> added you". Direct: title = sender, body = first 80 characters or "Sent a photo". Group: title = group, body = "<name>: …".
+Notifications: kind `chat.message` ("Messages", push on) for text messages (not muted, not blocked, not your own) and "<name> added you". Direct: title = sender, body = first 80 characters or "Sent a photo". Group: title = group, body = "<name>: …". The kind names the conversation (`AgentTarget`) for the inbox's agent scope.
+
+Agent tools (read-only, as the caller): `chat_list_conversations`, `chat_search_messages`. Both leave out conversations the caller's agent scope hides (`chat.conversation` items set from the agents feature's ⋮ menu, else the chat level), like search.
 
 Uploads: `POST /v1/uploads` purpose `chat_attachment` (private: photos, video, audio, PDF, txt, csv, zip, docx, xlsx, pptx; `CHAT_ATTACHMENT_MAX_MB`) or `chat_avatar` (public images, 5 MB).
 
@@ -100,6 +102,10 @@ Verified: backend HTTP and realtime flows, web flows with two users in Playwrigh
 
 ## Changes
 
+- 1.0.6: attachment links carry the file's name (`inline; filename=…`), so a download saves as "Minutes.pdf", not the storage key.
+- 1.0.5: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: notification fan-out (`chat.notify`) and the stored-file clean-up after a delete (`chat.delete_objects`). Search hits are titled with the sender and set `Context` ("Chat · <conversation>"; template `app.SearchResult.Context`).
+- 1.0.4: the agent tools apply the caller's agent scope (a `chat.conversation` set to Off was listed with its last message and searchable before); search checks a page in one query; the notification kind carries `AgentTarget` (needs notifications ≥ 1.1.1).
+- 1.0.3: Global search: `app.SearchProvider` (kind `chat.message`) over text messages in the caller's own conversations, the rules of `GET /chat/search`; agent calls also need the conversation readable at the caller's agent scope.
 - 1.0.2: shared hook renamed to `useRemoveChatMember` (the generic name collided with another feature's export).
 - 1.0.1: camera note updated for the template's generic purpose string.
 - 1.0.0: web and mobile clients, shared hooks; document attachments; post-commit revocation on account deletion; `hidden_user_ids` for client-side block filtering.

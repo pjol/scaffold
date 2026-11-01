@@ -11,7 +11,8 @@ import (
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Tools exposes read-only event tools to agents, run as the caller.
+// Tools exposes read-only event tools to agents, run as the caller and
+// narrowed by their agent scope.
 func (s *Service) Tools() []app.Tool {
 	return []app.Tool{
 		{
@@ -40,6 +41,7 @@ func (s *Service) Tools() []app.Tool {
 			}`),
 			ReadOnly: true,
 			Handler:  s.toolGet,
+			Target:   getTarget,
 		},
 	}
 }
@@ -65,7 +67,11 @@ func (s *Service) toolList(ctx context.Context, caller *auth.Identity, raw json.
 	default:
 		return nil, httpx.BadRequest("filter must be all, hosting or attending.")
 	}
-	return s.listEvents(ctx, caller.UserID, listFilter{when: "upcoming", mine: in.Filter, limit: in.Limit, cursor: in.Cursor})
+	page, err := s.listEvents(ctx, caller.UserID, listFilter{when: "upcoming", mine: in.Filter, limit: in.Limit, cursor: in.Cursor})
+	if err != nil {
+		return nil, err
+	}
+	return s.agentEvents(ctx, caller, page)
 }
 
 func (s *Service) toolGet(ctx context.Context, caller *auth.Identity, raw json.RawMessage) (any, error) {
@@ -81,6 +87,12 @@ func (s *Service) toolGet(ctx context.Context, caller *auth.Identity, raw json.R
 	}
 	e, _, err := s.loadEvent(ctx, id, caller.UserID)
 	if err != nil {
+		return nil, err
+	}
+	if ok, err := s.agentAllows(ctx, caller, id); err != nil || !ok {
+		if err == nil {
+			err = errNotFound
+		}
 		return nil, err
 	}
 	return e, nil

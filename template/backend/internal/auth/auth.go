@@ -110,6 +110,14 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			httpx.Fail(w, r, httpx.ErrUnauthenticated)
 			return
 		}
+		// Credentials issued to AI agents (MCP OAuth tokens, API keys) work
+		// only at the agent endpoint, where every call is a gated tool. They
+		// never reach user routes, uploads or the WebSocket, whatever a
+		// provider would make of them.
+		if IsAgentCredential(token) {
+			httpx.Fail(w, r, errAgentCredential)
+			return
+		}
 		var subject, devEmail string
 		if a.devBypass {
 			subject, devEmail, _ = parseDevToken(token)

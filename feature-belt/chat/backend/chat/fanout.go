@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/moderation"
 	"scaffoldapp/backend/internal/notify"
@@ -125,7 +126,10 @@ func (s *Service) announceMessages(ctx context.Context, head convHead, msgs ...*
 			}
 		}
 		if len(notifyTo) > 0 {
-			go s.notify(head, m, notifyTo)
+			bg.Go(ctx, "chat.notify", func(ctx context.Context) error {
+				s.notify(ctx, head, m, notifyTo)
+				return nil
+			})
 		}
 	}
 }
@@ -146,8 +150,8 @@ func notifies(m *Message, userID uuid.UUID) bool {
 	return false
 }
 
-func (s *Service) notify(head convHead, m *Message, to []uuid.UUID) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (s *Service) notify(ctx context.Context, head convHead, m *Message, to []uuid.UUID) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	title, body := notificationText(head, m)
 	for _, uid := range to {
@@ -238,14 +242,15 @@ func queueObjects(ctx context.Context, q db.Querier, keys ...string) error {
 
 // kickObjectCleanup drains the queue in the background after a delete
 // commits; the worker retries whatever this misses.
-func (s *Service) kickObjectCleanup() {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+func (s *Service) kickObjectCleanup(ctx context.Context) {
+	bg.Go(ctx, "chat.delete_objects", func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		if err := s.deleteQueuedObjects(ctx); err != nil {
 			slog.WarnContext(ctx, "chat: delete stored files (will retry)", "err", err)
 		}
-	}()
+		return nil
+	})
 }
 
 // deleteQueuedObjects removes queued objects from storage and stamps their rows.

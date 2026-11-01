@@ -1,0 +1,135 @@
+{
+  "name": "docs",
+  "title": "Docs",
+  "version": "1.0.4",
+  "summary": "Org members write Notion-style pages and databases together: nested pages of blocks edited live, comments, history, trash, sharing through access, Markdown import/export and publishing to the web.",
+  "requires": [
+    "access",
+    "orgs",
+    "notifications",
+    "moderation"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 1800,
+  "env": [
+    {
+      "name": "DOCS_FILE_MAX_MB",
+      "tier": "backend",
+      "group": "docs",
+      "required": "optional",
+      "default": "25",
+      "doc": "Largest image or file a page accepts, in MB."
+    },
+    {
+      "name": "DOCS_TRASH_DAYS",
+      "tier": "backend",
+      "group": "docs",
+      "required": "optional",
+      "default": "30",
+      "doc": "Days a trashed page stays restorable before it is deleted for good."
+    },
+    {
+      "name": "DOCS_HISTORY_DAYS",
+      "tier": "backend",
+      "group": "docs",
+      "required": "optional",
+      "default": "90",
+      "doc": "Days saved versions of a page are kept (the newest is always kept)."
+    },
+    {
+      "name": "DOCS_SNAPSHOT_INTERVAL",
+      "tier": "backend",
+      "group": "docs",
+      "required": "optional",
+      "default": "10m",
+      "doc": "How often a version is saved while someone keeps editing (Go duration, at least 1m); idle pages are saved after 2 minutes."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/docs",
+      "dst": "backend/internal/docs"
+    },
+    {
+      "src": "backend/feature_docs.go",
+      "dst": "backend/internal/api/feature_docs.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/docs"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/docs"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/docs"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./docs\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { docsHome, docsNav } from \"./docs/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "docsNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "docsHome,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/p/(.*)\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { docsHomeEntry } from \"./docs/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "docsHomeEntry,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "public-routes",
+      "insert": "\"p/[token]\","
+    }
+  ],
+  "stitch": [
+    "Place docsNav in the web navigation and decide whether mobile shows docs as a Home entry (docsHomeEntry, default) or a tab of its own.",
+    "Choose the role defaults for the org permissions docs.create_shared (top-level pages everyone can edit) and docs.publish (public links on pages; also gated by access.share_public).",
+    "Install the agents feature for per-page AI agent scopes (docs uses access_agent_cap through access.ViaAgent) and the search feature for global search (docs implements app.SearchProvider).",
+    "Add to the privacy policy that published pages can be read by anyone with the link, and to the community rules that published pages and comments can be reported.",
+    "If the app has its own people directory, keep @-mentions in sync with it (mentions use the access directory of org members)."
+  ]
+}

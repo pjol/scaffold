@@ -49,7 +49,7 @@ Uploads: purpose `feed_media` (jpeg, png, heic, webp, gif, mp4, mov; `FEED_MEDIA
 
 Realtime: topic `feed:<uuid>` per audience (`feed:00000000-0000-0000-0000-000000000000` = "all"). Payloads carry ids and counts, clients refetch through the API (which applies blocks): `feed.post`, `feed.post_updated {post_id, deleted}`, `feed.comment {post_id, comment_id, comment_count, deleted}`, `feed.reaction {target_kind, target_id, post_id, reactions, reaction_count}`. Shared hooks apply them to the cache (`registerRealtimeHandler`) and refetch on reconnect.
 
-Notifications: `feed.comment`, `feed.reply`, `feed.mention`, `feed.announcement` (push on), `feed.reaction` (push off); after commit, never to the actor or anyone with a block either way, one per person per comment. Moderation: `moderation.Check` on text; targets `feed.post`, `feed.comment` (snapshot, remove, restore). Agent tools: `feed_list_posts`, `feed_search_posts` (read-only).
+Notifications: `feed.comment`, `feed.reply`, `feed.mention`, `feed.announcement` (push on), `feed.reaction` (push off); after commit, never to the actor or anyone with a block either way, one per person per comment. Moderation: `moderation.Check` on text; targets `feed.post`, `feed.comment` (snapshot, remove, restore). Agent tools: `feed_list_posts`, `feed_search_posts` (read-only; posts the caller's agent scope hides are left out). Notification kinds name the post (`AgentTarget`) for the inbox's agent scope.
 
 ## Screens
 
@@ -83,7 +83,7 @@ Zero or less fails the boot. Mobile adds `expo-document-picker` (~57.0.3, native
 
 ## Stitching
 
-1. Audience: default one feed for every signed-in person. For org feeds implement `feed.Scope` (audience keys `org:<id>`) and register it with `feed.SetScope(func(d *app.Deps) feed.Scope {…})` from an init in `internal/api`; implement `PeopleSearcher` too, and subscribe clients to `feedAudienceTopic` per audience instead of `FEED_ALL_TOPIC`.
+1. Audience: default one feed for every signed-in person. For org feeds implement `feed.Scope` (audience keys `org:<id>`) and register it with `feed.SetScope(func(d *app.Deps) feed.Scope {…})` from an init in `internal/api`; implement `PeopleSearcher` (and `AudienceNamer`, so search hits name their audience and org) too, and subscribe clients to `feedAudienceTopic` per audience instead of `FEED_ALL_TOPIC`.
 2. Announcements: staff by default (feed composer API and the admin page).
 3. Bucket policy: `feed_media/` and `feed_file/` public-read.
 4. Privacy policy and store data-safety: user posts, photos, videos and documents.
@@ -102,6 +102,9 @@ Verified: backend build/vet and curl of every route; web flows in Chromium at 37
 
 ## Changes
 
+- 1.0.4: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: `afterCommit` takes a task name (`feed.notify_comment`, `feed.delete_media`, …) and runs on `bg.Go`. Search hits set `Context` ("Feed", after the audience's name) and `OrgID` when the Scope implements the new optional `AudienceNamer`.
+- 1.0.3: the agent tools drop posts the caller's agent scope hides (a `feed.post` set to Off was listed and searchable before); notification kinds carry `AgentTarget` (needs notifications ≥ 1.1.1).
+- 1.0.2: Global search: `app.SearchProvider` (kind `feed.post`) over posts the caller's feed shows, the rules of `GET /feed/posts?q=`; agent calls also need the post readable at the caller's agent scope.
 - 1.0.1: Share post on mobile, with a web link when `EXPO_PUBLIC_WEB_URL` is set (app link otherwise).
 - 1.0.0: web and mobile UI, shared client, document attachments (`feed_file`, migration 1101), `config.Problem` for bad limits.
 - 0.1.0: backend.

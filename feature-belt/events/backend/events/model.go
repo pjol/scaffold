@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/notify"
@@ -277,19 +278,15 @@ func (s *Service) publish(ctx context.Context, id uuid.UUID, event string, data 
 	}
 }
 
-// afterCommit runs fn detached from the request (notifications).
-func (s *Service) afterCommit(ctx context.Context, fn func(ctx context.Context)) {
-	ctx = context.WithoutCancel(ctx)
-	go func() {
+// afterCommit runs fn in the background (bg.Go), detached from the request
+// (notifications, cleanup). name is "events.<what>" for the logs.
+func (s *Service) afterCommit(ctx context.Context, name string, fn func(ctx context.Context)) {
+	bg.Go(ctx, name, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "events: background task panicked", "err", r)
-			}
-		}()
 		fn(ctx)
-	}()
+		return nil
+	})
 }
 
 // notifyAll sends n to each user except the actor. Best-effort.

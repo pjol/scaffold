@@ -1,6 +1,6 @@
 "use client";
 
-import { useActiveOrg } from "@scaffoldapp/shared";
+import { orgsNoun, orgsNounTitle, useActiveOrg } from "@scaffoldapp/shared";
 import { Button, Menu, MenuItem, MenuLabel, MenuSeparator } from "@scaffoldapp/ui-web";
 import { Building2, Check, ChevronsUpDown, Plus, Settings2 } from "lucide-react";
 import Link from "next/link";
@@ -21,13 +21,13 @@ export function OrgSwitcher({ className }: { className?: string }) {
     <>
       {orgs.length === 0 ? (
         <Button variant="secondary" size="auto" leftIcon={<Plus />} className={className} onClick={() => setCreating(true)}>
-          New organization
+          New {orgsNoun()}
         </Button>
       ) : (
         <Menu
           align="start"
           trigger={
-            <Button variant="secondary" size="auto" className={className} rightIcon={<ChevronsUpDown />} aria-label={`Organization: ${org?.name ?? "none"}. Switch`}>
+            <Button variant="secondary" size="auto" className={className} rightIcon={<ChevronsUpDown />} aria-label={`${orgsNounTitle()}: ${org?.name ?? "none"}. Switch`}>
               <span className="flex min-w-0 items-center gap-2">
                 <AppAvatar name={org?.name ?? "?"} src={org?.avatar_url ?? null} size="xs" />
                 <span className="truncate">{org?.name}</span>
@@ -37,7 +37,7 @@ export function OrgSwitcher({ className }: { className?: string }) {
         >
           <MenuLabel>
             <Building2 className="size-4 text-fg-muted" aria-hidden />
-            <span className="type-label font-semibold text-fg">Organizations</span>
+            <span className="type-label font-semibold text-fg">{orgsNounTitle("many")}</span>
           </MenuLabel>
           <MenuSeparator />
           {orgs.map((o) => (
@@ -47,12 +47,12 @@ export function OrgSwitcher({ className }: { className?: string }) {
           ))}
           <MenuSeparator />
           <MenuItem icon={<Plus aria-hidden />} onSelect={() => setCreating(true)}>
-            New organization
+            New {orgsNoun()}
           </MenuItem>
           <MenuItem asChild>
             <Link href={org ? `/settings/orgs/${org.id}` : "/settings/orgs"}>
               <Settings2 aria-hidden />
-              Organization settings
+              {orgsNounTitle()} settings
             </Link>
           </MenuItem>
         </Menu>

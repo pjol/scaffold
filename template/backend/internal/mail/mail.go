@@ -7,6 +7,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,11 +21,20 @@ import (
 )
 
 type Message struct {
-	To      string
-	Subject string
-	Text    string // required: plain-text body
-	HTML    string // optional: see Layout
-	ReplyTo string
+	To          string
+	Subject     string
+	Text        string // required: plain-text body
+	HTML        string // optional: see Layout
+	ReplyTo     string
+	Attachments []Attachment
+}
+
+// Attachment is a small file sent with a message (a calendar invite, a
+// receipt). Keep the total under 1 MB; link to anything larger.
+type Attachment struct {
+	Filename    string // shown to the recipient: invite.ics
+	ContentType string // text/calendar; method=REQUEST
+	Content     []byte
 }
 
 type Mailer interface {
@@ -58,6 +68,14 @@ func (f FileSink) Send(ctx context.Context, m Message) error {
 	}
 	name := time.Now().UTC().Format("20060102-150405.000") + "-" + slug + ".md"
 	body := fmt.Sprintf("---\nfrom: %s\nto: %s\nsubject: %s\n---\n\n%s\n", f.From, m.To, m.Subject, m.Text)
+	for i, a := range m.Attachments {
+		// Attachments sit beside the message as <message>.<n>-<filename>.
+		file := strings.TrimSuffix(name, ".md") + fmt.Sprintf(".%d-", i+1) + filepath.Base(a.Filename)
+		if err := os.WriteFile(filepath.Join(f.Dir, file), a.Content, 0o644); err != nil {
+			return err
+		}
+		body += fmt.Sprintf("\nAttachment: %s (%s, %d bytes)\n", file, a.ContentType, len(a.Content))
+	}
 	slog.InfoContext(ctx, "mail written to sink", "to", m.To, "subject", m.Subject, "file", name)
 	return os.WriteFile(filepath.Join(f.Dir, name), []byte(body), 0o644)
 }
@@ -66,7 +84,7 @@ func (f FileSink) Send(ctx context.Context, m Message) error {
 type Log struct{}
 
 func (Log) Send(ctx context.Context, m Message) error {
-	slog.InfoContext(ctx, "mail (not sent: RESEND_API_KEY unset)", "to", m.To, "subject", m.Subject, "text", m.Text)
+	slog.InfoContext(ctx, "mail (not sent: RESEND_API_KEY unset)", "to", m.To, "subject", m.Subject, "text", m.Text, "attachments", len(m.Attachments))
 	return nil
 }
 
@@ -84,6 +102,17 @@ func (r *Resend) Send(ctx context.Context, m Message) error {
 	}
 	if m.ReplyTo != "" {
 		body["reply_to"] = m.ReplyTo
+	}
+	if len(m.Attachments) > 0 {
+		files := make([]map[string]string, 0, len(m.Attachments))
+		for _, a := range m.Attachments {
+			files = append(files, map[string]string{
+				"filename":     a.Filename,
+				"content":      base64.StdEncoding.EncodeToString(a.Content),
+				"content_type": a.ContentType,
+			})
+		}
+		body["attachments"] = files
 	}
 	b, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(b))

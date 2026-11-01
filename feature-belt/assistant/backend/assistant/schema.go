@@ -24,9 +24,11 @@ import (
 
 type schemaNode = map[string]any
 
-// compiledSchema is a parsed tool schema.
+// compiledSchema is a parsed tool schema. steps counts the nodes one
+// validate call has visited (each call works on its own copy).
 type compiledSchema struct {
-	root schemaNode
+	root  schemaNode
+	steps int
 }
 
 func compileSchema(raw json.RawMessage) (*compiledSchema, error) {
@@ -54,14 +56,25 @@ func (c *compiledSchema) validate(input json.RawMessage) error {
 	if dec.More() {
 		return fmt.Errorf("input has trailing data after the JSON object")
 	}
-	return c.check("input", c.root, v, 0)
+	run := &compiledSchema{root: c.root} // per-call step count; c is shared
+	return run.check("input", run.root, v, 0)
 }
 
-const maxSchemaDepth = 32
+// maxSchemaDepth bounds nesting; maxSchemaSteps bounds the whole walk.
+// Schemas from connected servers are untrusted: anyOf/oneOf over $refs that
+// point back at themselves branch at every level, so depth alone still
+// allows billions of visits (a CPU-bound call that ignores its context).
+const (
+	maxSchemaDepth = 32
+	maxSchemaSteps = 20_000
+)
 
 func (c *compiledSchema) check(path string, s schemaNode, v any, depth int) error {
 	if depth > maxSchemaDepth {
 		return fmt.Errorf("%s nests too deeply", path)
+	}
+	if c.steps++; c.steps > maxSchemaSteps {
+		return fmt.Errorf("the tool's input schema is too complex to check")
 	}
 	if ref, ok := s["$ref"].(string); ok {
 		target, err := c.resolve(ref)

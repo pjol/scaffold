@@ -1,7 +1,7 @@
 {
   "name": "events",
   "title": "Events",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "summary": "People create events with a time and place, RSVP with a waitlist when full, get reminders and cancellation notices, and add events to their calendar.",
   "requires": [
     "notifications"

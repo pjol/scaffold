@@ -1,0 +1,113 @@
+{
+  "name": "presence",
+  "title": "Presence",
+  "version": "1.0.0",
+  "summary": "People see who is online, away or offline, set a custom status that clears on its own, and pause notifications with Do Not Disturb.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 800,
+  "env": [
+    {
+      "name": "PRESENCE_OFFLINE_TTL",
+      "tier": "backend",
+      "group": "presence",
+      "required": "optional",
+      "default": "2m",
+      "doc": "A device with no heartbeat for this long stops counting as online (Go duration; at least twice PRESENCE_HEARTBEAT_INTERVAL)."
+    },
+    {
+      "name": "PRESENCE_HEARTBEAT_INTERVAL",
+      "tier": "backend",
+      "group": "presence",
+      "required": "optional",
+      "default": "45s",
+      "doc": "How often clients send a heartbeat while the app is on screen (Go duration, at least 10s)."
+    },
+    {
+      "name": "PRESENCE_IDLE_AFTER",
+      "tier": "backend",
+      "group": "presence",
+      "required": "optional",
+      "default": "10m",
+      "doc": "Minutes without input after which web clients report the person idle (away) (Go duration, at least 1m)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/presence",
+      "dst": "backend/internal/presence"
+    },
+    {
+      "src": "backend/feature_presence.go",
+      "dst": "backend/internal/api/feature_presence.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/presence"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/presence"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/presence"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./presence\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { presenceAccountMenu, presenceSession } from \"./presence/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "account-menu",
+      "insert": "presenceAccountMenu,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "presenceSession,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { presenceSession, presenceSettings } from \"./presence/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "presenceSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "presenceSession,"
+    }
+  ],
+  "stitch": [
+    "Decide who sees whose presence: presence.SetVisibilityPolicy (default: any signed-in user). With orgs installed, presence.SetVisibilityPolicy(presence.SharedGroupPolicy(\"org_members\", \"org_id\", \"user_id\")) limits it to people who share an org.",
+    "Run custom status text through the content filter: presence.SetTextCheck(moderation.Check) when the moderation feature is installed.",
+    "Hold push and email during Do Not Disturb app-wide (notifications >= 1.1.0): notifications.AddDeliveryFilter(\"presence.dnd\", func(ctx, n) (notifications.Hold, error) { on, err := presence.IsDND(ctx, d.Pool, n.UserID); return notifications.Hold{Push: on, Email: on}, err }). The channels feature registers it when installed.",
+    "Show presence where people appear: PresenceAvatar / UserPresenceDot from @/features/presence on web and mobile; usePresence(ids) batches every id on screen into one request.",
+    "Mobile: the Status row sits in Settings; move it to a profile or account sheet if the app has one."
+  ]
+}

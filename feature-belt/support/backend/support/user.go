@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/realtime"
@@ -100,9 +101,11 @@ func (s *Service) createTicket(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	bg := context.WithoutCancel(ctx)
-	s.publish(bg, realtime.AdminLiveTopic, EventTicket, detail.Ticket)
-	go s.alertNewTicket(bg, detail.Ticket, id.Email, body, len(atts))
+	s.publish(context.WithoutCancel(ctx), realtime.AdminLiveTopic, EventTicket, detail.Ticket)
+	bg.Go(ctx, "support.alert_new_ticket", func(ctx context.Context) error {
+		s.alertNewTicket(ctx, detail.Ticket, id.Email, body, len(atts))
+		return nil
+	})
 	httpx.JSON(w, http.StatusCreated, detail)
 	return nil
 }
@@ -183,9 +186,9 @@ func (s *Service) replyMine(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	bg := context.WithoutCancel(ctx)
-	s.publishMessage(bg, ticketID, messageID)
-	s.publishTicket(bg, d.Ticket)
+	detached := context.WithoutCancel(ctx)
+	s.publishMessage(detached, ticketID, messageID)
+	s.publishTicket(detached, d.Ticket)
 	httpx.JSON(w, http.StatusCreated, d)
 	return nil
 }

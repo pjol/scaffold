@@ -26,7 +26,7 @@ Semantic roles per palette and mode (`--app-*` CSS variables, Tailwind classes, 
 
 - Light and dark ship for every palette; users choose System / Light / Dark. Palettes switch with `data-palette`; set before first paint (no flash).
 - One accent does the work. Colour marks state and action, not decoration.
-- `pnpm check` runs the contrast audit for every palette and mode; it must pass.
+- `pnpm check` runs the contrast audit for every palette and mode and the Tailwind name check; it must pass.
 - Dark mode: shadows stop separating surfaces, so groups use a surface step or a low-alpha border.
 
 ## Spacing
@@ -35,7 +35,7 @@ Base unit **4 px**. Token name = multiple of 4 = Tailwind's number: `p-4` = 16 o
 
 **Approved steps:** 0 · px (hairlines only) · 0.5 (2) · 1 (4) · 1.5 (6) · 2 (8) · 3 (12) · 4 (16) · 5 (20) · 6 (24) · 8 (32) · 10 (40) · 12 (48) · 16 (64) · 20 (80) · 24 (96) · 32 (128). Nothing else for padding, margin or gap. 4-steps inside components, 8-steps for layout, geometric jumps above 48.
 
-**Semantic layout tokens** (responsive at 640 / 1024): `tight` 4 · `related` 8 · `group` 16 · `block` 24 · `section` 32→40→48 · `band` 64→96→128 · `gutter` 16→24→32 · `card` 16→24. Use them for page structure: `<main class="mx-auto max-w-content px-gutter py-section flex flex-col gap-section">`. Never name spacing tokens sm/md/lg/xl (Tailwind v4 collision with `max-w-*`).
+**Semantic layout tokens** (responsive at 640 / 1024): `tight` 4 · `related` 8 · `group` 16 · `subsection` 24 · `section` 32→40→48 · `band` 64→96→128 · `gutter` 16→24→32 · `card` 16→24. Use them for page structure: `<main class="mx-auto max-w-content px-gutter py-section flex flex-col gap-section">`. A theme name must not complete an existing Tailwind class: `--spacing-md` hijacks `max-w-md`, and the old `--spacing-block` gave every `inline-block` `inline-size: 1.5rem`. `pnpm check` compiles each theme name against the web app's Tailwind and refuses collisions (`packages/tokens/scripts/tailwind-names.mjs`); add new names to `ui-web/src/lib/cn.ts` too.
 
 **The relationship ladder** — decide the level, read off the number. Each level is clearly larger (≥1.5×) than the one below; uniform spacing everywhere is the most common failure.
 
@@ -96,7 +96,7 @@ Tracking tightens as size grows (−0.01 → −0.03em). Never below 12/16 for c
 
 ## Shape and elevation
 
-Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or surface step; shadows (`elevation`) only on menus, popovers, dialogs, sheets and toasts.
+Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or surface step; shadows (`elevation`) only on menus, popovers, dialogs, sheets and toasts. Layers come from `zIndex` (tokens): menus and selects open on the popover layer, above dialogs and sheets, so they work inside them.
 
 ## Motion
 

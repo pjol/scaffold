@@ -38,7 +38,7 @@ Web components for `web/`: Tailwind v4 (CSS-first), `motion` (`motion/react`) an
 |---|---|
 | Theme | `ThemeScript`, `themeInitScript`, `UIProvider`, `useColorMode`, `usePalette`, `useThemeColors` |
 | Motion | `Presence` (enter/exit, fade + 8 px), `Collapse`, `SwapText`, `FadeIn`, `Stagger`/`StaggerItem`, `PageTransition`, `useMotionTokens`, re-exports of `motion`, `AnimatePresence`, `LayoutGroup`, `useReducedMotion`… |
-| Actions | `Button` (`variant` primary/secondary/outline/ghost/soft/accent/danger/danger-ghost/success, `size`, `loading`, `leftIcon`, `rightIcon`, `asChild`), `IconButton` (`label` required, `tooltip`), `Menu`/`MenuItem`/`MenuSeparator`/`MenuLabel` |
+| Actions | `Button` (`variant` primary/secondary/outline/ghost/soft/accent/danger/danger-ghost/success, `size`, `loading`, `leftIcon`, `rightIcon`, `asChild`), `IconButton` (`label` required, `tooltip`), `Menu`/`MenuItem`/`MenuSeparator`/`MenuLabel`, `MenuSub`/`MenuChoice` (a choice submenu; inline below 640 px) |
 | Surfaces | `Card` (`variant`, `padding` card/compact/none, `interactive`, `asChild`), `ListRow` (`title`, `leading`, `trailing`, `info`, `destructive`, `asChild`), `Divider`, `Banner` |
 | Status | `Badge` (`tone` × soft/solid/outline, `dot`, `pop`), `Chip`, `ToggleChip`, `Avatar` (`renderImage` for `next/image`) |
 | Help and text | `InfoTip`, `Tooltip`, `Hero`, `Display`, `Headline`, `Title`, `TitleSm`, `BodyLg`, `Body`, `Label`, `Caption` |

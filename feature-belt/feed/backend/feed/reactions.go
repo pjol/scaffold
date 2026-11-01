@@ -102,7 +102,7 @@ func (s *Service) reactPostHandler(w http.ResponseWriter, r *http.Request) error
 	}
 	if inserted {
 		name := actorName(caller.DisplayName)
-		s.afterCommit(ctx, func(ctx context.Context) {
+		s.afterCommit(ctx, "feed.notify_reaction", func(ctx context.Context) {
 			var body string
 			_ = s.d.Pool.QueryRow(ctx, `SELECT body FROM feed_posts WHERE id = $1`, pid).Scan(&body)
 			s.notifyUser(ctx, caller.UserID, notify.Notification{
@@ -184,7 +184,7 @@ func (s *Service) reactCommentHandler(w http.ResponseWriter, r *http.Request) er
 	}
 	if inserted {
 		name := actorName(caller.DisplayName)
-		s.afterCommit(ctx, func(ctx context.Context) {
+		s.afterCommit(ctx, "feed.notify_reaction", func(ctx context.Context) {
 			s.notifyUser(ctx, caller.UserID, notify.Notification{
 				UserID: c.authorID, Kind: NotifyReaction, Title: name + " reacted to your comment",
 				Body: preview(c.body), Link: "/feed/posts/" + c.postID.String(),

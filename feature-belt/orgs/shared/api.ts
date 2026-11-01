@@ -2,6 +2,7 @@ import type { CallOptions, HttpClient } from "../api/http";
 import { seg } from "../api/query-string";
 import type { Page } from "../types";
 import type {
+  AddOrgDomainRequest,
   AdminOrg,
   AdminOrgDetail,
   AdminOrgListParams,
@@ -9,18 +10,24 @@ import type {
   CreateInviteRequest,
   CreateOrgRequest,
   InvitePreview,
+  JoinableOrg,
   MyInvite,
+  MyOrgJoinRequest,
   Org,
+  OrgDomain,
+  OrgDomainPolicy,
   OrgInvite,
   OrgInviteLink,
+  OrgJoinRequest,
   OrgMember,
   OrgRole,
+  OrgsAutoJoined,
   UpdateOrgRequest,
 } from "./types";
 
 type PageParams = { cursor?: string | undefined; limit?: number };
 
-/** Organization endpoints: orgs, members, invites and links, accepting, and the staff list. */
+/** Organization endpoints: orgs, members, invites and links, accepting, email domains and join requests, and the staff list. */
 export function orgsEndpoints(http: HttpClient) {
   const O = "/v1/orgs";
   const q = (p: PageParams) => ({ cursor: p.cursor, limit: p.limit });
@@ -61,11 +68,40 @@ export function orgsEndpoints(http: HttpClient) {
     acceptMyInvite: (inviteId: string, o?: CallOptions) => http.post<Org>(`${O}/my-invites/${seg(inviteId)}/accept`, undefined, o),
     declineMyInvite: (inviteId: string, o?: CallOptions) => http.post<void>(`${O}/my-invites/${seg(inviteId)}/decline`, undefined, o),
 
+    /** Admins: claimed email domains (one page; 20 at most). */
+    domains: (orgId: string, o?: CallOptions) => http.get<Page<OrgDomain>>(`${O}/${seg(orgId)}/domains`, o),
+    /** Admins. Verified at once when your own email is on the domain; otherwise add the TXT record and verify. */
+    addDomain: (orgId: string, body: AddOrgDomainRequest, o?: CallOptions) => http.post<OrgDomain>(`${O}/${seg(orgId)}/domains`, body, o),
+    /** Admins: checks your email, then DNS (422 `verification_failed` with the reason). */
+    verifyDomain: (orgId: string, domainId: string, o?: CallOptions) => http.post<OrgDomain>(`${O}/${seg(orgId)}/domains/${seg(domainId)}/verify`, undefined, o),
+    updateDomain: (orgId: string, domainId: string, policy: OrgDomainPolicy, o?: CallOptions) =>
+      http.patch<OrgDomain>(`${O}/${seg(orgId)}/domains/${seg(domainId)}`, { policy }, o),
+    removeDomain: (orgId: string, domainId: string, o?: CallOptions) => http.delete<void>(`${O}/${seg(orgId)}/domains/${seg(domainId)}`, o),
+
+    /** Admins: pending requests to join, oldest first. */
+    joinRequests: (orgId: string, params: PageParams = {}, o?: CallOptions) =>
+      http.get<Page<OrgJoinRequest>>(`${O}/${seg(orgId)}/join-requests`, { ...o, query: q(params) }),
+    approveJoinRequest: (orgId: string, requestId: string, o?: CallOptions) =>
+      http.post<OrgMember>(`${O}/${seg(orgId)}/join-requests/${seg(requestId)}/approve`, undefined, o),
+    denyJoinRequest: (orgId: string, requestId: string, o?: CallOptions) => http.post<void>(`${O}/${seg(orgId)}/join-requests/${seg(requestId)}/deny`, undefined, o),
+
+    /** Orgs your verified email domain lets you join or ask to join. */
+    joinable: (o?: CallOptions) => http.get<Page<JoinableOrg>>(`${O}/joinable`, o),
+    /** Joins every auto-join org your email qualifies for (not ones you left). Idempotent. */
+    autoJoin: (o?: CallOptions) => http.post<OrgsAutoJoined>(`${O}/auto-join`, undefined, o),
+    /** Join through an auto-join domain. */
+    joinByDomain: (orgId: string, o?: CallOptions) => http.post<Org>(`${O}/${seg(orgId)}/join`, undefined, o),
+    /** Ask to join through a request domain (returns the pending request if there is one). */
+    requestToJoin: (orgId: string, o?: CallOptions) => http.post<MyOrgJoinRequest>(`${O}/${seg(orgId)}/join-requests`, undefined, o),
+    cancelJoinRequest: (requestId: string, o?: CallOptions) => http.delete<void>(`${O}/my-join-requests/${seg(requestId)}`, o),
+
     admin: {
       /** `GET /v1/admin/orgs?q=&member_id=`, newest first. */
       list: (params: AdminOrgListParams = {}, o?: CallOptions) =>
         http.get<Page<AdminOrg>>("/v1/admin/orgs", { ...o, query: { q: params.q, member_id: params.member_id, cursor: params.cursor, limit: params.limit } }),
       get: (orgId: string, o?: CallOptions) => http.get<AdminOrgDetail>(`/v1/admin/orgs/${seg(orgId)}`, o),
+      /** Admin role: free a disputed domain (audited). */
+      releaseDomain: (orgId: string, domainId: string, o?: CallOptions) => http.delete<void>(`/v1/admin/orgs/${seg(orgId)}/domains/${seg(domainId)}`, o),
     },
   };
 }

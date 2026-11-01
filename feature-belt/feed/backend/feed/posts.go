@@ -302,7 +302,7 @@ func (s *Service) createPost(ctx context.Context, caller *auth.Identity, req pos
 	author := actorName(caller.DisplayName)
 	link2 := "/feed/posts/" + postID.String()
 	data := map[string]any{"post_id": postID}
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "feed.notify_post", func(ctx context.Context) {
 		notified := map[uuid.UUID]bool{}
 		for _, m := range mentions {
 			notified[m.userID] = true
@@ -509,7 +509,7 @@ func (s *Service) updatePostHandler(w http.ResponseWriter, r *http.Request) erro
 	}
 	s.publish(ctx, audience, EventPostUpdated, map[string]any{"post_id": pid, "deleted": false})
 	author := actorName(caller.DisplayName)
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "feed.notify_mentions", func(ctx context.Context) {
 		for _, m := range newMentions {
 			s.notifyUser(ctx, caller.UserID, notify.Notification{
 				UserID: m.userID, Kind: NotifyMention, Title: author + " mentioned you",
@@ -581,7 +581,7 @@ func (s *Service) deleteObjects(ctx context.Context, keys []string) {
 	if len(keys) == 0 {
 		return
 	}
-	s.afterCommit(ctx, func(ctx context.Context) {
+	s.afterCommit(ctx, "feed.delete_media", func(ctx context.Context) {
 		if err := s.emptyTrashKeys(ctx, keys); err != nil {
 			slog.WarnContext(ctx, "feed: media cleanup will retry", "err", err)
 		}

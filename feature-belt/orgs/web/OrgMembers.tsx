@@ -1,11 +1,12 @@
 "use client";
 
-import { errorMessage, useMe, useOrgMembers, useRemoveOrgMember, useTransferOwnership, useUpdateMember, type Org, type OrgMember, type OrgRole } from "@scaffoldapp/shared";
+import { errorMessage, orgRoleAtLeast, orgsNoun, useMe, useOrgMembers, useRemoveOrgMember, useTransferOwnership, useUpdateMember, type Org, type OrgMember, type OrgRole } from "@scaffoldapp/shared";
 import { Badge, Card, ConfirmDialog, EmptyState, ErrorState, IconButton, ListRow, Menu, MenuItem, MenuSeparator, SkeletonGroup, SkeletonRow, toast } from "@scaffoldapp/ui-web";
 import { Crown, MoreHorizontal, ShieldCheck, UserMinus, UserRound, Users } from "lucide-react";
 import { useState } from "react";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { LoadMore } from "@/components/shell/LoadMore";
+import { JoinRequests } from "./JoinRequests";
 import { ROLE_LABEL, ROLE_TONE } from "./labels";
 
 type Pending = { kind: "role"; member: OrgMember; role: OrgRole } | { kind: "remove"; member: OrgMember } | { kind: "transfer"; member: OrgMember };
@@ -27,7 +28,7 @@ function displayName(m: OrgMember): string {
   return m.display_name || m.email || "Member";
 }
 
-/** Members tab: owners first; admins change roles and remove; owners also transfer ownership. */
+/** Members tab: requests to join (admins), then members, owners first; admins change roles and remove; owners also transfer ownership. */
 export function OrgMembers({ org }: { org: Org }) {
   const me = useMe();
   const members = useOrgMembers(org.id);
@@ -48,13 +49,14 @@ export function OrgMembers({ org }: { org: Org }) {
     if (!pending) return "";
     if (pending.kind === "remove") return "They lose access right away. You can invite them again later.";
     if (pending.kind === "transfer") return "They become an owner and you become an admin.";
-    if (pending.role === "owner") return "Owners can manage everything, including deleting the organization.";
-    if (pending.role === "admin") return "Admins can manage members, invites and the organization's details.";
+    if (pending.role === "owner") return `Owners can manage everything, including deleting the ${orgsNoun()}.`;
+    if (pending.role === "admin") return `Admins can manage members, invites and the ${orgsNoun()}'s details.`;
     return pending.member.role === "owner" ? "They stop being an owner." : "They stop managing members and invites.";
   })();
 
   return (
-    <>
+    <div className="flex flex-col gap-section">
+      {orgRoleAtLeast(org.role, "admin") && <JoinRequests org={org} />}
       <Card padding="none" className="p-1">
         {members.isPending ? (
           <SkeletonGroup label="Loading members" className="flex flex-col">
@@ -140,6 +142,6 @@ export function OrgMembers({ org }: { org: Org }) {
       >
         <p>{confirmBody}</p>
       </ConfirmDialog>
-    </>
+    </div>
   );
 }

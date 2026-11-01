@@ -7,8 +7,9 @@ SKILL.md          root skill: what to read, how to start an app or add a feature
 concrete/         the foundation as rules (stack, backend, database, auth, web, mobile, design,
                   design process, writing, env, dev-up, docs, compliance)
 template/         the foundation as a running app — what `scaffold new` copies
-feature-belt/     feature modules: notifications, moderation, orgs, support, identity, mcp,
-                  chat, feed, places, events, payments, wallets, assistant
+feature-belt/     feature modules: notifications, moderation, orgs, support, identity, mcp, access,
+                  presence, connectors, chat, feed, places, events, payments, wallets, assistant,
+                  files, docs, crm, calls, calendar, channels, agents, repos, search
 cli/              the scaffold toolset (Go): one operation registry → CLI, MCP server, HTTP API
 bin/scaffold      runs the CLI from source
 ```

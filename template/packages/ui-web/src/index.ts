@@ -35,7 +35,7 @@ export { Badge, type BadgeProps, type BadgeTone, type BadgeVariant } from "./com
 export { Chip, ToggleChip, type ChipProps, type ToggleChipProps } from "./components/Chip";
 export { Avatar, type AvatarProps, type AvatarSize, type AvatarImageProps } from "./components/Avatar";
 export { Banner, type BannerProps, type BannerTone } from "./components/Banner";
-export { Menu, MenuItem, MenuSeparator, MenuLabel, type MenuProps, type MenuItemProps } from "./components/Menu";
+export { Menu, MenuItem, MenuSeparator, MenuLabel, MenuSub, MenuChoice, type MenuProps, type MenuItemProps, type MenuSubProps, type MenuChoiceProps } from "./components/Menu";
 
 // help and text
 export { InfoTip, type InfoTipProps } from "./components/InfoTip";

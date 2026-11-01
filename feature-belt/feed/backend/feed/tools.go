@@ -13,7 +13,7 @@ import (
 )
 
 // Tools exposes read-only feed tools to agents, run as the caller (their
-// audiences and blocks apply).
+// audiences and blocks apply) and narrowed by their agent scope.
 func (s *Service) Tools() []app.Tool {
 	return []app.Tool{
 		{
@@ -87,7 +87,11 @@ func (s *Service) toolList(ctx context.Context, caller *auth.Identity, raw json.
 	if err != nil {
 		return nil, err
 	}
-	return s.listPosts(ctx, v, f)
+	page, err := s.listPosts(ctx, v, f)
+	if err != nil {
+		return nil, err
+	}
+	return s.agentPosts(ctx, caller, page)
 }
 
 func (s *Service) toolSearch(ctx context.Context, caller *auth.Identity, raw json.RawMessage) (any, error) {
@@ -102,5 +106,9 @@ func (s *Service) toolSearch(ctx context.Context, caller *auth.Identity, raw jso
 	if err != nil {
 		return nil, err
 	}
-	return s.listPosts(ctx, v, listFilter{limit: in.Limit, cursor: in.Cursor, q: strings.TrimSpace(in.Q)})
+	page, err := s.listPosts(ctx, v, listFilter{limit: in.Limit, cursor: in.Cursor, q: strings.TrimSpace(in.Q)})
+	if err != nil {
+		return nil, err
+	}
+	return s.agentPosts(ctx, caller, page)
 }

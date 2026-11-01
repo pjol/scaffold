@@ -56,6 +56,13 @@ func Revoke(ctx context.Context, b Broker, userID uuid.UUID, topic string) error
 	return b.Publish(ctx, ControlTopic, EventRevoke, revokeMessage{UserID: userID, Topic: topic})
 }
 
+// RevokeTopic asks every instance to re-check every subscriber of topic and
+// drop those who lost access, for changes that affect an unknown set of people
+// (a shared item made private). It is a revoke with no user id.
+func RevokeTopic(ctx context.Context, b Broker, topic string) error {
+	return b.Publish(ctx, ControlTopic, EventRevoke, revokeMessage{Topic: topic})
+}
+
 // EventNotification is published by notify.Realtime on the user topic.
 // Modules define their own event types next to their topics ("chat.message").
 const EventNotification = "notification"

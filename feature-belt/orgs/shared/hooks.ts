@@ -10,6 +10,7 @@ import { registerReconnectRefetch, registerRealtimeHandler } from "../hooks/real
 import type { Page } from "../types";
 import { orgsEndpoints } from "./api";
 import type {
+  AddOrgDomainRequest,
   AdminOrg,
   AdminOrgDetail,
   AdminOrgListParams,
@@ -17,12 +18,18 @@ import type {
   CreateInviteRequest,
   CreateOrgRequest,
   InvitePreview,
+  JoinableOrg,
   MyInvite,
+  MyOrgJoinRequest,
   Org,
+  OrgDomain,
+  OrgDomainPolicy,
   OrgInvite,
   OrgInviteLink,
+  OrgJoinRequest,
   OrgMember,
   OrgRole,
+  OrgsAutoJoined,
   UpdateOrgRequest,
 } from "./types";
 
@@ -36,6 +43,9 @@ export const orgsKeys = {
   invites: (id: string, status = "pending") => ["orgs", "org", id, "invites", status] as const,
   links: (id: string) => ["orgs", "org", id, "links"] as const,
   myInvites: () => ["orgs", "my-invites"] as const,
+  domains: (id: string) => ["orgs", "org", id, "domains"] as const,
+  joinRequests: (id: string) => ["orgs", "org", id, "join-requests"] as const,
+  joinable: () => ["orgs", "joinable"] as const,
   preview: (token: string) => ["orgs", "preview", token] as const,
   admin: {
     all: () => ["orgs", "admin"] as const,
@@ -98,15 +108,67 @@ export function useActiveOrgId(): string | null {
 }
 
 /**
+ * The org someone works in when they haven't chosen one (or left the one they chose): the
+ * largest they belong to, then the one they joined most recently. A side group created
+ * later never displaces the company everyone is in.
+ */
+export function defaultOrg(orgs: readonly Org[]): Org | null {
+  let best: Org | null = null;
+  let bestJoined = 0;
+  for (const o of orgs) {
+    const joined = Date.parse(o.joined_at) || 0;
+    if (!best || o.member_count > best.member_count || (o.member_count === best.member_count && joined > bestJoined)) {
+      best = o;
+      bestJoined = joined;
+    }
+  }
+  return best;
+}
+
+/**
  * The org the user is working in: the stored choice when they still belong to it, else
- * their first org, else null. Features scope their screens with `org?.id`.
+ * `defaultOrg` (largest, then most recently joined), else null. Features scope their
+ * screens with `org?.id`.
  */
 export function useActiveOrg(): { org: Org | null; orgs: Org[]; isPending: boolean; setActive: (id: string | null) => void } {
   const id = useActiveOrgId();
   const list = useOrgs();
   const orgs = list.data?.items ?? [];
-  const org = orgs.find((o) => o.id === id) ?? orgs[0] ?? null;
+  const org = orgs.find((o) => o.id === id) ?? defaultOrg(orgs);
   return { org, orgs, isPending: list.isPending, setActive: setActiveOrgId };
+}
+
+// ---- shell switcher ------------------------------------------------------------
+
+let shellSwitcher = false;
+const shellListeners = new Set<() => void>();
+
+/**
+ * Tell features the app shell has its own org switcher (a top-bar picker), so screens
+ * drop their in-page one (`useOrgPickerVisible`). Call once at startup in stitching.
+ */
+export function setOrgsShellSwitcher(on: boolean): void {
+  if (shellSwitcher === on) return;
+  shellSwitcher = on;
+  for (const l of shellListeners) l();
+}
+
+/**
+ * Whether a screen should show its own org picker: false when the shell has one
+ * (`setOrgsShellSwitcher(true)`). Screens still decide when one helps (more than 1 org).
+ */
+export function useOrgPickerVisible(): boolean {
+  const shell = useSyncExternalStore(
+    (fn) => {
+      shellListeners.add(fn);
+      return () => {
+        shellListeners.delete(fn);
+      };
+    },
+    () => shellSwitcher,
+    () => shellSwitcher,
+  );
+  return !shell;
 }
 
 // ---- orgs --------------------------------------------------------------------
@@ -270,7 +332,11 @@ export function useInvitePreview(token: string | null | undefined, options?: Que
 
 function afterJoin(qc: QueryClient, org: Org) {
   qc.setQueryData(orgsKeys.detail(org.id), org);
-  return Promise.all([qc.invalidateQueries({ queryKey: orgsKeys.list() }), qc.invalidateQueries({ queryKey: orgsKeys.myInvites() })]);
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: orgsKeys.list() }),
+    qc.invalidateQueries({ queryKey: orgsKeys.myInvites() }),
+    qc.invalidateQueries({ queryKey: orgsKeys.joinable() }),
+  ]);
 }
 
 /** Accept by token (email invite or link). Resolves to the org you joined. */
@@ -315,6 +381,162 @@ export function useDeclineMyInvite(): UseMutationResult<void, ApiError, string> 
   });
 }
 
+// ---- email domains (admins) ----------------------------------------------------
+
+/** The org's claimed email domains (admins). */
+export function useOrgDomains(orgId: string | null | undefined, options?: QueryOverrides<Page<OrgDomain>>): UseQueryResult<Page<OrgDomain>, ApiError> {
+  const o = useEndpoints(orgsEndpoints);
+  return useApiQuery(orgsKeys.domains(orgId ?? ""), ({ signal }) => o.domains(orgId ?? "", { signal }), options, !!orgId);
+}
+
+function putDomain(qc: QueryClient, d: OrgDomain) {
+  qc.setQueryData<Page<OrgDomain>>(orgsKeys.domains(d.org_id), (data) =>
+    data ? { ...data, items: data.items.some((x) => x.id === d.id) ? data.items.map((x) => (x.id === d.id ? d : x)) : [...data.items, d] } : data,
+  );
+}
+
+/** Add a domain. Resolves verified when your own email is on it. */
+export function useAddOrgDomain(orgId: string): UseMutationResult<OrgDomain, ApiError, AddOrgDomainRequest> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<OrgDomain, ApiError, AddOrgDomainRequest>({
+    mutationFn: (body) => o.addDomain(orgId, body),
+    onSuccess: (d) => putDomain(qc, d),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.domains(orgId) }),
+  });
+}
+
+/** Check a domain now (your email, then its TXT record). A failed check rejects with `verification_failed`. */
+export function useVerifyOrgDomain(orgId: string): UseMutationResult<OrgDomain, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<OrgDomain, ApiError, string>({
+    mutationFn: (domainId) => o.verifyDomain(orgId, domainId),
+    onSuccess: (d) => putDomain(qc, d),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.domains(orgId) }),
+  });
+}
+
+/** Change a domain's policy (optimistic). */
+export function useUpdateOrgDomain(orgId: string): UseMutationResult<OrgDomain, ApiError, { domainId: string; policy: OrgDomainPolicy }, { previous: Page<OrgDomain> | undefined }> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  const key = orgsKeys.domains(orgId);
+  return useMutation<OrgDomain, ApiError, { domainId: string; policy: OrgDomainPolicy }, { previous: Page<OrgDomain> | undefined }>({
+    mutationFn: ({ domainId, policy }) => o.updateDomain(orgId, domainId, policy),
+    onMutate: async ({ domainId, policy }) => {
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<Page<OrgDomain>>(key);
+      qc.setQueryData<Page<OrgDomain>>(key, (data) => (data ? { ...data, items: data.items.map((d) => (d.id === domainId ? { ...d, policy } : d)) } : data));
+      return { previous };
+    },
+    onError: (_e, _v, ctx) => qc.setQueryData(key, ctx?.previous),
+    onSuccess: (d) => putDomain(qc, d),
+  });
+}
+
+export function useRemoveOrgDomain(orgId: string): UseMutationResult<void, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (domainId) => o.removeDomain(orgId, domainId),
+    onSuccess: (_d, domainId) =>
+      qc.setQueryData<Page<OrgDomain>>(orgsKeys.domains(orgId), (data) => (data ? { ...data, items: data.items.filter((d) => d.id !== domainId) } : data)),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.domains(orgId) }),
+  });
+}
+
+// ---- join requests (admins) ----------------------------------------------------
+
+/** Pending requests to join, oldest first (admins). */
+export function useOrgJoinRequests(orgId: string | null | undefined, options?: InfiniteOverrides<OrgJoinRequest>): PagedQueryResult<OrgJoinRequest> {
+  const o = useEndpoints(orgsEndpoints);
+  return usePagedQuery<OrgJoinRequest>(orgsKeys.joinRequests(orgId ?? ""), (cursor, signal) => o.joinRequests(orgId ?? "", { cursor }, { signal }), options, !!orgId);
+}
+
+function dropJoinRequest(qc: QueryClient, orgId: string, requestId: string) {
+  qc.setQueryData<InfiniteData<Page<OrgJoinRequest>>>(orgsKeys.joinRequests(orgId), (data) =>
+    data ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.filter((j) => j.id !== requestId) })) } : data,
+  );
+}
+
+/** Approve: they join as a member. Resolves to the new member. */
+export function useApproveOrgJoinRequest(orgId: string): UseMutationResult<OrgMember, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<OrgMember, ApiError, string>({
+    mutationFn: (requestId) => o.approveJoinRequest(orgId, requestId),
+    onSuccess: (_m, requestId) => dropJoinRequest(qc, orgId, requestId),
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: orgsKeys.joinRequests(orgId) }),
+        qc.invalidateQueries({ queryKey: orgsKeys.members(orgId) }),
+        qc.invalidateQueries({ queryKey: orgsKeys.detail(orgId) }),
+      ]),
+  });
+}
+
+/** Decline: they can ask again after 7 days. */
+export function useDenyOrgJoinRequest(orgId: string): UseMutationResult<void, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (requestId) => o.denyJoinRequest(orgId, requestId),
+    onSuccess: (_d, requestId) => dropJoinRequest(qc, orgId, requestId),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.joinRequests(orgId) }),
+  });
+}
+
+// ---- joining by email domain -------------------------------------------------
+
+/** Orgs your verified email domain lets you join or ask to join (usually 0 or 1). */
+export function useJoinableOrgs(options?: QueryOverrides<Page<JoinableOrg>>): UseQueryResult<Page<JoinableOrg>, ApiError> {
+  const o = useEndpoints(orgsEndpoints);
+  return useApiQuery(orgsKeys.joinable(), ({ signal }) => o.joinable({ signal }), options);
+}
+
+/** Join through an auto-join domain. Resolves to the org. */
+export function useJoinOrgByDomain(): UseMutationResult<Org, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<Org, ApiError, string>({ mutationFn: (orgId) => o.joinByDomain(orgId), onSuccess: (org) => afterJoin(qc, org) });
+}
+
+/** Ask to join through a request domain. */
+export function useRequestToJoinOrg(): UseMutationResult<MyOrgJoinRequest, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<MyOrgJoinRequest, ApiError, string>({
+    mutationFn: (orgId) => o.requestToJoin(orgId),
+    onSuccess: (req) =>
+      qc.setQueryData<Page<JoinableOrg>>(orgsKeys.joinable(), (data) =>
+        data ? { ...data, items: data.items.map((j) => (j.org.id === req.org.id ? { ...j, action: "requested" as const, request_id: req.id, requested_at: req.created_at } : j)) } : data,
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.joinable() }),
+  });
+}
+
+/** Withdraw your pending request (takes the request id). */
+export function useCancelOrgJoinRequest(): UseMutationResult<void, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (requestId) => o.cancelJoinRequest(requestId), onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.joinable() }) });
+}
+
+/** Joins every auto-join org your email qualifies for. The apps' session mounts call it once per session. */
+export function useOrgsAutoJoin(): UseMutationResult<OrgsAutoJoined, ApiError, void> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<OrgsAutoJoined, ApiError, void>({
+    mutationFn: () => o.autoJoin(),
+    onSuccess: (r) => {
+      if (r.joined.length === 0) return;
+      for (const org of r.joined) qc.setQueryData(orgsKeys.detail(org.id), org);
+      return Promise.all([qc.invalidateQueries({ queryKey: orgsKeys.list() }), qc.invalidateQueries({ queryKey: orgsKeys.joinable() })]);
+    },
+  });
+}
+
 // ---- staff -------------------------------------------------------------------
 
 export function useAdminOrgs(params: AdminOrgListParams = {}, options?: InfiniteOverrides<AdminOrg>): PagedQueryResult<AdminOrg> {
@@ -330,12 +552,25 @@ export function useAdminOrg(orgId: string | null | undefined, options?: QueryOve
   return useApiQuery(orgsKeys.admin.detail(orgId ?? ""), ({ signal }) => o.admin.get(orgId ?? "", { signal }), options, !!orgId);
 }
 
+/** Admin role: free a claimed domain (audited). */
+export function useAdminReleaseOrgDomain(orgId: string): UseMutationResult<void, ApiError, string> {
+  const o = useEndpoints(orgsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (domainId) => o.admin.releaseDomain(orgId, domainId),
+    onSettled: () => qc.invalidateQueries({ queryKey: orgsKeys.admin.detail(orgId) }),
+  });
+}
+
 // ---- realtime ----------------------------------------------------------------
 
 registerRealtimeHandler("orgs.membership_changed", (qc) => {
   void qc.invalidateQueries({ queryKey: orgsKeys.list() });
   void qc.invalidateQueries({ queryKey: orgsKeys.myInvites() });
+  void qc.invalidateQueries({ queryKey: orgsKeys.joinable() });
 });
+registerRealtimeHandler("orgs.domains_changed", (qc, e) => void qc.invalidateQueries({ queryKey: orgsKeys.domains(e.data.org_id) }));
+registerRealtimeHandler("orgs.join_requests_changed", (qc, e) => void qc.invalidateQueries({ queryKey: orgsKeys.joinRequests(e.data.org_id) }));
 registerRealtimeHandler("orgs.updated", (qc, e) => {
   void qc.invalidateQueries({ queryKey: orgsKeys.detail(e.data.org_id) });
   void qc.invalidateQueries({ queryKey: orgsKeys.list() });

@@ -7,12 +7,14 @@ import (
 	"context"
 	"log"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
 	"scaffoldapp/backend/internal/api"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/config"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/legal"
@@ -79,5 +81,13 @@ func main() {
 			}
 			slog.Info("seeded", "module", m.Name())
 		}
+	}
+
+	// Seeds send notifications, which push and email in the background; let
+	// that work land before the pool closes.
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := bg.Wait(waitCtx); err != nil {
+		slog.Warn("seed: background work cut off", "err", err)
 	}
 }

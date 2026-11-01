@@ -1,6 +1,6 @@
 ---
 name: feature-belt
-description: "Catalog of copyable feature modules for apps built on the concrete foundation (Go/chi/pgxpool backend, Next.js web, Expo mobile): chat, social feed, places/maps, events, payments (Stripe, swappable), wallets/blockchain, AI assistant, notifications/push, moderation, orgs/teams, support, identity verification, MCP/API access. Use when adding a feature to a scaffold project, choosing features for a new app, or building/updating a feature module. Install with the scaffold CLI, then stitch."
+description: "Catalog of copyable feature modules for apps built on the concrete foundation (Go/chi/pgxpool backend, Next.js web, Expo mobile): chat, social feed, places/maps, events, payments (Stripe, swappable), wallets/blockchain, AI assistant, notifications/push, moderation, orgs/teams, support, identity verification, MCP/OAuth access for agents, teams and sharing (access), presence, external MCP connectors, file drive, git repositories, Notion-style docs, CRM, video calls, calendars with booking links, Slack-style channels, AI agent scopes and suggestions, global search. Use when adding a feature to a scaffold project, choosing features for a new app, or building/updating a feature module. Install with the scaffold CLI, then stitch."
 ---
 
 # Feature belt
@@ -18,7 +18,10 @@ Read `../concrete/SKILL.md` first. Every feature obeys it.
 | `orgs` | 0300 | notifications | organizations/teams, memberships with roles, email invites, org-scoped guards |
 | `support` | 0400 | — | feedback/tickets with attachments, staff replies by email, admin queue |
 | `identity` | 0500 | — | identity verification (Persona; manual review fallback), verified badge |
-| `mcp` | 0600 | — | personal API keys + an MCP endpoint exposing the app's read tools to agents |
+| `mcp` | 0600 | — | MCP endpoint exposing every feature's tools to agents as the user: OAuth 2.1 authorization server (DCR, PKCE, resource-bound rotating tokens, connected apps) and personal API keys; agent-only `agt_` credentials; agent-scope gate |
+| `access` | 0700 | orgs, notifications | teams; resource sharing to people, teams or the whole org with inheritance, general access and public links; org permission matrix; `access_level()`/`access_visible()` as the single source of truth; Share dialog |
+| `presence` | 0800 | — | online/away from heartbeats, custom status, Do Not Disturb, visibility policy |
+| `connectors` | 0900 | — | the assistant's external MCP servers with each user's own OAuth (discovery, DCR/CIMD, PKCE, sealed tokens, SSRF guard), per-service tools |
 | `chat` | 1000 | notifications, moderation | DMs and groups, realtime delivery, typing, read state, unread counts, attachments, replies, report/block |
 | `feed` | 1100 | notifications, moderation | posts with media, comments (one level), reactions, mentions, pins/announcements, keyset feed |
 | `places` | 1200 | — | places with coordinates, map + list views (web MapLibre, mobile expo-maps), geocoding, bounding-box search |
@@ -26,8 +29,19 @@ Read `../concrete/SKILL.md` first. Every feature obeys it.
 | `payments` | 1400 | notifications | Stripe behind a `Gateway` interface: customers, checkout, subscriptions/entitlements, webhooks, ledger, refunds; Connect payouts optional |
 | `wallets` | 1500 | — | EVM wallets (embedded via Privy or linked), chain config, token balances and transfers, indexer webhook |
 | `assistant` | 1600 | moderation | AI chat assistant: provider-neutral (Anthropic/OpenAI), tool registry scoped to the user, guardrails, streaming, quotas, consent |
+| `files` | 1700 | access, moderation | company drive: My drive and shared folders, uploads with versions, previews, trash, quotas, private / team / org / public-link sharing, item types other features register |
+| `docs` | 1800 | access, notifications, moderation | Notion-style pages (block model, realtime block ops), databases with table/board views, comments, history, publish to web |
+| `crm` | 1900 | access, notifications | companies, contacts, deals on pipelines, activities and tasks, custom properties, saved views, import/export, record access modes on access |
+| `calls` | 2000 | orgs, notifications | LiveKit video meetings with Meet-style links, lobby for guests, host controls, instant calls that ring; dev hook runs a local LiveKit |
+| `calendar` | 2100 | orgs, notifications | personal calendars with recurrence and `.ics` invites, iCal busy calendars, booking links (internal = org members, external = anyone), conferencing seam |
+| `channels` | 2200 | orgs, presence, notifications, moderation | Slack-style workspace messaging: public/private channels, DMs, threads, forum channels, mentions incl. groups, pins, saved, search; call and group seams |
+| `agents` | 2300 | access, notifications | per-person AI agent scope (Off / Read / Suggest / Edit) by default, feature, service and resource; suggestions inbox with diffs; implements `app.AgentPolicy` and `access_agent_cap()` |
+| `repos` | 2400 | files | git repositories as drive items: smart-HTTP clone/push with git credentials, protected branches, in-browser commits, pull requests with reviews and merges; agent tools for branch → commit → PR |
+| `search` | — | — | ⌘K global search across every `app.SearchProvider`, as the caller; `search_everything` agent tool |
 
-Core (always present, not in the belt): auth (Clerk + dev bypass), users/profile, legal consent, account deletion and export, uploads, admin console (users, roles, audit), realtime, mail, jobs. See `../concrete/backend.md`.
+Core (always present, not in the belt): auth (Clerk + dev bypass), users/profile, legal consent, account deletion and export, uploads, admin console (users, roles, audit), realtime, mail, jobs (leased, once per tick across instances), bg (tracked best-effort background work). See `../concrete/backend.md`.
+
+`feature-belt/agents/openai.yaml` is this skill's Codex metadata (skill convention), not part of the `agents` feature.
 
 `scaffold list` prints the live catalog; `scaffold show <feature>` prints a feature's FEATURE.md.
 
@@ -88,9 +102,9 @@ feature-belt/<name>/
 | File | Anchor | Inserts |
 |---|---|---|
 | `packages/shared/src/index.ts` | `scaffold:exports` | `export * from "./<name>";` |
-| `web/src/features/registry.tsx` | `scaffold:imports`, `scaffold:nav`, `scaffold:home`, `scaffold:admin-nav`, `scaffold:settings`, `scaffold:account-menu`, `scaffold:session`, `scaffold:header-actions`, `scaffold:consent-routes`, `scaffold:support-links` | nav items, home tiles, admin tabs, settings sections, account menu entries, signed-in session mounts, top-bar actions, routes open during consent, support links |
+| `web/src/features/registry.tsx` | `scaffold:imports`, `scaffold:nav`, `scaffold:home`, `scaffold:admin-nav`, `scaffold:settings`, `scaffold:account-menu`, `scaffold:session`, `scaffold:header-actions`, `scaffold:consent-routes`, `scaffold:support-links`, `scaffold:resource-menu` | nav items, home tiles, admin tabs, settings sections, account menu entries, signed-in session mounts, top-bar actions, routes open during consent, support links, ⋮ menu providers |
 | `web/proxy.ts` | `scaffold:public-paths` | public path patterns (`"/invites/(.*)",`) |
-| `mobile/src/features/registry.tsx` | `scaffold:imports`, `scaffold:home`, `scaffold:settings`, `scaffold:public-routes`, `scaffold:consent-routes`, `scaffold:support-links`, `scaffold:session` | home entries, settings sections, routes reachable signed out (`"invites/[token]",`), routes open during consent or while blocked, support links, signed-in session mounts |
+| `mobile/src/features/registry.tsx` | `scaffold:imports`, `scaffold:home`, `scaffold:settings`, `scaffold:public-routes`, `scaffold:consent-routes`, `scaffold:support-links`, `scaffold:session`, `scaffold:resource-menu` | home entries, settings sections, routes reachable signed out (`"invites/[token]",`), routes open during consent or while blocked, support links, signed-in session mounts, ⋮ menu providers |
 | `mobile/app/(tabs)/_layout.tsx` | `scaffold:imports`, `scaffold:tabs` | tab icon import, `<Tabs.Screen …>` |
 | `mobile/app.config.ts` | `scaffold:plugins` | config plugin entries (`"./plugins/withPlaces",`; the file ships as `mobile/plugins/<name>.js`) |
 

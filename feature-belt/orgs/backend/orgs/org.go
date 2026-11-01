@@ -278,6 +278,7 @@ func (s *Service) deleteOrg(w http.ResponseWriter, r *http.Request) error {
 	for _, u := range members {
 		s.membershipChanged(bg, m.OrgID, u, EventMemberRemoved, map[string]any{})
 	}
+	fireMemberRemoved(bg, m.OrgID, members...)
 	httpx.NoContent(w)
 	return nil
 }

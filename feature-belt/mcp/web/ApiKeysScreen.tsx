@@ -2,7 +2,8 @@
 
 import { errorMessage, mcpEndpointUrl, useCreateMcpKey, useMcpKeys, useRevokeMcpKey, type McpApiKey, type McpCreatedKey, type McpKeyScope } from "@scaffoldapp/shared";
 import { Badge, Banner, Button, Card, ConfirmDialog, Dialog, Divider, EmptyState, ErrorState, Field, IconButton, Input, SegmentedControl, SkeletonRow, SkeletonGroup, toast } from "@scaffoldapp/ui-web";
-import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
+import { CopyField } from "./CopyField";
+import { Check, KeyRound, Plus, Trash2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { PageHeader, Section } from "@/components/shell/PageHeader";
@@ -35,7 +36,7 @@ export function ApiKeysScreen() {
           </Button>
         }
       />
-      <Section title="Endpoint" info="Add it to your agent as a remote MCP server with the header Authorization: Bearer <your key>.">
+      <Section title="Endpoint" info="Add it to your agent as a remote MCP server with the header Authorization: Bearer <your key>. Agents that let you sign in need no key: see Connected apps.">
         <CopyField label="MCP endpoint" value={endpoint} className="max-w-form" />
       </Section>
       <Section title="Your keys" info={`Up to ${MAX_KEYS} keys. Revoke one you no longer use.`}>
@@ -187,36 +188,5 @@ function CreateKeyDialog({ open, onOpenChange, endpoint }: { open: boolean; onOp
         </Field>
       </form>
     </Dialog>
-  );
-}
-
-function CopyField({ label, value, mono = false, className }: { label: string; value: string; mono?: boolean; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Field label={label} {...(className ? { className } : {})}>
-      <Input
-        readOnly
-        value={value}
-        className={mono ? "font-mono" : undefined}
-        onFocus={(e) => e.currentTarget.select()}
-        trailing={
-          <IconButton
-            label={copied ? "Copied" : `Copy ${label}`}
-            size="sm"
-            variant="ghost"
-            icon={copied ? <Check /> : <Copy />}
-            onClick={() => {
-              void navigator.clipboard.writeText(value).then(
-                () => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                },
-                () => toast.error("Couldn't copy. Select the text instead."),
-              );
-            }}
-          />
-        }
-      />
-    </Field>
   );
 }

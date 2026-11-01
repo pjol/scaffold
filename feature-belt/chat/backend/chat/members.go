@@ -220,7 +220,7 @@ func (s *Service) removeFromGroup(ctx context.Context, actor, convID, target uui
 	}
 	s.inboxEvent(ctx, target, convID, "removed", nil)
 	if deleted {
-		s.kickObjectCleanup()
+		s.kickObjectCleanup(ctx)
 		return nil
 	}
 	action := "removed"

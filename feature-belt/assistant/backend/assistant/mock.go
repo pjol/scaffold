@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -87,6 +88,29 @@ func (m mockProvider) plan(req Request) *Response {
 		}
 	}
 	last := lastUserText(req.Messages)
+	if req.ToolChoice != "none" {
+		// "call <tool_name> {json}" calls that tool when it is offered, so
+		// development can exercise any tool (connected services included)
+		// without a model.
+		if m := mockCallRE.FindStringSubmatch(last); m != nil {
+			for _, t := range req.Tools {
+				if !strings.EqualFold(t.Name, m[1]) {
+					continue
+				}
+				input := json.RawMessage(`{}`)
+				if raw := strings.TrimSpace(m[2]); raw != "" && json.Valid([]byte(raw)) {
+					input = json.RawMessage(raw)
+				}
+				resp.Parts = []Part{
+					{Type: PartText, Text: mockPrefix + "Calling " + t.Name + ". "},
+					{Type: PartToolCall, CallID: fmt.Sprintf("mock_%d", time.Now().UnixNano()), Name: t.Name, Input: input},
+				}
+				resp.Stop = StopToolUse
+				resp.Usage = estimateUsage(req, "Calling "+t.Name)
+				return resp
+			}
+		}
+	}
 	if req.ToolChoice != "none" && strings.Contains(strings.ToLower(last), "usage") {
 		for _, t := range req.Tools {
 			if t.Name == "assistant_get_usage" {
@@ -121,6 +145,8 @@ func (m mockProvider) plan(req Request) *Response {
 	resp.Usage = estimateUsage(req, text)
 	return resp
 }
+
+var mockCallRE = regexp.MustCompile(`(?is)\bcall\s+([a-zA-Z0-9_-]{1,64})\s*(\{.*\})?\s*$`)
 
 // lastUserText returns the text of the latest user message without fences.
 func lastUserText(msgs []Message) string {

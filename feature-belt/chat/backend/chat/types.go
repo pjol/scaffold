@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"mime"
 	"path"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"scaffoldapp/backend/internal/db"
+	"scaffoldapp/backend/internal/storage"
 )
 
 // UserRef is a person as chat shows them. A deleted account reads "Deleted user".
@@ -256,7 +258,7 @@ func (s *Service) hydrate(ctx context.Context, q db.Querier, msgs []*Message, st
 			rows.Close()
 			return err
 		}
-		if a.URL, err = s.d.Storage.PresignGet(ctx, a.key, attachmentURLTTL); err != nil {
+		if a.URL, err = s.signAttachment(ctx, a.key, a.ContentType, a.FileName, attachmentURLTTL); err != nil {
 			slog.WarnContext(ctx, "chat: presign attachment", "attachment_id", a.ID, "err", err)
 		}
 		a.URLExpiresAt = expires
@@ -427,4 +429,14 @@ func uuidSet(ids []uuid.UUID) map[uuid.UUID]bool {
 		m[id] = true
 	}
 	return m
+}
+
+// signAttachment presigns a download that opens what the browser can show
+// and saves the rest under the attachment's name (not the storage key's).
+func (s *Service) signAttachment(ctx context.Context, key, contentType, fileName string, ttl time.Duration) (string, error) {
+	disp := "inline"
+	if d := mime.FormatMediaType("inline", map[string]string{"filename": fileName}); fileName != "" && d != "" {
+		disp = d
+	}
+	return s.d.Storage.PresignGetWith(ctx, key, ttl, storage.GetOptions{ContentType: contentType, Disposition: disp})
 }

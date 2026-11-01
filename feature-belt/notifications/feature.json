@@ -1,7 +1,7 @@
 {
   "name": "notifications",
   "title": "Notifications",
-  "version": "1.0.1",
+  "version": "1.1.2",
   "summary": "Users get an in-app inbox with an unread badge, push on their phones and optional email, and choose channels per kind.",
   "surfaces": [
     "backend",

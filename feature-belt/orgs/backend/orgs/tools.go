@@ -13,13 +13,14 @@ import (
 )
 
 // Tools exposes read-only views of the caller's orgs. Invites are not a
-// tool: they email people outside the app.
+// tool: they email people outside the app. Each tool applies the same checks
+// as its REST route.
 func (s *Service) Tools() []app.Tool {
 	orgInput := json.RawMessage(`{"type":"object","properties":{"org_id":{"type":"string","format":"uuid"}},"required":["org_id"],"additionalProperties":false}`)
 	return []app.Tool{
 		{
 			Name:        "orgs_list_mine",
-			Description: "List the organizations the user belongs to, with their role in each.",
+			Description: "List the " + Nouns() + " the user belongs to, with their role in each.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, _ json.RawMessage) (any, error) {
@@ -32,7 +33,7 @@ func (s *Service) Tools() []app.Tool {
 		},
 		{
 			Name:        "orgs_list_members",
-			Description: "List the members of one of the user's organizations and their roles. Emails are included only for admins and owners.",
+			Description: "List the members of one of the user's " + Nouns() + " and their roles. Emails are included only for admins and owners.",
 			InputSchema: orgInput,
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
@@ -50,7 +51,7 @@ func (s *Service) Tools() []app.Tool {
 		},
 		{
 			Name:        "orgs_list_pending_invites",
-			Description: "List pending email invites for an organization the user administers.",
+			Description: "List pending email invites for " + NounA() + " the user administers.",
 			InputSchema: orgInput,
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
@@ -59,7 +60,7 @@ func (s *Service) Tools() []app.Tool {
 					return nil, err
 				}
 				if !RoleAtLeast(role, RoleAdmin) {
-					return nil, httpx.Forbidden("Only admins of this organization can see its invites.")
+					return nil, httpx.Forbidden("Only admins of this " + Noun() + " can see its invites.")
 				}
 				rows, err := s.d.Pool.Query(ctx, inviteSelect+`
 					WHERE i.org_id = $1 AND i.status = 'pending' AND i.expires_at > now() ORDER BY i.created_at DESC LIMIT 100`, orgID)
@@ -73,6 +74,60 @@ func (s *Service) Tools() []app.Tool {
 				return list, err
 			},
 		},
+		{
+			Name:        "orgs_list_joinable",
+			Description: "List " + Nouns() + " the user can join, or has asked to join, because their verified email domain matches one the " + Noun() + " verified. action is join, request or requested.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			ReadOnly:    true,
+			Handler: func(ctx context.Context, caller *auth.Identity, _ json.RawMessage) (any, error) {
+				return s.joinable(ctx, caller)
+			},
+		},
+		{
+			Name:        "orgs_list_domains",
+			Description: "List the email domains " + NounA() + " the user administers has claimed, with verification status and join policy (auto_join or request).",
+			InputSchema: orgInput,
+			ReadOnly:    true,
+			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
+				orgID, role, err := s.toolOrg(ctx, caller, input)
+				if err != nil {
+					return nil, err
+				}
+				if !RoleAtLeast(role, RoleAdmin) {
+					return nil, httpx.Forbidden("Only admins of this " + Noun() + " can see its domains.")
+				}
+				rows, err := s.d.Pool.Query(ctx, domainSelect+` WHERE d.org_id = $1 ORDER BY d.created_at, d.id`, orgID)
+				if err != nil {
+					return nil, err
+				}
+				return scanDomains(rows)
+			},
+		},
+		{
+			Name:        "orgs_list_join_requests",
+			Description: "List pending requests to join " + NounA() + " the user administers, oldest first, with each person's name and email.",
+			InputSchema: orgInput,
+			ReadOnly:    true,
+			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
+				orgID, role, err := s.toolOrg(ctx, caller, input)
+				if err != nil {
+					return nil, err
+				}
+				if !RoleAtLeast(role, RoleAdmin) {
+					return nil, httpx.Forbidden("Only admins of this " + Noun() + " can see its join requests.")
+				}
+				rows, err := s.d.Pool.Query(ctx, joinRequestSelect+`
+					WHERE j.org_id = $1 AND j.status = 'pending' ORDER BY j.created_at, j.id LIMIT 100`, orgID)
+				if err != nil {
+					return nil, err
+				}
+				list, err := pgx.CollectRows(rows, pgx.RowToStructByPos[JoinRequest])
+				if list == nil {
+					list = []JoinRequest{}
+				}
+				return list, err
+			},
+		},
 	}
 }
 
@@ -82,7 +137,7 @@ func (s *Service) toolOrg(ctx context.Context, caller *auth.Identity, input json
 		OrgID uuid.UUID `json:"org_id"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil || in.OrgID == uuid.Nil {
-		return uuid.Nil, "", httpx.BadRequest("org_id must be an organization id.")
+		return uuid.Nil, "", httpx.BadRequest("org_id must be " + NounA() + " id.")
 	}
 	role, err := RoleOf(ctx, s.d.Pool, in.OrgID, caller.UserID)
 	if err != nil {

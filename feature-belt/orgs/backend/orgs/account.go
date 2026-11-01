@@ -13,7 +13,8 @@ import (
 // admin (else the oldest member) becomes owner; orgs left empty are deleted.
 // Invites and links they created keep working without their name, and org
 // pictures they uploaded are cleared (their files are deleted with the
-// account's storage).
+// account's storage). Their join requests and departure records are deleted;
+// domains they added or verified stay with the org without their name.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	rows, err := tx.Query(ctx, `SELECT org_id, role FROM org_members WHERE user_id = $1 ORDER BY org_id`, userID)
 	if err != nil {
@@ -27,6 +28,11 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 	if err != nil {
 		return err
 	}
+	left := make([]uuid.UUID, 0, len(list))
+	for _, m := range list {
+		left = append(left, m.OrgID)
+	}
+	departedOnDeletion.Store(userID, left) // AccountDeleted fires OnMemberRemoved after the commit
 	for _, m := range list {
 		if _, err := lockOrg(ctx, tx, m.OrgID); err != nil {
 			return err
@@ -60,6 +66,11 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`UPDATE org_invites SET invited_by = NULL WHERE invited_by = $1`,
 		`UPDATE org_invites SET accepted_by = NULL WHERE accepted_by = $1`,
 		`UPDATE org_invite_links SET created_by = NULL WHERE created_by = $1`,
+		`DELETE FROM org_join_requests WHERE user_id = $1`,
+		`UPDATE org_join_requests SET decided_by = NULL WHERE decided_by = $1`,
+		`DELETE FROM org_departures WHERE user_id = $1`,
+		`UPDATE org_domains SET added_by = NULL WHERE added_by = $1`,
+		`UPDATE org_domains SET verified_by = NULL WHERE verified_by = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -69,7 +80,8 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 }
 
 // ExportAccount returns the user's memberships, the pending invites they
-// sent and the invite links they made.
+// sent, the invite links they made, their join requests, the orgs they left
+// or were removed from, and the email domains they added or verified.
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
 	type membership struct {
 		OrgID    uuid.UUID `json:"org_id"`
@@ -123,8 +135,65 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if err != nil {
 		return nil, err
 	}
+	type joinRequest struct {
+		OrgID     uuid.UUID  `json:"org_id"`
+		Domain    string     `json:"domain"`
+		Status    string     `json:"status"`
+		CreatedAt time.Time  `json:"created_at"`
+		DecidedAt *time.Time `json:"decided_at"`
+	}
+	type departure struct {
+		OrgID     uuid.UUID `json:"org_id"`
+		Reason    string    `json:"reason"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	type domain struct {
+		OrgID        uuid.UUID  `json:"org_id"`
+		Domain       string     `json:"domain"`
+		AddedByYou   bool       `json:"added_by_you"`
+		VerifyMethod *string    `json:"verify_method"`
+		VerifiedAt   *time.Time `json:"verified_at"`
+		CreatedAt    time.Time  `json:"created_at"`
+	}
+	rows, err = s.d.Pool.Query(ctx, `
+		SELECT org_id, domain, status, created_at, decided_at FROM org_join_requests WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	requests, err := pgx.CollectRows(rows, pgx.RowToStructByPos[joinRequest])
+	if err != nil {
+		return nil, err
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT org_id, reason, created_at FROM org_departures WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	departures, err := pgx.CollectRows(rows, pgx.RowToStructByPos[departure])
+	if err != nil {
+		return nil, err
+	}
+	rows, err = s.d.Pool.Query(ctx, `
+		SELECT org_id, domain, added_by IS NOT DISTINCT FROM $1, CASE WHEN verified_by = $1 THEN verify_method END,
+		       CASE WHEN verified_by = $1 THEN verified_at END, created_at
+		FROM org_domains WHERE added_by = $1 OR verified_by = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	domains, err := pgx.CollectRows(rows, pgx.RowToStructByPos[domain])
+	if err != nil {
+		return nil, err
+	}
 	if memberships == nil {
 		memberships = []membership{}
+	}
+	if requests == nil {
+		requests = []joinRequest{}
+	}
+	if departures == nil {
+		departures = []departure{}
+	}
+	if domains == nil {
+		domains = []domain{}
 	}
 	if invites == nil {
 		invites = []invite{}
@@ -132,5 +201,6 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if links == nil {
 		links = []link{}
 	}
-	return map[string]any{"memberships": memberships, "invites_sent": invites, "invite_links": links}, nil
+	return map[string]any{"memberships": memberships, "invites_sent": invites, "invite_links": links,
+		"join_requests": requests, "departures": departures, "domains": domains}, nil
 }

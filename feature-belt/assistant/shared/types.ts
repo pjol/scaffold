@@ -54,17 +54,27 @@ export interface AssistantDisplayPart {
   text: string;
 }
 
-export type AssistantToolStatus = "running" | "ok" | "error";
+/**
+ * `awaiting_approval`: a change in a connected service waits for the user (approve or decline).
+ * `denied`: declined, or not answered in time. `suggested`: the user's AI agent settings turned
+ * the change into a suggestion waiting for their review (`suggestion_id`).
+ */
+export type AssistantToolStatus = "running" | "awaiting_approval" | "ok" | "error" | "denied" | "suggested";
 
 /** A tool call as shown under a reply. */
 export interface AssistantActivity {
   call_id: string;
   name: string;
+  /** The connected service that serves the tool ("Linear"); absent for the app's own tools. */
+  source?: string;
   status: AssistantToolStatus;
   summary: string;
+  /** While awaiting approval: the complete input that will be sent. */
   input?: unknown;
   started_at: string;
   duration_ms: number;
+  approval_expires_at?: string;
+  suggestion_id?: string;
 }
 
 export interface AssistantMessageError {
@@ -120,8 +130,13 @@ export interface AssistantDailyTotals {
 export type AssistantStreamEvent =
   | { event: "message"; data: { message: AssistantMessage } }
   | { event: "delta"; data: { message_id: string; text: string } }
-  | { event: "tool_start"; data: { message_id: string; call_id: string; name: string; input: unknown; started_at: string } }
-  | { event: "tool_end"; data: { message_id: string; call_id: string; name: string; status: "ok" | "error"; summary: string; duration_ms: number } }
+  | { event: "tool_start"; data: { message_id: string; call_id: string; name: string; source?: string; input: unknown; started_at: string } }
+  | { event: "tool_approval"; data: { message_id: string; call_id: string; name: string; source: string; input: unknown; expires_at: string } }
+  | { event: "tool_decision"; data: { message_id: string; call_id: string; approved: boolean } }
+  | {
+      event: "tool_end";
+      data: { message_id: string; call_id: string; name: string; status: "ok" | "error" | "denied" | "suggested"; summary: string; duration_ms: number; suggestion_id?: string };
+    }
   | { event: "error"; data: { message_id: string; code: string; message: string; retryable: boolean } }
   | { event: "done"; data: { message_id: string | null; status: AssistantMessageStatus; conversation: AssistantConversation | null } };
 

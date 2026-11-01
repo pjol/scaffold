@@ -19,7 +19,8 @@
 #   --web-prod           serve a production build (built in the background) instead of next dev
 #   --lan | --tunnel     Expo for physical devices (LAN IP / Expo tunnel); default localhost
 #   --ios | --android    open the simulator / emulator once Metro is up
-#   --s3 | --redis       MinIO / Redis in docker on the project's ports, wired into the backend
+#   --s3 | --redis       MinIO (the minio binary, else docker) / Redis (docker) on the
+#                        project's ports, wired into the backend
 #   --public             expose the API through a cloudflared quick tunnel (webhooks)
 #   --yes                answer yes to confirmations (required for --reset-db without a terminal)
 #   -h | --help          this text
@@ -83,7 +84,7 @@ INTERACTIVE=0
 DEVUP_MODE="boot"
 ARMED=0 CLEANED=0 PG_STOP_ON_EXIT=0
 PORT_BASE="" API_PORT="" WEB_PORT="" PG_PORT="" METRO_PORT="" MINIO_PORT="" REDIS_PORT=""
-API_URL="" WEB_URL="" PUBLIC_URL="" LAN_IP="" PG_MODE="" PG_BIN="" DATABASE_URL="" MAIL_SINK_DIR=""
+API_URL="" WEB_URL="" PUBLIC_URL="" LAN_IP="" PG_MODE="" PG_BIN="" DATABASE_URL="" MAIL_SINK_DIR="" MINIO_BIN=""
 WEB_MODE="dev" WEB_BUILD_PID=""
 ON_START_BG=arm_cleanup
 
@@ -292,8 +293,13 @@ check_tools() {
   resolve_postgres || missing=1
   if [[ "$PG_MODE" == "private" ]]; then versions="$versions · postgres $(pg_major "$PG_BIN/pg_ctl") ($PG_BIN)"
   elif [[ "$PG_MODE" == "docker" ]]; then versions="$versions · postgres in docker"; fi
-  if [[ "$WANT_S3" -eq 1 || "$WANT_REDIS" -eq 1 ]] && ! docker_ready; then
-    c_red "  --s3/--redis need Docker running (install Docker Desktop, or start it)"; missing=1
+  if [[ "$WANT_S3" -eq 1 ]]; then
+    MINIO_BIN="$(command -v minio 2>/dev/null)"
+    if [[ -n "$MINIO_BIN" ]]; then versions="$versions · minio ($MINIO_BIN)"
+    elif ! docker_ready; then c_red "  --s3 needs MinIO: brew install minio/stable/minio, or start Docker"; missing=1; fi
+  fi
+  if [[ "$WANT_REDIS" -eq 1 ]] && ! docker_ready; then
+    c_red "  --redis needs Docker running (install Docker Desktop, or start it)"; missing=1
   fi
   if [[ "$PUBLIC" -eq 1 ]] && ! command -v cloudflared >/dev/null 2>&1; then
     c_red "  --public needs cloudflared: brew install cloudflared"; missing=1
@@ -723,22 +729,50 @@ aux_services_up() {
     c_green "  redis on 127.0.0.1:$REDIS_PORT"
   fi
   if [[ "$WANT_S3" -eq 1 ]]; then
-    note_docker minio
-    compose --profile s3 up -d minio >>"$LOG_DIR/docker.log" 2>&1 || die "  docker compose up minio failed (logs/docker.log)"
-    wait_for "http://127.0.0.1:$MINIO_PORT/minio/health/ready" "minio" 60 "" "$LOG_DIR/docker.log" ready || die "  minio did not start"
+    if [[ -n "$MINIO_BIN" ]]; then
+      minio_native_up
+    else
+      note_docker minio
+      compose --profile s3 up -d minio >>"$LOG_DIR/docker.log" 2>&1 || die "  docker compose up minio failed (logs/docker.log)"
+      wait_for "http://127.0.0.1:$MINIO_PORT/minio/health/ready" "minio" 60 "" "$LOG_DIR/docker.log" ready || die "  minio did not start"
+    fi
     minio_bucket
   fi
 }
 
-# Bucket + public-read policy over the S3 API itself (curl's SigV4), so no mc image is needed.
+# The minio binary as a tracked service, data in .data/minio. Devices on the
+# LAN upload to it directly, so --lan binds every interface.
+minio_native_up() {
+  local addr="127.0.0.1:$MINIO_PORT"
+  [[ -n "$LAN_IP" ]] && addr=":$MINIO_PORT"
+  mkdir -p "$DATA_DIR/minio"
+  start_bg minio "$ROOT" env MINIO_ROOT_USER="$SLUG-dev" MINIO_ROOT_PASSWORD="$SLUG-dev-secret" MINIO_BROWSER=off \
+    "$MINIO_BIN" server --quiet --address "$addr" "$DATA_DIR/minio" || die "  could not start minio"
+  wait_for "http://127.0.0.1:$MINIO_PORT/minio/health/ready" "minio" 60 "$LAST_PID" "$LOG_DIR/minio.log" ready || die "  minio did not start"
+}
+
+minio_curl() { curl -s -o /dev/null -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user "$SLUG-dev:$SLUG-dev-secret" "$@"; }
+
+# The bucket, over the S3 API itself (curl's SigV4), so no mc is needed.
 minio_bucket() {
-  local bucket="$SLUG-dev" user="$SLUG-dev:$SLUG-dev-secret" url="http://127.0.0.1:$MINIO_PORT" code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user "$user" -X PUT "$url/$bucket")"
-  case "$code" in 200|409) ;; *) c_yellow "  could not create bucket $bucket (HTTP $code)"; return 0 ;; esac
-  curl -s -o /dev/null --aws-sigv4 "aws:amz:us-east-1:s3" --user "$user" -X PUT "$url/$bucket?policy" \
-    -H 'Content-Type: application/json' \
-    --data "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::$bucket/*\"]}]}"
-  c_green "  minio bucket $bucket (objects public-read in development)"
+  local code
+  code="$(minio_curl -X PUT "http://127.0.0.1:$MINIO_PORT/$SLUG-dev")"
+  case "$code" in 200|409) c_green "  minio bucket $SLUG-dev" ;; *) c_yellow "  could not create bucket $SLUG-dev (HTTP $code)" ;; esac
+}
+
+# The production bucket policy (`server -bucket-policy`: public purposes
+# public-read, everything else private), so a private object handed out
+# without a presigned URL fails here as it would in production.
+minio_policy() {
+  local policy code
+  env_unset_args "$ROOT/backend/.env"
+  policy="$(cd "$ROOT/backend" && env ${UNSET_ARGS[@]+"${UNSET_ARGS[@]}"} "$BIN_DIR/server" -bucket-policy 2>>"$LOG_DIR/backend-build.log")" \
+    || { c_yellow "  server -bucket-policy failed (logs/backend-build.log): bucket $SLUG-dev stays private"; return 0; }
+  code="$(minio_curl -X PUT "http://127.0.0.1:$MINIO_PORT/$SLUG-dev?policy" -H 'Content-Type: application/json' --data "$policy")"
+  case "$code" in
+    2??) c_green "  bucket policy: $(printf '%s' "$policy" | grep -oE "$SLUG-dev/[^\"]+" | sed "s#^$SLUG-dev/##" | tr '\n' ' ')public, the rest private" ;;
+    *) c_yellow "  could not set the bucket policy (HTTP $code): bucket $SLUG-dev stays private" ;;
+  esac
 }
 
 # ---- step 8: backend --------------------------------------------------------
@@ -746,6 +780,7 @@ minio_bucket() {
 backend_up() {
   c_dim "  go build ./cmd/server ./cmd/seed → .data/bin (logs/backend-build.log)"
   backend_build || die "  backend build failed"
+  [[ "$WANT_S3" -eq 1 ]] && minio_policy
   if [[ -n "$CLONE_FROM" ]]; then
     c_dim "  no seed (cloned data); the server migrates at boot"
   elif [[ "$SEED" -eq 0 ]]; then
@@ -1024,6 +1059,9 @@ print_summary() {
     echo "  Postgres  $DATABASE_URL   (private cluster .data/postgres)"
   else
     echo "  Postgres  $DATABASE_URL   (docker compose db)"
+  fi
+  if [[ "$WANT_S3" -eq 1 ]]; then
+    echo "  S3        http://127.0.0.1:$MINIO_PORT bucket $SLUG-dev, key $SLUG-dev   ($([[ -n "$MINIO_BIN" ]] && echo "minio .data/minio; logs/minio.log" || echo "docker compose minio"))"
   fi
   echo "  Sign in   /sign-in → pick a dev identity: $DEV_ADMIN_EMAIL (admin), sam@, jordan@, priya@$DEV_EMAIL_DOMAIN"
   [[ "$RUN_BACKEND" -eq 1 ]] && echo "  curl      curl -H 'Authorization: Bearer dev:sam:sam@$DEV_EMAIL_DOMAIN' $API_URL/v1/me"
@@ -1305,8 +1343,13 @@ cmd_status() {
   fi
   local n
   for n in $(service_names); do
-    case "$n" in backend|web|metro) continue ;; esac
-    status_row "$n" "-" "-" "$n"
+    case "$n" in
+      backend|web|metro) continue ;;
+      minio)
+        code="$(http_code "http://127.0.0.1:$MINIO_PORT/minio/health/ready")"
+        status_row minio "127.0.0.1:$MINIO_PORT" "HTTP ${code:-000}" minio ;;
+      *) status_row "$n" "-" "-" "$n" ;;
+    esac
   done
   [[ -n "${PUBLIC_URL:-}" ]] && echo "  public     $PUBLIC_URL"
   echo "  logs       ${LOG_DIR#"$ROOT"/}/   data .data/"

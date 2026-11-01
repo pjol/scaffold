@@ -93,11 +93,11 @@ func New(d *app.Deps) *Service {
 	storage.RegisterPurpose(storage.Purpose{Name: MediaPurpose, Public: true, Types: mediaTypes, MaxBytes: int64(mediaMB) << 20})
 	storage.RegisterPurpose(storage.Purpose{Name: FilePurpose, Public: true, Types: storage.DocumentTypes, MaxBytes: int64(fileMB) << 20})
 
-	notifications.RegisterKind(notifications.Kind{ID: NotifyComment, Label: "Comments on your posts", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyReply, Label: "Replies to your comments", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyMention, Label: "Mentions", Push: true})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyReaction, Label: "Reactions", Push: false})
-	notifications.RegisterKind(notifications.Kind{ID: NotifyAnnouncement, Label: "Announcements", Push: true})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyComment, Label: "Comments on your posts", Push: true, AgentTarget: postAgentTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyReply, Label: "Replies to your comments", Push: true, AgentTarget: postAgentTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyMention, Label: "Mentions", Push: true, AgentTarget: postAgentTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyReaction, Label: "Reactions", Push: false, AgentTarget: postAgentTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyAnnouncement, Label: "Announcements", Push: true, AgentTarget: postAgentTarget})
 
 	moderation.RegisterTarget("feed.post", postTarget{s})
 	moderation.RegisterTarget("feed.comment", commentTarget{s})

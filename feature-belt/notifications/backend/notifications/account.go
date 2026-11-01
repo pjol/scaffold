@@ -3,6 +3,8 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,7 @@ import (
 
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/httpx"
 )
 
 // ---- account deletion and export -------------------------------------------
@@ -135,6 +138,19 @@ func (s *Service) Tools() []app.Tool {
 				if in.Limit <= 0 || in.Limit > 50 {
 					in.Limit = 20
 				}
+				if s.agentCall(ctx) {
+					// Only notifications about what the person lets agents read,
+					// and only those in the count.
+					items, err := s.agentInbox(ctx, caller, in.UnreadOnly, in.Limit)
+					if err != nil {
+						return nil, err
+					}
+					unread, err := s.agentUnread(ctx, caller)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]any{"items": items, "unread_count": unread}, nil
+				}
 				items, err := s.inbox(ctx, caller.UserID, in.UnreadOnly, cursor{}, in.Limit)
 				if err != nil {
 					return nil, err
@@ -164,9 +180,30 @@ func (s *Service) Tools() []app.Tool {
 			Description: "Mark notifications read: pass ids, or all=true for every unread notification. Returns the new unread count.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"ids":{"type":"array","items":{"type":"string","format":"uuid"},"maxItems":500},"all":{"type":"boolean"}},"additionalProperties":false}`),
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
-				var in markReadReq
-				if err := json.Unmarshal(input, &in); err != nil {
+				in, err := decodeMarkRead(input)
+				if err != nil {
 					return nil, err
+				}
+				if s.agentCall(ctx) {
+					// An agent marks only what it may read (and learns only that count).
+					items, err := s.markTargets(ctx, caller, in)
+					if err != nil {
+						return nil, err
+					}
+					if len(items) > 0 {
+						ids := make([]uuid.UUID, len(items))
+						for i, it := range items {
+							ids[i] = it.ID
+						}
+						if _, err := s.markReadFor(ctx, caller.UserID, markReadReq{IDs: ids}); err != nil {
+							return nil, err
+						}
+					}
+					n, err := s.agentUnread(ctx, caller)
+					if err != nil {
+						return nil, err
+					}
+					return UnreadCount{UnreadCount: n}, nil
 				}
 				n, err := s.markReadFor(ctx, caller.UserID, in)
 				if err != nil {
@@ -174,6 +211,59 @@ func (s *Service) Tools() []app.Tool {
 				}
 				return UnreadCount{UnreadCount: n}, nil
 			},
+			Preview: s.markReadPreview,
 		},
 	}
+}
+
+// decodeMarkRead reads and checks {ids} or {all} (markReadFor's rules).
+func decodeMarkRead(input json.RawMessage) (markReadReq, error) {
+	var in markReadReq
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &in); err != nil {
+			return in, httpx.BadRequest("Invalid input: " + err.Error())
+		}
+	}
+	switch {
+	case in.All && len(in.IDs) > 0:
+		return in, httpx.BadRequest("Send ids or all, not both.")
+	case !in.All && len(in.IDs) == 0:
+		return in, httpx.BadRequest("Send ids or all.")
+	case len(in.IDs) > maxMarkReadIDs:
+		return in, httpx.BadRequest("Mark at most 500 at a time.")
+	}
+	return in, nil
+}
+
+// markReadPreview is what the person reviews when their agent scope makes
+// marking read a suggestion: the notifications the agent can see that would
+// turn read ("all" also marks the rest when the person accepts).
+func (s *Service) markReadPreview(ctx context.Context, caller *auth.Identity, input json.RawMessage) (app.ToolPreview, error) {
+	in, err := decodeMarkRead(input)
+	if err != nil {
+		return app.ToolPreview{}, err
+	}
+	items, err := s.markTargets(ctx, caller, in)
+	if err != nil {
+		return app.ToolPreview{}, err
+	}
+	pv := app.ToolPreview{Summary: fmt.Sprintf("Mark %d notifications read", len(items)), Link: "/notifications"}
+	switch {
+	case in.All:
+		pv.Summary = "Mark all unread notifications read"
+	case len(items) == 1:
+		pv.Summary = "Mark “" + items[0].Title + "” read"
+	}
+	var before, after strings.Builder
+	for i, it := range items {
+		if i == 20 {
+			fmt.Fprintf(&before, "… and %d more\n", len(items)-i)
+			fmt.Fprintf(&after, "… and %d more\n", len(items)-i)
+			break
+		}
+		fmt.Fprintf(&before, "Unread: %s\n", it.Title)
+		fmt.Fprintf(&after, "Read: %s\n", it.Title)
+	}
+	pv.Before, pv.After = before.String(), after.String()
+	return pv, nil
 }

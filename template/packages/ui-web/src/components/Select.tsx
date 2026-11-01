@@ -65,7 +65,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
           sideOffset={4}
           collisionPadding={12}
           className={cn(
-            "z-(--app-z-dropdown) max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) overflow-hidden rounded-lg border border-border bg-surface-raised p-1 shadow-lg",
+            "z-(--app-z-popover) max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) overflow-hidden rounded-lg border border-border bg-surface-raised p-1 shadow-lg",
             "origin-(--radix-select-content-transform-origin) animate-pop-in data-[state=closed]:animate-pop-out",
           )}
         >

@@ -1,8 +1,8 @@
 {
   "name": "orgs",
   "title": "Organizations",
-  "version": "1.0.2",
-  "summary": "People create organizations, invite others by email or link, and manage members as owners, admins and members.",
+  "version": "1.3.0",
+  "summary": "People create organizations, invite others by email or link, let colleagues join by verified email domain, and manage members as owners, admins and members.",
   "requires": [
     "notifications"
   ],
@@ -12,7 +12,22 @@
     "mobile"
   ],
   "migration_block": 300,
-  "env": [],
+  "env": [
+    {
+      "name": "ORGS_DNS_RESOLVER",
+      "tier": "backend",
+      "group": "orgs",
+      "required": "optional",
+      "doc": "DNS server (host:port) for email-domain verification lookups. Unset = the system resolver."
+    },
+    {
+      "name": "ORGS_PUBLIC_EMAIL_DOMAINS",
+      "tier": "backend",
+      "group": "orgs",
+      "required": "optional",
+      "doc": "Extra public email providers no organization may claim (comma list), added to the built-in list (gmail.com, outlook.com, icloud.com, …)."
+    }
+  ],
   "files": [
     {
       "src": "backend/orgs",
@@ -56,7 +71,7 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { orgsAccountMenu, orgsAdminNav, orgsSettings } from \"./orgs/registry\";"
+      "insert": "import { orgsAccountMenu, orgsAdminNav, orgsAutoJoin, orgsSettings } from \"./orgs/registry\";"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -74,6 +89,11 @@
       "insert": "orgsAccountMenu,"
     },
     {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "orgsAutoJoin,"
+    },
+    {
       "file": "web/proxy.ts",
       "anchor": "public-paths",
       "insert": "\"/invites/(.*)\","
@@ -81,7 +101,7 @@
     {
       "file": "mobile/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { orgsSettings } from \"./orgs/registry\";"
+      "insert": "import { orgsAutoJoin, orgsSettings } from \"./orgs/registry\";"
     },
     {
       "file": "mobile/src/features/registry.tsx",
@@ -92,14 +112,21 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "public-routes",
       "insert": "\"invites/[token]\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "orgsAutoJoin,"
     }
   ],
   "stitch": [
-    "Decide what an organization is called in the product (team, club, workspace) and use that word in copy; keep the API names.",
+    "Decide what an organization is called in the product (team, club, workspace) and set it once at module load in the client stitching (web and mobile): configureOrgsNoun({ one: \"workspace\", many: \"workspaces\" }). Every orgs screen, settings/admin entry and page title, and the access, files and docs copy, read it; use orgsNoun()/orgsNounTitle()/orgsNounA() in your own copy. Web page titles render on the server: call it from a module the root layout imports too. On the backend call orgs.SetNoun(\"workspace\", \"workspaces\") from an init in the stitching package: errors, notification kinds and agent tool descriptions read it. API names stay org.",
     "Decide who may create organizations (default: any active account, 10 per hour) and whether a new account must join or create one first.",
     "Scope your own tables and routes to an org: org_id with ON DELETE CASCADE in an app migration, orgs.Require(\"member\"|\"admin\"|\"owner\") on an {orgID} URL param, useActiveOrg() on the client.",
     "Set PUBLIC_WEB_URL so invite emails link to /invites/<token> (public on web and mobile; joining resumes after sign-in and consent).",
     "Mobile: configure universal links for PUBLIC_WEB_URL/invites/* if invite emails should open the app (the app route is invites/[token]).",
-    "The org switcher sits in the account menu (web) and Settings \u2192 Organizations (web and mobile); add OrgSwitcher (web/src/features/orgs) to the top bar if the product is org-centric."
+    "The org switcher sits in the account menu (web) and Settings → Organizations (web and mobile); add OrgSwitcher (web/src/features/orgs) to the top bar if the product is org-centric. If the shell has its own switcher, call setOrgsShellSwitcher(true) at startup so screens drop their in-page pickers (useOrgPickerVisible()).",
+    "Email domains: admins and owners claim domains in the org's Domains tab (verified at once by their own email, else by a DNS TXT record; joining people as soon as they open the app needs the DNS record outside development, and a DNS record takes a domain over from an org that holds it only by email). Decide whether only owners should (change Require(RoleAdmin) on the domain routes), and render JoinableOrgs (web and mobile @/features/orgs) on any onboarding screen for people without an org.",
+    "Add the regional free-mail providers your users have to ORGS_PUBLIC_EMAIL_DOMAINS; set ORGS_DNS_RESOLVER if the server's resolver can't see public DNS (split-horizon networks)."
   ]
 }

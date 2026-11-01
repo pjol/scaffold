@@ -12,7 +12,8 @@ import (
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Tools exposes read-only chat tools to agents, always as the caller.
+// Tools exposes read-only chat tools to agents, always as the caller and
+// narrowed to the conversations their agent scope lets agents read.
 func (s *Service) Tools() []app.Tool {
 	return []app.Tool{
 		{
@@ -80,6 +81,14 @@ func (s *Service) toolListConversations(ctx context.Context, caller *auth.Identi
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uuid.UUID, len(convs))
+	for i, c := range convs {
+		ids[i] = c.ID
+	}
+	readable, err := s.agentReadable(ctx, caller, ids)
+	if err != nil {
+		return nil, err
+	}
 	type item struct {
 		ID            uuid.UUID    `json:"id"`
 		Kind          string       `json:"kind"`
@@ -92,6 +101,9 @@ func (s *Service) toolListConversations(ctx context.Context, caller *auth.Identi
 	}
 	out := make([]item, 0, len(convs))
 	for _, c := range convs {
+		if !readable[c.ID] {
+			continue
+		}
 		out = append(out, item{ID: c.ID, Kind: c.Kind, Title: c.Title, Members: c.MemberCount, Unread: c.Unread,
 			Muted: c.Muted, LastMessage: toToolMessage(c.LastMessage), LastMessageAt: c.LastMessageAt})
 	}
@@ -107,8 +119,20 @@ func (s *Service) toolSearchMessages(ctx context.Context, caller *auth.Identity,
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, httpx.BadRequest("Invalid input: " + err.Error())
 	}
+	if in.ConversationID != nil {
+		ok, err := s.agentReadable(ctx, caller, []uuid.UUID{*in.ConversationID})
+		if err != nil {
+			return nil, err
+		}
+		if !ok[*in.ConversationID] {
+			return nil, errConversationNotFound
+		}
+	}
 	hits, err := s.searchMessages(ctx, caller.UserID, in.Query, in.ConversationID, cursor{}, toolLimit(in.Limit))
 	if err != nil {
+		return nil, err
+	}
+	if hits, err = s.agentHits(ctx, caller, hits); err != nil {
 		return nil, err
 	}
 	type item struct {

@@ -35,7 +35,7 @@ export interface StreamAssistantOptions {
   onEvent: (event: AssistantStreamEvent) => void;
 }
 
-const EVENTS = new Set(["message", "delta", "tool_start", "tool_end", "error", "done"]);
+const EVENTS = new Set(["message", "delta", "tool_start", "tool_approval", "tool_decision", "tool_end", "error", "done"]);
 
 /**
  * Runs one stream to its end. Rejects with an `ApiError` for a refused request (403

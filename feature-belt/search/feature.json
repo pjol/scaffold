@@ -1,0 +1,109 @@
+{
+  "name": "search",
+  "title": "Search",
+  "version": "1.1.1",
+  "summary": "People search everything they can see across installed features from one box (⌘K on web, a screen on mobile); agents get the same search as a tool.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "env": [
+    {
+      "name": "SEARCH_PROVIDER_TIMEOUT",
+      "tier": "backend",
+      "group": "search",
+      "required": "optional",
+      "default": "2s",
+      "doc": "How long each feature gets to answer a search (100ms to 10s); slower ones are reported as missing from the results."
+    },
+    {
+      "name": "SEARCH_RATE_LIMIT_PER_MINUTE",
+      "tier": "backend",
+      "group": "search",
+      "required": "optional",
+      "default": "60",
+      "doc": "Searches allowed per user per minute."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/search",
+      "dst": "backend/internal/search"
+    },
+    {
+      "src": "backend/feature_search.go",
+      "dst": "backend/internal/api/feature_search.go"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/search"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/search"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/search"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./search\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { searchHeaderAction, searchHomeTile, searchPaletteMount } from \"./search/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "searchPaletteMount,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "header-actions",
+      "insert": "searchHeaderAction,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "searchHomeTile,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { searchHome } from \"./search/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "searchHome,"
+    }
+  ],
+  "deps": {
+    "web": {
+      "@radix-ui/react-dialog": "^1.2.0"
+    }
+  },
+  "stitch": [
+    "Implement app.SearchProvider in each feature with searchable content, with exactly the permission checks of its list routes; kinds are prefixed with the module (docs.page) and links are app paths that exist on web and mobile. Org-scoped hits set OrgID and Context (app.SearchContext(orgName, container), e.g. \"Acme · #general\") and filter to app.SearchOrg(ctx) when it is set (search drops other orgs' hits either way).",
+    "Kind and feature names and icons for every belt feature ship with search; rename or add your own with registerSearchKindLabel / registerSearchProviderLabel (packages/shared) and registerSearchIcon (web and mobile @/features/search/icons) at module load.",
+    "With orgs installed, call registerSearchScope in stitching (web and mobile) so search covers the active org by default with an \"All …\" toggle: registerSearchScope(() => { const { org } = useActiveOrg(); return org ? { id: org.id, name: org.name, allLabel: `All ${orgsNoun(\"many\")}` } : null; }).",
+    "Decide where search sits: the ⌘K palette and top-bar button are on every signed-in web screen; on mobile it is a Home row, promote it to a tab if search is a primary destination.",
+    "Tune SEARCH_PROVIDER_TIMEOUT to the slowest provider you accept; slower ones are reported as missing, never waited on."
+  ]
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/moderation"
 	"scaffoldapp/backend/internal/notify"
 )
@@ -24,20 +25,16 @@ func (s *Service) publish(ctx context.Context, audience, event string, data any)
 	}
 }
 
-// afterCommit runs fn in the background, detached from the request, for
-// side effects that must not fail or slow it (notifications, cleanup).
-func (s *Service) afterCommit(ctx context.Context, fn func(ctx context.Context)) {
-	ctx = context.WithoutCancel(ctx)
-	go func() {
+// afterCommit runs fn in the background (bg.Go), detached from the request,
+// for side effects that must not fail or slow it (notifications, cleanup).
+// name is "feed.<what>" for the logs.
+func (s *Service) afterCommit(ctx context.Context, name string, fn func(ctx context.Context)) {
+	bg.Go(ctx, name, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "feed: background task panicked", "err", r)
-			}
-		}()
 		fn(ctx)
-	}()
+		return nil
+	})
 }
 
 // notifyUser sends n unless the recipient is the actor or either has blocked

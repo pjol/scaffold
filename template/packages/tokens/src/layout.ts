@@ -2,8 +2,9 @@
  * Spacing, sizing and layout. Palette-independent: every palette shares one rhythm.
  *
  * The base unit is 4px, so Tailwind's default spacing numbers apply unchanged
- * (`--spacing: 0.25rem`, `p-4` = 16px). Semantic names are never `sm/md/lg/xl`: in
- * Tailwind v4 a `--spacing-md` token hijacks `max-w-md`.
+ * (`--spacing: 0.25rem`, `p-4` = 16px). A semantic name must not complete a Tailwind
+ * class (`pnpm check` refuses it): a `--spacing-md` token hijacks `max-w-md`, and
+ * `--spacing-block` turned `inline-block` into `inline-size: 1.5rem`.
  */
 
 /** Approved spacing steps, in Tailwind numbers (× 4px). */
@@ -35,8 +36,8 @@ export const space = {
   related: 8,
   /** Fields in a form, cards in a grid. */
   group: 16,
-  /** Between blocks inside a section. */
-  block: 24,
+  /** Between the parts of a section. */
+  subsection: 24,
 } as const;
 
 /** Breakpoints the responsive tokens switch at (Tailwind `sm` and `lg`). */
@@ -50,7 +51,7 @@ export const LAYOUT_SPACE = {
   tight: [4],
   related: [8],
   group: [16],
-  block: [24],
+  subsection: [24],
   /** Between sections of a page. */
   section: [32, 40, 48],
   /** Between full-width bands of a landing page. */

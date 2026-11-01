@@ -116,7 +116,7 @@ func New(d *app.Deps) *Service {
 	}
 	storage.RegisterPurpose(storage.Purpose{Name: PurposeAttachment, Types: attachmentTypes, MaxBytes: s.cfg.attachmentMax})
 	storage.RegisterPurpose(storage.Purpose{Name: PurposeAvatar, Public: true, Types: storage.ImageTypes, MaxBytes: 5 << 20})
-	notifications.RegisterKind(notifications.Kind{ID: notifyKind, Label: "Messages", Push: true})
+	notifications.RegisterKind(notifications.Kind{ID: notifyKind, Label: "Messages", Push: true, AgentTarget: notifications.DataTarget(agentKind, "conversation_id")})
 	moderation.RegisterTarget(targetKind, messageTarget{s})
 	return s
 }

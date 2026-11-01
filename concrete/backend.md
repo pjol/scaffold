@@ -4,7 +4,7 @@ Go API in `backend/`, module path `<slug>/backend`. The template's code is the r
 
 ## Shape
 
-One binary (`cmd/server`) runs the API and the background workers. Boot order: `config.Load` → logging → `db.Connect` → `db.Migrate` → realtime broker → storage → `app.Deps` → `api.Build` → `config.Check` → `Start` → `http.Server`. `cmd/seed` fills a development database.
+One binary (`cmd/server`) runs the API and the background workers. Boot order: `config.Load` → logging → `db.Connect` → `db.Migrate` → realtime broker → storage → `app.Deps` → `api.Build` → `config.Check` → `Start` → `http.Server`. Shutdown (SIGTERM, 20 s in all): stop accepting → finish in-flight requests → `bg.Wait` → close broker and pool. `cmd/seed` fills a development database and also waits on `bg` before it exits.
 
 ```
 backend/
@@ -13,13 +13,13 @@ backend/
   internal/app/          Deps + the module interfaces (the contract every feature implements)
   internal/api/          router, Build, feature registry (feature_<name>.go files)
   internal/config/       Config + env helpers (String/Int/Bool/Duration/List/Required)
-  internal/db/           pool, Migrate, WithTx, TryAdvisoryLock, error helpers
+  internal/db/           pool, Migrate, WithTx, error helpers
   internal/httpx/        Handler, Error, Decode, Page/cursor, middleware, Detach
   internal/auth/         Provider (Clerk), Identity, guards, dev tokens
   internal/legal/        versions + consent gate
   internal/accounts/     me, consent, uploads, export, deletion, Clerk webhook, /v1/config
   internal/admin/        users, roles, status, audit log
-  internal/audit/ realtime/ storage/ mail/ notify/ jobs/ webhooks/
+  internal/audit/ realtime/ storage/ mail/ notify/ jobs/ bg/ webhooks/
   internal/<feature>/    one package per feature-belt module or app domain
   migrations/            embedded NNNN_<track>_<what>.sql (database.md)
 ```
@@ -43,12 +43,16 @@ Everything above the infrastructure is a module: `New(d *app.Deps) *Service` plu
 | `AccountExporter` | contributes its data to `GET /v1/me/export` |
 | `DevSeeder` | adds realistic rows in `cmd/seed` (development only, idempotent) |
 | `ToolProvider` | declares `app.Tool`s (name, JSON schema, handler run as the caller) that the `mcp` and `assistant` features expose to agents |
+| `DynamicToolProvider` | `ToolsFor(ctx, caller)`: per-caller tools that can't be listed at boot (the `connectors` feature's remote MCP tools, with `Tool.Source` naming the service and `Tool.Feature` = `connectors:<id>` as the agent-scope key); the `assistant` merges them per turn and asks the user before each external write |
+| `SearchProvider` | `Search(ctx, caller, q, limit)` → `[]app.SearchResult` for the `search` feature's global search; same permission checks as the module's list routes. Org-scoped hits set `OrgID` and `Context` (`app.SearchContext(orgName, container)`: "Riverside Climbing Club · #general"); when `app.SearchOrg(ctx)` names an org, filter to it in SQL if you can (search drops other orgs' hits either way; hits with no `OrgID` always pass) |
+| `AgentPolicy` | one module (the `agents` feature) applies users' AI agent scopes: `FeatureLevel`, `ResourceLevel`, `GateTool`. The `mcp` and `assistant` features mark agent calls with `auth.WithAgent` and gate every tool through it; features drop rows an agent may not read with `app.AgentReadable` (a page at a time) or `app.AgentAllows` (one row); access resources get it from the access SQL helpers |
 
 - A feature registers from one file, `internal/api/feature_<name>.go` (`RegisterModule`; `RegisterDeps` when it replaces a shared service such as `d.Notify`). No other core file changes.
 - Register **flat** routes inside `Mount*` (`r.Get("/chat/conversations", …)`). Never `r.Route`/`r.Mount` in a module: modules share prefixes and chi panics on a duplicate mount.
 - Any module that stores user data implements `AccountDeleter` and `AccountExporter`. This is a store requirement, not a nicety.
 - Modules talk to each other through `Deps` services (`Notify`, `Storage`, `Mail`, `Broker`). A feature may import the packages of features in its `requires` (they are always installed) and use their exported functions; it never imports anything else. Package-level registries (e.g. `moderation.RegisterTarget`) are filled in `New` and read at request time, so construction order never matters.
 - Agent tools: read-only by default; never a tool that deletes user data, sends anything outward or fetches arbitrary URLs.
+- Write tools set `Target` (the one resource they change, so per-resource agent scopes apply) and `Preview` (summary + before/after, what the user reviews when their agent scope is "suggest"). Agents never get sharing, permission or credential tools.
 
 ## Handlers
 
@@ -60,7 +64,7 @@ Everything above the infrastructure is a module: `New(d *app.Deps) *Service` plu
 - Money is integer minor units (`int64` cents) or `NUMERIC` + decimal strings on the wire; never float.
 - Multi-statement writes go in `db.WithTx`. Admin mutations call `audit.Log(ctx, tx, …)` in the same transaction.
 - Routes that call a payment provider inside a transaction use `httpx.Detach(timeout)` so a dropped client cannot roll back after the provider acted. Pair with an `Idempotency-Key`.
-- Side effects that must not fail the request (notify, realtime, email) are best-effort: log and continue.
+- Side effects that must not fail the request (notify, realtime, email) are best-effort: log and continue. Work that must outlive the request (fan-out to many recipients, push, provider calls) goes through `bg.Go(ctx, "<module>.<what>", fn)`, never a bare `go`: it keeps the request's values but not its cancellation, logs errors and panics, and shutdown and `cmd/seed` wait for it before the pool closes. `fn` bounds its own time. A plain `go` stays right for work the caller waits on (a parallel fan-out joined with a `sync.WaitGroup` before the handler returns) and for loops started from `Start` that end with its context.
 - Expensive or abusable routes add `auth.RateLimit(n, window)` on top of the global limits.
 
 ## Auth
@@ -71,11 +75,12 @@ Everything above the infrastructure is a module: `New(d *app.Deps) *Service` plu
 
 | Service | Use |
 |---|---|
-| `realtime` | `d.Broker.Publish(ctx, topic, eventType, data)`. Topics `"<kind>:<uuid>"` via `realtime.Topic`; the hub owns `user:<id>` and `admin:live`. Delivery is at-most-once: clients refetch on reconnect. Memory broker in dev, Redis (`REDIS_URL`) for more than one instance. Revoke access with `realtime.Revoke`. |
-| `storage` | `storage.RegisterPurpose(Purpose{Name, Public, Types, MaxBytes, ConsentExempt})` in `New` (`storage.ImageTypes`, `storage.DocumentTypes` for allow-lists). Clients get a presigned PUT from `POST /v1/uploads`, upload, then send the key; the owning endpoint checks `storage.KeyOwnedBy(key, purpose, userID)`. Private objects go out as short-lived `PresignGet`. Clean up with `Delete(key)` / `DeleteOwnerPurpose(owner, purpose)` (account deletion calls `DeleteOwner`). Local disk in dev only. |
+| `realtime` | `d.Broker.Publish(ctx, topic, eventType, data)`. Topics `"<kind>:<uuid>"` via `realtime.Topic`; the hub owns `user:<id>` and `admin:live`. Delivery is at-most-once: clients refetch on reconnect. Memory broker in dev, Redis (`REDIS_URL`) for more than one instance. Revoke access with `realtime.Revoke` (one user) or `realtime.RevokeTopic` (re-check every subscriber of a topic, for changes that affect an unknown set of people). |
+| `storage` | `storage.RegisterPurpose(Purpose{Name, Public, Types, MaxBytes, ConsentExempt, AnyType})` in `New` (`storage.ImageTypes`, `storage.DocumentTypes` for allow-lists; `AnyType` for a drive that takes any file). Clients get a presigned PUT from `POST /v1/uploads`, upload, then send the key; the owning endpoint checks `storage.KeyOwnedBy(key, purpose, userID)`. Private objects go out as short-lived `PresignGet`, or `PresignGetWith(…, GetOptions{ContentType, Disposition})` to force the type and `attachment` for anything that could run script (HTML, SVG, unknown). Server-side: `Stat` (check an upload exists and its real size before recording it), `ReadPrefix` (sniff a type), `Open`, `Put` (small objects), `Copy`, `NewKey`; a missing key is `ErrObjectNotFound` on S3 and local disk alike. Name downloads: a presigned URL is cross-origin, so the browser ignores `<a download>` and saves under the key unless the disposition carries `filename`. Bucket policy: `storage.BucketPolicy` (printed by `server -bucket-policy`) makes public purposes public-read and nothing else. Clean up with `Delete(key)` / `DeleteOwnerPurpose(owner, purpose)` (account deletion calls `DeleteOwner`; objects keyed by an org instead of the uploader survive it and are the module's to delete). Local disk in dev only. |
 | `notify` | `d.Notify.Send(ctx, notify.Notification{UserID, Kind, Title, Body, Link})`. Core delivers in-app over realtime; the notifications feature adds inbox, push, email and preferences without callers changing. |
-| `mail` | `d.Mail.Send(ctx, mail.Message{…})` with a plain-text body (HTML via `mail.Layout` optional). Resend in prod; logged in dev. |
-| `jobs` | `go jobs.Every(ctx, d.Pool, "<module>.<job>", interval, fn)` from `Start`. |
+| `mail` | `d.Mail.Send(ctx, mail.Message{…})` with a plain-text body (HTML via `mail.Layout` optional) and optional small `Attachments` (an `.ics` invite). Resend in prod; logged or written to the sink in dev. |
+| `jobs` | `go jobs.Every(ctx, d.Pool, "<module>.<job>", interval, fn)` from `Start`. Runs once per interval across all instances, never overlapping: a tick claims the job's row in `job_leases` with one statement (no connection held while `fn` runs); the finished run sets the next due time. `fn`'s context ends after 5 minutes or just under the interval, whichever is longer: batch bigger work. `job_leases` shows each job's last run, instance and error. |
+| `bg` | `bg.Go(ctx, "<module>.<what>", fn)`: best-effort work that outlives the request (see Handlers). Only `cmd/server` and `cmd/seed` call `bg.Wait`, at exit. |
 | `webhooks` | Verify (`VerifySvix`, `VerifyHexHMAC`, or the provider SDK), refuse when the secret is unset, then `webhooks.Once(ctx, pool, source, eventID, fn)`. Re-fetch state from the provider when money or permissions depend on it. |
 
 ## Config

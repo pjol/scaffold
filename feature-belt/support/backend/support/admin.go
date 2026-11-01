@@ -12,6 +12,7 @@ import (
 
 	"scaffoldapp/backend/internal/audit"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/notify"
@@ -223,13 +224,16 @@ func (s *Service) adminReply(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	bg := context.WithoutCancel(ctx)
+	detached := context.WithoutCancel(ctx)
 	if req.Internal {
-		s.publish(bg, realtime.AdminLiveTopic, EventTicket, d.Ticket)
+		s.publish(detached, realtime.AdminLiveTopic, EventTicket, d.Ticket)
 	} else {
-		s.publishMessage(bg, ticketID, messageID)
-		s.publishTicket(bg, d.Ticket)
-		go s.deliverReply(bg, d.AdminTicket, staff.DisplayName, body)
+		s.publishMessage(detached, ticketID, messageID)
+		s.publishTicket(detached, d.Ticket)
+		bg.Go(ctx, "support.deliver_reply", func(ctx context.Context) error {
+			s.deliverReply(ctx, d.AdminTicket, staff.DisplayName, body)
+			return nil
+		})
 	}
 	httpx.JSON(w, http.StatusCreated, d)
 	return nil
@@ -241,6 +245,8 @@ func (s *Service) deliverReply(ctx context.Context, t AdminTicket, staffName, bo
 	if t.User.Status == "deleted" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 	s.emailReply(ctx, t, staffName, body)
 	err := s.d.Notify.Send(ctx, notify.Notification{
 		UserID: t.User.ID,

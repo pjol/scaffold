@@ -41,7 +41,7 @@ function Reply({ message, onRetry }: { message: AssistantMessage; onRetry?: (() 
   }
   return (
     <View style={{ gap: s[3] }} accessibilityState={{ busy: streaming }}>
-      <ToolActivity activity={message.activity} />
+      <ToolActivity activity={message.activity} conversationId={message.conversation_id} messageId={message.id} />
       {text ? <Markdown text={text} /> : streaming && message.activity.length === 0 ? <Spinner size={18} label="Writing a reply" /> : null}
       {message.error ? (
         <Banner tone="danger" title={message.error.message} {...(message.error.retryable && onRetry ? { action: { label: "Retry", onPress: onRetry } } : {})} />

@@ -129,11 +129,12 @@ func (s *Service) Tools() []app.Tool {
 			}`),
 			ReadOnly: true,
 			Handler:  s.toolGet,
+			Target:   placeTarget,
 		},
 	}
 }
 
-func (s *Service) toolSearch(ctx context.Context, _ *auth.Identity, input json.RawMessage) (any, error) {
+func (s *Service) toolSearch(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 	var in struct {
 		Q        string    `json:"q"`
 		Category string    `json:"category"`
@@ -177,10 +178,58 @@ func (s *Service) toolSearch(ctx context.Context, _ *auth.Identity, input json.R
 			q.radiusM = min(in.RadiusM, maxNearRadiusM)
 		}
 		page, err := s.nearest(ctx, q)
-		return page.Items, err
+		if err != nil {
+			return nil, err
+		}
+		return s.agentPlaces(ctx, caller, page.Items)
 	}
 	page, err := s.list(ctx, q)
-	return page.Items, err
+	if err != nil {
+		return nil, err
+	}
+	return s.agentPlaces(ctx, caller, page.Items)
+}
+
+// Agent scope: an AI agent acting for the user reads only places their
+// agent scope lets agents read (places.place items set from the agents
+// feature's ⋮ menu, else the feature's level).
+const (
+	agentFeature = "places"
+	agentKind    = "places.place"
+)
+
+// placeTarget names the place places_get reads, so a per-place agent scope
+// applies before it runs.
+func placeTarget(input json.RawMessage) (kind, id string) {
+	var in struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return agentKind, ""
+	}
+	if _, err := uuid.Parse(in.ID); err != nil {
+		return agentKind, ""
+	}
+	return agentKind, in.ID
+}
+
+// agentPlaces drops places the caller's agent may not read.
+func (s *Service) agentPlaces(ctx context.Context, caller *auth.Identity, items []PlaceSummary) ([]PlaceSummary, error) {
+	ids := make([]string, len(items))
+	for i, p := range items {
+		ids[i] = p.ID.String()
+	}
+	ok, err := app.AgentReadable(ctx, s.d.Modules, caller, agentFeature, agentKind, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PlaceSummary, 0, len(items))
+	for i, p := range items {
+		if ok[ids[i]] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) toolGet(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
@@ -197,6 +246,12 @@ func (s *Service) toolGet(ctx context.Context, caller *auth.Identity, input json
 	var owner uuid.UUID
 	if caller != nil {
 		owner = caller.UserID
+	}
+	if ok, err := app.AgentAllows(ctx, s.d.Modules, caller, agentFeature, agentKind, id.String(), app.AgentRead); err != nil || !ok {
+		if err == nil {
+			err = errors.New("place not found")
+		}
+		return nil, err
 	}
 	p, err := s.loadPlace(ctx, s.d.Pool, `p.id = $1 AND (p.status = 'approved' OR p.owner_id = $2)`, id, owner)
 	var he *httpx.Error

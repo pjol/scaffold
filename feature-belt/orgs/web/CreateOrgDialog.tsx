@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, hasErrorCode, setActiveOrgId, useCreateOrg } from "@scaffoldapp/shared";
+import { errorMessage, hasErrorCode, orgsNoun, setActiveOrgId, useCreateOrg } from "@scaffoldapp/shared";
 import { Button, Dialog, Field, Input, toast } from "@scaffoldapp/ui-web";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -39,7 +39,7 @@ export function CreateOrgDialog({ open, onOpenChange }: { open: boolean; onOpenC
       router.push(`/settings/orgs/${org.id}`);
     } catch (e) {
       if (hasErrorCode(e, "conflict")) setErrors({ slug: errorMessage(e) });
-      else toast.error(errorMessage(e, "Couldn't create the organization. Try again."));
+      else toast.error(errorMessage(e, `Couldn't create the ${orgsNoun()}. Try again.`));
     }
   };
 
@@ -47,7 +47,7 @@ export function CreateOrgDialog({ open, onOpenChange }: { open: boolean; onOpenC
     <Dialog
       open={open}
       onOpenChange={(o) => !create.isPending && onOpenChange(o)}
-      title="New organization"
+      title={`New ${orgsNoun()}`}
       footer={
         <>
           <Button variant="ghost" size="auto" disabled={create.isPending} onClick={() => onOpenChange(false)}>

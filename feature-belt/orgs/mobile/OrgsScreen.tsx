@@ -1,9 +1,10 @@
-import { errorMessage, hasErrorCode, useAcceptMyInvite, useActiveOrg, useCreateOrg, useDeclineMyInvite, useMyInvites, useOrgs } from "@scaffoldapp/shared";
+import { errorMessage, hasErrorCode, orgsNoun, orgsNounTitle, useAcceptMyInvite, useActiveOrg, useCreateOrg, useDeclineMyInvite, useJoinableOrgs, useMyInvites, useOrgPickerVisible, useOrgs } from "@scaffoldapp/shared";
 import { Avatar, Badge, Button, EmptyState, ErrorState, Field, haptic, Input, ListGroup, ListRow, Screen, Sheet, SkeletonRow, toast, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
 import { Building2, Check, Plus } from "lucide-react-native";
 import { useState } from "react";
 import { RefreshControl, View } from "react-native";
+import { JoinableOrgs } from "./JoinableOrgs";
 import { ROLE_LABEL, ROLE_TONE } from "./labels";
 
 function CreateSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -26,14 +27,14 @@ function CreateSheet({ open, onClose }: { open: boolean; onClose: () => void }) 
       router.push({ pathname: "/settings/orgs/[orgID]", params: { orgID: org.id } });
     } catch (e) {
       if (hasErrorCode(e, "invalid_request")) setError(errorMessage(e));
-      else toast.error(errorMessage(e, "Couldn't create the organization. Try again."));
+      else toast.error(errorMessage(e, `Couldn't create the ${orgsNoun()}. Try again.`));
     }
   };
   return (
     <Sheet
       open={open}
       onClose={() => !create.isPending && onClose()}
-      title="New organization"
+      title={`New ${orgsNoun()}`}
       snapPoints={[300]}
       footer={
         <Button fullWidth loading={create.isPending} onPress={() => void submit()}>
@@ -50,16 +51,18 @@ function CreateSheet({ open, onClose }: { open: boolean; onClose: () => void }) 
   );
 }
 
-/** Settings → Organizations: invitations to you, the active org, every org you belong to. */
+/** Settings → Organizations: invitations to you, orgs your email domain lets you join, the active org, every org you belong to. */
 export function OrgsScreen() {
   const theme = useTheme();
   const c = theme.colors;
   const s = theme.space;
   const orgs = useOrgs();
   const invites = useMyInvites();
+  const joinable = useJoinableOrgs();
   const accept = useAcceptMyInvite();
   const decline = useDeclineMyInvite();
   const { org: active, setActive } = useActiveOrg();
+  const picker = useOrgPickerVisible();
   const [creating, setCreating] = useState(false);
   const rows = orgs.data?.items ?? [];
   const pending = invites.data?.items ?? [];
@@ -74,18 +77,19 @@ export function OrgsScreen() {
           onRefresh={() => {
             void orgs.refetch();
             void invites.refetch();
+            void joinable.refetch();
           }}
         />
       }
       footer={
         rows.length > 0 ? (
           <Button fullWidth variant="secondary" leftIcon={Plus} onPress={() => setCreating(true)}>
-            New organization
+            New {orgsNoun()}
           </Button>
         ) : undefined
       }
     >
-      <Stack.Screen options={{ title: "Organizations" }} />
+      <Stack.Screen options={{ title: orgsNounTitle("many") }} />
 
       {pending.length > 0 ? (
         <ListGroup title="Invitations">
@@ -129,8 +133,10 @@ export function OrgsScreen() {
         </ListGroup>
       ) : null}
 
-      {rows.length > 1 ? (
-        <ListGroup title="Active organization" info="Screens that work per organization show this one.">
+      <JoinableOrgs />
+
+      {rows.length > 1 && picker ? (
+        <ListGroup title={`Active ${orgsNoun()}`} info={`Screens that work per ${orgsNoun()} show this one.`}>
           {rows.map((o) => (
             <ListRow
               key={o.id}
@@ -146,22 +152,22 @@ export function OrgsScreen() {
         </ListGroup>
       ) : null}
 
-      <ListGroup title="Your organizations">
+      <ListGroup title={`Your ${orgsNoun("many")}`}>
         {orgs.isPending ? (
           <View accessibilityLabel="Loading" accessibilityRole="progressbar">
             <SkeletonRow />
             <SkeletonRow />
           </View>
         ) : orgs.isError ? (
-          <ErrorState compact title="Couldn't load your organizations" info={errorMessage(orgs.error)} onRetry={() => void orgs.refetch()} retrying={orgs.isRefetching} />
+          <ErrorState compact title={`Couldn't load your ${orgsNoun("many")}`} info={errorMessage(orgs.error)} onRetry={() => void orgs.refetch()} retrying={orgs.isRefetching} />
         ) : rows.length === 0 ? (
           <EmptyState
             compact
             icon={Building2}
-            title="No organizations yet"
+            title={`No ${orgsNoun("many")} yet`}
             action={
               <Button leftIcon={Plus} onPress={() => setCreating(true)}>
-                New organization
+                New {orgsNoun()}
               </Button>
             }
           />
@@ -171,7 +177,12 @@ export function OrgsScreen() {
               key={o.id}
               title={o.name}
               leading={<Avatar name={o.name} src={o.avatar_url} size="md" />}
-              trailing={<Badge tone={ROLE_TONE[o.role]}>{ROLE_LABEL[o.role]}</Badge>}
+              trailing={
+                <View style={{ flexDirection: "row", alignItems: "center", gap: s[2] }}>
+                  {!picker && rows.length > 1 && active?.id === o.id ? <Badge tone="success">Active</Badge> : null}
+                  <Badge tone={ROLE_TONE[o.role]}>{ROLE_LABEL[o.role]}</Badge>
+                </View>
+              }
               onPress={() => router.push({ pathname: "/settings/orgs/[orgID]", params: { orgID: o.id } })}
             />
           ))

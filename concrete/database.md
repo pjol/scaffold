@@ -14,7 +14,7 @@ The number decides order, so ranges encode dependency order. `scaffold doctor` e
 
 | Range | Track | Owner |
 |---|---|---|
-| 0001–0099 | `core` | concrete template (users, consent, audit, deletions, webhook events) |
+| 0001–0099 | `core` | concrete template (users, consent, audit, deletions, webhook events, job leases) |
 | 0100–0999 | infrastructure features | blocks of 100, listed in feature-belt/SKILL.md (notifications, moderation, orgs, …) |
 | 1000–4999 | product features | blocks of 100 (chat, feed, places, payments, …) |
 | 5000–9999 | `app` | everything the project writes itself |
@@ -38,7 +38,8 @@ A feature may reference core and any feature with a lower block, never a higher 
 - SQL lives in the owning package, beside the handler or in a `repo.go`. Use `pgx.CollectRows` with `RowToStructByPos`/`ByName`.
 - `db.Querier` lets helpers run on the pool or inside a transaction.
 - `db.IsNoRows` → `httpx.ErrNotFound`; `db.IsUniqueViolation(err, "constraint")` → `httpx.Conflict`.
-- Queue-style work uses `FOR UPDATE SKIP LOCKED`; singleton jobs use `jobs.Every`.
+- Queue-style work uses `FOR UPDATE SKIP LOCKED`; periodic singleton work uses `jobs.Every` (a lease row in `job_leases`, backend.md).
+- To serialise writes per key (one booking per host, one new conversation per pair), make `SELECT pg_advisory_xact_lock(hashtextextended('<module>.<what>:' || $1::text, 0))` the first statement of the `db.WithTx` that does the work; the lock ends with that transaction. Never hold a lock or transaction open while doing work on other pool connections: under load every holder waits for a second connection and the pool starves.
 - Never build SQL with string concatenation of user input.
 
 ## Seeds
