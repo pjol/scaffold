@@ -1,0 +1,144 @@
+{
+  "name": "chat",
+  "title": "Chat",
+  "version": "1.0.2",
+  "summary": "People message each other one to one and in groups, with photos and files, replies, reactions, read state and live delivery.",
+  "requires": [
+    "notifications",
+    "moderation"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 1000,
+  "env": [
+    {
+      "name": "CHAT_MESSAGE_MAX_CHARS",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "4000",
+      "doc": "Longest message accepted, in characters."
+    },
+    {
+      "name": "CHAT_GROUP_MAX_MEMBERS",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "50",
+      "doc": "Most people in one group conversation, owner included."
+    },
+    {
+      "name": "CHAT_EDIT_WINDOW",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "5m",
+      "doc": "How long after sending a message its sender can edit it (Go duration; 0 turns editing off)."
+    },
+    {
+      "name": "CHAT_NEW_CONVERSATIONS_PER_DAY",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "20",
+      "doc": "Conversations one person can start in a rolling 24 hours (reopening an existing one is free)."
+    },
+    {
+      "name": "CHAT_MESSAGES_PER_MINUTE",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "60",
+      "doc": "Messages one person can send per minute, across all conversations."
+    },
+    {
+      "name": "CHAT_ATTACHMENT_MAX_MB",
+      "tier": "backend",
+      "group": "chat",
+      "required": "optional",
+      "default": "25",
+      "doc": "Largest file a message can carry, in MB."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/chat",
+      "dst": "backend/internal/chat"
+    },
+    {
+      "src": "backend/feature_chat.go",
+      "dst": "backend/internal/api/feature_chat.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/chat"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/chat"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/chat"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "stitch": [
+    "Decide who may message whom: chat.SetContactPolicy (default: any active user not blocked either way). The people picker searches names and exact emails; replace /v1/chat/people if the app has its own directory.",
+    "Decide whether people added to a group see earlier history (default yes).",
+    "Link to POST /v1/chat/conversations {kind: direct, user_id} from profiles and other features, then open /chat/<id>.",
+    "Add to the privacy policy that message text appears in push notifications.",
+    "If you change CHAT_ATTACHMENT_MAX_MB or CHAT_EDIT_WINDOW, update CHAT_ATTACHMENT_MAX_BYTES (shared) and EDIT_WINDOW_MS (web, mobile)."
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./chat\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { chatAdminNav, chatHome, chatNav } from \"./chat/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "chatNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "chatHome,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "chatAdminNav,"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "imports",
+      "insert": "import { ChatTabIcon } from \"@/features/chat/ChatTabIcon\";"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "tabs",
+      "insert": "<Tabs.Screen name=\"chat\" options={{ title: \"Chat\", tabBarIcon: ChatTabIcon }} />"
+    }
+  ]
+}

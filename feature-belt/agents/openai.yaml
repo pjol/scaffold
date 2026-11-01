@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feature Belt"
+  short_description: "Copyable feature modules (chat, feed, maps, payments, wallets, AI, …) and how to stitch them."
+  default_prompt: "Use $feature-belt to install and stitch a feature into this scaffold project."

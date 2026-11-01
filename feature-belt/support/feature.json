@@ -1,0 +1,104 @@
+{
+  "name": "support",
+  "title": "Support",
+  "version": "1.0.1",
+  "summary": "Users open support tickets with attachments and follow the thread; staff reply by email from an admin queue.",
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 400,
+  "files": [
+    {
+      "src": "backend/support",
+      "dst": "backend/internal/support"
+    },
+    {
+      "src": "backend/feature_support.go",
+      "dst": "backend/internal/api/feature_support.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/support"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/support"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/support"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./support\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { supportAdminNav, supportRequestsLink, supportSettings } from \"./support/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "supportSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "supportAdminNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "consent-routes",
+      "insert": "\"/settings/support-requests(/.*)?\","
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "support-links",
+      "insert": "supportRequestsLink,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { supportRequestsLink, supportSettings } from \"./support/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "supportSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "consent-routes",
+      "insert": "\"settings/support-requests\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "support-links",
+      "insert": "supportRequestsLink,"
+    }
+  ],
+  "stitch": [
+    "Set SUPPORT_EMAIL to an inbox someone reads: new requests alert it and replies to staff emails land there.",
+    "Leave the support.reply notification kind unregistered: support emails every reply itself, so a registered kind would offer a duplicating email toggle.",
+    "Banned accounts can't use the API, so the Support requests link on the blocked screen can't help them; the support email shown next to it is their path.",
+    "Change categories only with an app migration (CHECK) plus the lists in support.go and shared SUPPORT_CATEGORIES."
+  ]
+}

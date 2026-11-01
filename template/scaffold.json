@@ -1,0 +1,386 @@
+{
+  "scaffold": "1",
+  "name": "Scaffold App",
+  "slug": "scaffoldapp",
+  "module": "scaffoldapp/backend",
+  "bundle_id": "com.example.scaffoldapp",
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "features": {},
+  "env": [
+    {
+      "name": "APP_ENV",
+      "tier": "backend",
+      "group": "core",
+      "default": "development",
+      "dev": "development",
+      "doc": "development, staging or production. Gates the dev auth bypass, strict migrations and required secrets."
+    },
+    {
+      "name": "PORT",
+      "tier": "backend",
+      "group": "core",
+      "default": "8080",
+      "doc": "HTTP port. dev-up assigns it from the project's port block."
+    },
+    {
+      "name": "RUN_WORKERS",
+      "tier": "backend",
+      "group": "core",
+      "default": "true",
+      "doc": "Run module background workers on this instance."
+    },
+    {
+      "name": "PUBLIC_API_URL",
+      "tier": "backend",
+      "group": "core",
+      "required": "prod",
+      "default": "http://localhost:8080",
+      "doc": "Public origin of this API (upload URLs, links). https in production."
+    },
+    {
+      "name": "PUBLIC_WEB_URL",
+      "tier": "backend",
+      "group": "core",
+      "required": "prod",
+      "doc": "Public origin of the web app (email links, redirects, Clerk authorized party)."
+    },
+    {
+      "name": "CORS_ALLOWED_ORIGINS",
+      "tier": "backend",
+      "group": "core",
+      "required": "prod",
+      "doc": "Comma-separated browser origins allowed to call the API and open sockets."
+    },
+    {
+      "name": "SUPPORT_EMAIL",
+      "tier": "backend",
+      "group": "core",
+      "default": "support@example.com",
+      "doc": "Published support address (settings, footer, store listings)."
+    },
+    {
+      "name": "MOBILE_MIN_VERSION_IOS",
+      "tier": "backend",
+      "group": "core",
+      "default": "1.0.0",
+      "doc": "Oldest iOS build allowed; older builds show the update screen."
+    },
+    {
+      "name": "MOBILE_MIN_VERSION_ANDROID",
+      "tier": "backend",
+      "group": "core",
+      "default": "1.0.0",
+      "doc": "Oldest Android build allowed; older builds show the update screen."
+    },
+    {
+      "name": "LOG_LEVEL",
+      "tier": "backend",
+      "group": "observability",
+      "default": "info",
+      "doc": "info or debug."
+    },
+    {
+      "name": "REQUEST_TIMEOUT",
+      "tier": "backend",
+      "group": "core",
+      "default": "20s",
+      "doc": "Per-request timeout for /v1 routes (Go duration)."
+    },
+    {
+      "name": "TRUSTED_PROXY_HOPS",
+      "tier": "backend",
+      "group": "core",
+      "default": "0",
+      "doc": "Proxies in front of the API that append X-Forwarded-For (0 = use the TCP peer)."
+    },
+    {
+      "name": "RATE_LIMIT_IP_PER_MIN",
+      "tier": "backend",
+      "group": "core",
+      "default": "600",
+      "doc": "Requests per minute per client IP on /v1."
+    },
+    {
+      "name": "RATE_LIMIT_USER_PER_MIN",
+      "tier": "backend",
+      "group": "core",
+      "default": "300",
+      "doc": "Requests per minute per signed-in user."
+    },
+    {
+      "name": "RATE_LIMIT_WS_PER_MIN",
+      "tier": "backend",
+      "group": "core",
+      "default": "60",
+      "doc": "New WebSocket connections per minute per IP."
+    },
+    {
+      "name": "DATABASE_URL",
+      "tier": "backend",
+      "group": "database",
+      "required": "always",
+      "secret": true,
+      "doc": "Postgres connection URL.",
+      "source": "dev-up writes the local one; production from the database host"
+    },
+    {
+      "name": "DB_MAX_CONNS",
+      "tier": "backend",
+      "group": "database",
+      "default": "20",
+      "doc": "Pool size per instance."
+    },
+    {
+      "name": "REDIS_URL",
+      "tier": "backend",
+      "group": "core",
+      "secret": true,
+      "doc": "Realtime broker across instances. Unset = in-memory (one instance).",
+      "source": "Redis host"
+    },
+    {
+      "name": "CLERK_SECRET_KEY",
+      "tier": "backend",
+      "group": "auth",
+      "required": "prod",
+      "secret": true,
+      "doc": "Clerk backend key. Optional in development when AUTH_DEV_BYPASS is on.",
+      "source": "Clerk dashboard \u2192 API keys"
+    },
+    {
+      "name": "CLERK_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "auth",
+      "required": "prod",
+      "secret": true,
+      "doc": "Svix signing secret for /webhooks/clerk (user.updated, user.deleted).",
+      "source": "Clerk dashboard \u2192 Webhooks \u2192 endpoint"
+    },
+    {
+      "name": "AUTH_DEV_BYPASS",
+      "tier": "backend",
+      "group": "auth",
+      "default": "false",
+      "dev": "true",
+      "doc": "Accept dev:<subject>:<email> tokens. Refused unless APP_ENV=development."
+    },
+    {
+      "name": "ADMIN_EMAILS",
+      "tier": "backend",
+      "group": "auth",
+      "dev": "admin@scaffoldapp.test",
+      "doc": "Comma-separated emails granted admin at sign-in."
+    },
+    {
+      "name": "S3_BUCKET",
+      "tier": "backend",
+      "group": "storage",
+      "required": "prod",
+      "doc": "Bucket for uploads. Unset = local disk (development only).",
+      "source": "S3/R2/Tigris console"
+    },
+    {
+      "name": "S3_REGION",
+      "tier": "backend",
+      "group": "storage",
+      "default": "us-east-1",
+      "doc": "Bucket region."
+    },
+    {
+      "name": "S3_ENDPOINT",
+      "tier": "backend",
+      "group": "storage",
+      "doc": "Endpoint for non-AWS providers (R2, Tigris, MinIO)."
+    },
+    {
+      "name": "S3_ACCESS_KEY_ID",
+      "tier": "backend",
+      "group": "storage",
+      "secret": true,
+      "doc": "Access key id (unset = default AWS credential chain)."
+    },
+    {
+      "name": "S3_SECRET_ACCESS_KEY",
+      "tier": "backend",
+      "group": "storage",
+      "secret": true,
+      "doc": "Secret access key."
+    },
+    {
+      "name": "S3_PUBLIC_URL",
+      "tier": "backend",
+      "group": "storage",
+      "required": "prod",
+      "doc": "Public base URL for public-read objects (CDN or bucket URL)."
+    },
+    {
+      "name": "S3_FORCE_PATH_STYLE",
+      "tier": "backend",
+      "group": "storage",
+      "default": "false",
+      "doc": "Path-style addressing (MinIO)."
+    },
+    {
+      "name": "LOCAL_UPLOAD_DIR",
+      "tier": "backend",
+      "group": "storage",
+      "default": "uploads",
+      "doc": "Upload directory when S3_BUCKET is unset (development).",
+      "dev": ".data/uploads"
+    },
+    {
+      "name": "RESEND_API_KEY",
+      "tier": "backend",
+      "group": "email",
+      "required": "prod",
+      "secret": true,
+      "doc": "Resend key. Unset = mail is logged, not sent (development).",
+      "source": "resend.com \u2192 API keys"
+    },
+    {
+      "name": "MAIL_FROM",
+      "tier": "backend",
+      "group": "email",
+      "default": "Scaffold App <no-reply@example.com>",
+      "doc": "From header for transactional mail; the domain must be verified in Resend."
+    },
+    {
+      "name": "NEXT_PUBLIC_API_URL",
+      "tier": "web",
+      "group": "core",
+      "required": "always",
+      "doc": "Backend origin the browser calls.",
+      "source": "dev-up writes it"
+    },
+    {
+      "name": "NEXT_PUBLIC_APP_ENV",
+      "tier": "web",
+      "group": "core",
+      "default": "production",
+      "dev": "development",
+      "doc": "development, staging or production (gates dev auth in the browser)."
+    },
+    {
+      "name": "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      "tier": "web",
+      "group": "auth",
+      "required": "prod",
+      "doc": "Clerk publishable key. Unset in development = dev sign-in only.",
+      "source": "Clerk dashboard \u2192 API keys"
+    },
+    {
+      "name": "CLERK_SECRET_KEY",
+      "tier": "web",
+      "group": "auth",
+      "required": "prod",
+      "secret": true,
+      "doc": "Clerk secret for Next's Clerk middleware (server only).",
+      "source": "Clerk dashboard \u2192 API keys"
+    },
+    {
+      "name": "NEXT_PUBLIC_AUTH_DEV",
+      "tier": "web",
+      "group": "auth",
+      "default": "false",
+      "dev": "true",
+      "doc": "Show the dev identity picker instead of Clerk (non-production only)."
+    },
+    {
+      "name": "NEXT_PUBLIC_PALETTE",
+      "tier": "web",
+      "group": "core",
+      "default": "base",
+      "doc": "Default palette id from packages/tokens."
+    },
+    {
+      "name": "NEXT_PUBLIC_S3_PUBLIC_URL",
+      "tier": "web",
+      "group": "storage",
+      "doc": "Public bucket origin, the same value as the backend's S3_PUBLIC_URL. Lets next/image optimise avatars and uploads; unset = they load unoptimised.",
+      "source": "Same as S3_PUBLIC_URL"
+    },
+    {
+      "name": "EXPO_PUBLIC_API_URL",
+      "tier": "mobile",
+      "group": "core",
+      "required": "always",
+      "doc": "Backend origin the app calls. dev-up uses the machine's LAN IP so devices can reach it.",
+      "source": "dev-up writes it"
+    },
+    {
+      "name": "EXPO_PUBLIC_APP_ENV",
+      "tier": "mobile",
+      "group": "core",
+      "default": "production",
+      "dev": "development",
+      "doc": "development, staging or production."
+    },
+    {
+      "name": "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      "tier": "mobile",
+      "group": "auth",
+      "required": "prod",
+      "doc": "Clerk publishable key. Unset in development = dev sign-in only.",
+      "source": "Clerk dashboard \u2192 API keys"
+    },
+    {
+      "name": "EXPO_PUBLIC_AUTH_DEV",
+      "tier": "mobile",
+      "group": "auth",
+      "default": "false",
+      "dev": "true",
+      "doc": "Show the dev identity picker instead of Clerk (non-production only)."
+    },
+    {
+      "name": "EXPO_PUBLIC_PALETTE",
+      "tier": "mobile",
+      "group": "core",
+      "default": "base",
+      "doc": "Default palette id from packages/tokens."
+    },
+    {
+      "name": "MAIL_SINK_DIR",
+      "tier": "backend",
+      "group": "email",
+      "doc": "Development: write each email as a Markdown file here instead of logging it.",
+      "dev": ".data/mail"
+    },
+    {
+      "name": "DEV_PORT_BASE",
+      "tier": "dev",
+      "group": "dev",
+      "doc": "First port of this project's local block (API +0, web +1, Postgres +2, Metro +3, MinIO +4, Redis +5, hooks +6\u2026+9). Unset = derived from the slug; never 3000-3010 or 8080."
+    },
+    {
+      "name": "DEV_LAN_IP",
+      "tier": "dev",
+      "group": "dev",
+      "doc": "LAN IP that --lan/--tunnel write into EXPO_PUBLIC_API_URL and PUBLIC_API_URL. Unset = detected from the default network interface."
+    },
+    {
+      "name": "DEV_PG_BIN",
+      "tier": "dev",
+      "group": "dev",
+      "doc": "Directory holding Postgres 17 initdb/pg_ctl/psql. Unset = /Library/PostgreSQL/17/bin, Homebrew, Postgres.app, then PATH; none found = docker compose."
+    },
+    {
+      "name": "CLERK_PUBLISHABLE_KEY",
+      "tier": "dev",
+      "group": "auth",
+      "doc": "Clerk publishable key, pasted once: dev-up copies it to NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY.",
+      "source": "Clerk dashboard \u2192 API keys"
+    },
+    {
+      "name": "EXPO_PUBLIC_WEB_URL",
+      "tier": "mobile",
+      "group": "core",
+      "required": "prod",
+      "doc": "Public web origin for links the app shares (invites, events, posts) and opens (legal pages, wallet linking).",
+      "source": "dev-up writes it; production = PUBLIC_WEB_URL"
+    }
+  ]
+}

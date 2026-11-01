@@ -1,0 +1,215 @@
+{
+  "name": "places",
+  "title": "Places",
+  "version": "1.0.1",
+  "summary": "Browse places on a map and in a list, search by area, text or distance, submit places for review, save favourites.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 1200,
+  "env": [
+    {
+      "name": "PLACES_CATEGORIES",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "restaurant:Restaurant,cafe:Café,bar:Bar,shop:Shop,grocery:Grocery,service:Service,park:Park,culture:Arts and culture,other:Other",
+      "doc": "Place categories as comma-separated id:Label pairs; ids are stored on places, so rename labels freely but keep ids."
+    },
+    {
+      "name": "PLACES_REQUIRE_APPROVAL",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "true",
+      "doc": "true: user submissions and owner edits wait in the staff queue before they show on the map."
+    },
+    {
+      "name": "PLACES_MAP_STYLE_URL",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "https://tiles.openfreemap.org/styles/liberty",
+      "doc": "MapLibre style JSON the web map loads (OpenFreeMap needs no key)."
+    },
+    {
+      "name": "PLACES_DEFAULT_CENTER",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "37.7749,-122.4194",
+      "doc": "lat,lng the map opens on before it knows the user's location; also biases address search."
+    },
+    {
+      "name": "PLACES_DEFAULT_ZOOM",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "12",
+      "doc": "Zoom level (0 to 22) the map opens at."
+    },
+    {
+      "name": "PLACES_SERVICE_AREA",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "doc": "minLng,minLat,maxLng,maxLat; places outside it are refused. Empty accepts anywhere."
+    },
+    {
+      "name": "MAPBOX_TOKEN",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "secret": true,
+      "doc": "Mapbox token for geocoding. Empty uses Photon (OpenStreetMap, no key).",
+      "source": "account.mapbox.com → Tokens (server token, no URL restriction)"
+    },
+    {
+      "name": "PLACES_PHOTON_URL",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "https://photon.komoot.io",
+      "doc": "Photon base URL when MAPBOX_TOKEN is empty. The public instance is fair-use only; self-host for volume."
+    },
+    {
+      "name": "PLACES_GEOCODE_COUNTRIES",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "doc": "Comma-separated ISO country codes (us,ca) address search is limited to. Empty searches worldwide."
+    },
+    {
+      "name": "PLACES_GEOCODE_RATE_PER_MIN",
+      "tier": "backend",
+      "group": "places",
+      "required": "optional",
+      "default": "60",
+      "doc": "Upstream geocoding calls per minute across all users; cached answers don't count."
+    },
+    {
+      "name": "EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY",
+      "tier": "mobile",
+      "group": "places",
+      "required": "prod",
+      "doc": "Google Maps SDK for Android key for expo-maps, injected into app.config at build time (iOS uses Apple Maps, no key).",
+      "source": "Google Cloud console → APIs & Services → Credentials; restrict to the Android package and signing SHA-1 (add Play App Signing's SHA-1 after the first upload)"
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/places",
+      "dst": "backend/internal/places"
+    },
+    {
+      "src": "backend/feature_places.go",
+      "dst": "backend/internal/api/feature_places.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/places"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/places"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/places"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    },
+    {
+      "src": "mobile-plugin/withPlaces.js",
+      "dst": "mobile/plugins/withPlaces.js"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./places\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { placesAdminNav, placesHome, placesNav } from \"./places/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "placesNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "placesHome,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "placesAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { placesHome } from \"./places/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "placesHome,"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "imports",
+      "insert": "import { PlacesTabIcon } from \"@/features/places/registry\";"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "tabs",
+      "insert": "<Tabs.Screen name=\"places\" options={{ title: \"Places\", tabBarIcon: PlacesTabIcon }} />"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/maplibre-gl-worker\\\\.mjs\","
+    },
+    {
+      "file": "mobile/app.config.ts",
+      "anchor": "plugins",
+      "insert": "\"./plugins/withPlaces\","
+    }
+  ],
+  "deps": {
+    "web": {
+      "maplibre-gl": "^6.16.0"
+    },
+    "mobile": {
+      "expo-maps": "~57.0.4",
+      "expo-location": "~57.0.22",
+      "expo-build-properties": "~57.0.22"
+    }
+  },
+  "stitch": [
+    "Set PLACES_CATEGORIES, PLACES_DEFAULT_CENTER and PLACES_SERVICE_AREA for the app's city and domain.",
+    "Decide who may submit places (default: any signed-in, active user; staff approve when PLACES_REQUIRE_APPROVAL=true).",
+    "With approval off, places are user-generated content that goes live at once: install moderation and call places.SetContentFilter(moderation.Check) from an app file.",
+    "Name OpenStreetMap/Photon or Mapbox, and Google (Android maps), in the privacy policy: address searches and map tiles go to them.",
+    "Production geocoding: set MAPBOX_TOKEN or point PLACES_PHOTON_URL at a self-hosted Photon; the public Photon is fair-use only.",
+    "Mobile: create the Android Maps key (package + SHA-1, plus Play App Signing's after the first upload), set EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY in each EAS environment, and rebuild the dev client (plugins/withPlaces.js raises iOS to 17.0)."
+  ]
+}

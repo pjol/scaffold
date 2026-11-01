@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds and caches
+.next/
+out/
+dist/
+build/
+.expo/
+.turbo/
+ios/
+android/
+*.tsbuildinfo
+next-env.d.ts
+expo-env.d.ts
+.metro-health-check*
+coverage/
+backend/bin/
+backend/tmp/
+
+# Environment (examples are committed as *.example)
+.env
+.env.local
+.env.dev
+.env.*.local
+backend/.env
+mobile/.env
+web/.env.local
+
+# Local runtime data
+logs/
+.data/
+uploads/
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Signing credentials
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# OS and editors
+.DS_Store
+.idea/

@@ -1,0 +1,129 @@
+{
+  "name": "moderation",
+  "title": "Moderation",
+  "version": "1.0.0",
+  "summary": "People report content and other users, block anyone, and staff work a review queue; text is filtered before it is posted.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 200,
+  "env": [
+    {
+      "name": "MODERATION_BLOCKED_TERMS",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated words or phrases refused before posting; matching ignores case, accents and common letter swaps (h3llo)."
+    },
+    {
+      "name": "MODERATION_PROVIDER",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "none",
+      "doc": "Extra AI check before posting: none or openai. A provider outage lets text through and logs the error."
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "secret": true,
+      "doc": "OpenAI API key; required when MODERATION_PROVIDER=openai (the moderation endpoint is free).",
+      "source": "https://platform.openai.com/api-keys"
+    },
+    {
+      "name": "MODERATION_AUTOHIDE_REPORTS",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "0",
+      "doc": "Hide content once this many different people report it, until staff review it; 0 turns auto-hide off."
+    },
+    {
+      "name": "MODERATION_NOTIFY_REPORTER",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "true",
+      "doc": "Tell reporters when staff close their report (generic wording, no details about the action)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/moderation",
+      "dst": "backend/internal/moderation"
+    },
+    {
+      "src": "backend/feature_moderation.go",
+      "dst": "backend/internal/api/feature_moderation.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/moderation"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/moderation"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/moderation"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./moderation\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { moderationAdminNav, moderationSettings } from \"./moderation/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "moderationAdminNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "moderationSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { moderationSettings } from \"./moderation/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "moderationSettings,"
+    }
+  ],
+  "stitch": [
+    "Write the community rules the filter and the queue enforce, link them from the Terms, and put the reasons in your own words if needed.",
+    "Decide MODERATION_AUTOHIDE_REPORTS for launch (3 is a common start for a public feed; 0 for small private groups).",
+    "Name who works the queue and how they hear about new cases (admin:live is realtime; add an email or chat alert if nobody watches the console). Target: every case closed within 24 hours.",
+    "Fill MODERATION_BLOCKED_TERMS for your audience and language; set MODERATION_PROVIDER=openai for public UGC.",
+    "Add ReportDialog/BlockButton (web and mobile src/features/moderation) wherever a person or their content appears that no feature already covers (profiles, avatars, member lists)."
+  ]
+}
