@@ -8,6 +8,7 @@
 - Databases: a page with properties (title, text, number, select, multi-select, status, date, person, checkbox, URL, email) whose rows are pages; table (resize and reorder columns, inline edit), board (drag between columns), list and calendar views, each with saved filters (all must match), sorts and grouping. Inline database blocks.
 - Comments on the page, a block or a text range: threads, resolve / reopen, `@` mentions (notified). History: versions saved while editing, preview and restore. Publish to the web as a read-only public link (`/p/<token>`), reportable through moderation.
 - Agents acting for a person read and change pages with exactly that person's access, capped by their AI agent scope; writes are single reviewable changes.
+- Connected Notion workspaces and Google Docs (with the connectors feature) appear under **Connected** in the sidebar and open in the same editor, block views and database views, read and written live with the person's own account (see Connected platforms).
 
 ## Permission model
 
@@ -90,12 +91,30 @@ No new npm or Go dependencies.
 - Export: pages they created (with Markdown), comments, favorites.
 - UGC: comments pass `moderation.Check`, can be reported and hidden; blocked people's comments are hidden both ways and never notify. Published pages are public: reportable, and staff removal stops the public copy. Page text is internal collaboration and isn't filtered keystroke by keystroke.
 
+## Connected platforms
+
+Needs the connectors feature (`app.Connections`); without it Docs offers no connected sources. Docs never stores platform content: only pages people copy in and connected-page blocks (a reference).
+
+| Capability | Provider scopes | What it gives |
+|---|---|---|
+| `docs.notion.read` · `docs.notion.write` | none (Notion's consent screen picks the pages; more are shared from a page's ••• → Connections) | pages, blocks, databases, comments · edits |
+| `docs.google.read` · `docs.google.write` | `documents.readonly` + `drive.readonly` · `documents` + `drive` | Google Docs (Drive lists them; comments via Drive) · edits |
+
+- **Browse**: sidebar Connected section (kit `ConnectedSection`) per account with status and Reconnect; Notion: shared pages and databases as a lazy tree (roots are pages whose parent the integration can't open); Google: Recent and Shared with me (Drive, documents only); search within each. Mobile: `docs` home → `docs/c/[conn]`.
+- **Render**: `/docs/c/[conn]/[ref]` (mobile `docs/c/[conn]/[ref]`) with a `SourceBadge`. Notion paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code, dividers map to Docs blocks with rich text (bold, italic, underline, strike, code, links; people, page and date mentions); images, files, bookmarks/embeds, sub-pages, tables, equations show read-only; columns and synced blocks flatten (synced read-only); colours aren't shown. Databases render in table, board, list and calendar views (views and filters are the viewer's own, translated to Notion queries); title, text, number, select, multi-select, status, date, checkbox, URL, email and phone edit; people, formulas, rollups, relations and the rest are read-only. Google Docs: named styles → headings, bullets and numbering (nesting) → lists, tables, inline images (read-only), horizontal rules, links and bold/italic/underline/strike/monospace.
+- **Write back**: the editor's `DocsPageSession` sends block operations to `POST /docs/connected/{conn}/pages/{ref}/ops`; an in-memory per-person session (2 h) maps the editor's block ids to the platform's. Notion: update block, append after, archive, turn into (new block + archive), to-dos, rename, row values, new rows and pages, comments. Google: one atomic `batchUpdate` per batch with UTF-16 index math (common prefix/suffix kept, styles per run, paragraph styles and bullets), guarded by `requiredRevisionId`. Moves and unsupported blocks are refused ("Edit in Notion"). Last writer wins, except a block that changed on the platform since the editor loaded it (content compare; Notion's times are minute-granular) or a Google revision that moved: the change is refused as `changed_on_platform` and the page reloads.
+- **Bridges**: ⋮ Open in / Manage sharing in the platform (the app's Share and Publish don't apply), Copy into Docs (structure kept; media become links, sub-pages become connected-page blocks), Add to a Docs page (a `connected_page` block each viewer opens live with their own connection, or is offered Connect / Reconnect / Ask for access).
+- **Search and agents**: `SearchProvider` adds each active connection's hits (3 s each, `Kind` `docs.external`, `Context` "Notion · Acme", `Source`). Read tools take `source` (a connection id from `docs_list_sources`): `docs_search_pages`, `docs_get_page` (Markdown with block ids), `docs_list_children`, `docs_query_database`. Writes are `docs_notion_{update_block,insert_blocks,set_property,create_page,add_comment}` and `docs_google_{update_block,insert_blocks,add_comment}` with `Source` set, `Target` `docs.external` / `<connection>:<platform id>`, exact Preview, and the connection's agent scope checked in Preview (suggest) and Handler (edit); Google edits require `expected_text`.
+- Routes (signed in, the caller's own connection): `GET /docs/sources`, `/docs/connected/resolve`, `/docs/connected/{conn}/tree?parent=&section=` · `/search?q=` · `/pages/{ref}` · `/sync` · `/comments` · `/databases/{ref}/rows`; `POST` `…/pages/{ref}/ops` · `/comments` · `/copy` · `/databases/{ref}/rows` · `/pages`; `PATCH` `…/pages/{ref}` · `/rows/{ref}`. Errors carry `app.Connection*` codes with `fix_url`, never a 401.
+- Out of scope: realtime from the platforms (changes are caught when saving), moving blocks, editing media/tables/synced blocks, Notion colours and block comments, Google suggestions mode, checklists' checked state and table edits, Confluence (add it as `docs.atlassian.*` with an Atlassian 3LO adapter beside these two).
+
 ## Stitching
 
 1. Place `docsNav` (and promote mobile `docsHomeEntry` to a tab) where docs belongs.
 2. Choose defaults for `docs.create_shared` and `docs.publish` per role.
 3. Install `agents` (per-page AI scopes) and `search` (global search); both plug into the seams above.
 4. Say in the privacy policy that published pages are readable by anyone with the link.
+5. With connectors 2.0: register the Notion integration (read, update and insert content, comments, user names) and the Google OAuth client, and say in the privacy policy that connected content is read live with each person's own account and isn't stored.
 
 ## Extending
 
@@ -108,6 +127,8 @@ No new npm or Go dependencies.
 New in the forum belt: Notion's block model, page tree and databases on the `access` sharing model; positions follow rocicorp's fractional-indexing.
 
 ## Changes
+
+- 1.1.0: connected platforms. Notion pages and databases and Google Docs, browsed under Connected, rendered and edited in the docs editor and database views, written back live (`docs.notion.*`, `docs.google.*` capabilities); copy into Docs; `connected_page` blocks (migration 1801); connected search results; `source` on the read tools and per-platform write tools. Properties gain `read_only`, rows `source`/`ref`/`url`; images and files of connected pages carry `url`. The editor takes `connected` (types, read-only blocks, no moves); `ViewProps` takes `schemaEditable` and `external`.
 
 - 1.0.4: registering an upload checks the object exists and records its stored size (a key never uploaded, or a size the client misstated, no longer makes a broken file). File links carry the file's name and type (`inline; filename=…`), so downloads save under it. Errors, the shared-pages permission and agent tools name organizations with `orgs.Noun()` (orgs ≥ 1.3.0).
 - 1.0.3: copy names organizations with orgs' noun (`orgsNoun`…, orgs ≥ 1.2.0). Search results carry `OrgID` and `Context` (org · parent page) and honour the `org_id` scope (search ≥ 1.1.0). Mention and comment notifications run under `bg.Go`.

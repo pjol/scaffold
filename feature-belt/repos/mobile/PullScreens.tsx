@@ -12,6 +12,7 @@ import {
   useReposThreads,
   useReposTimeline,
   useResolveReposThread,
+  reposSupports,
   useSubmitReposReview,
   useTopic,
   type ReposPull,
@@ -20,7 +21,7 @@ import {
   type ReposThread,
   type ReposTimelineItem,
 } from "@scaffoldapp/shared";
-import { Badge, Button, Card, EmptyState, ErrorState, Field, ListGroup, ListRow, Screen, SegmentedControl, Sheet, Skeleton, SkeletonRow, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Badge, Button, Card, EmptyState, ErrorState, Field, ListGroup, ListRow, Screen, SegmentedControl, Sheet, Skeleton, SkeletonRow, SourceBadge, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { AlertTriangle, Check, GitMerge, GitPullRequest, GitPullRequestClosed } from "lucide-react-native";
 import { useMemo, useState } from "react";
@@ -123,6 +124,7 @@ export function PullScreen() {
           <Text role="caption" tone="muted" style={{ fontFamily: MONO }}>
             {p.head_branch} → {p.base_branch}
           </Text>
+          <SourceBadge source={p.source ?? r.source} />
         </View>
       </View>
       <SegmentedControl<PullTab> accessibilityLabel="Pull request" value={tab} onValueChange={setTab} options={[{ value: "conversation", label: "Conversation" }, { value: "files", label: "Files" }]} />
@@ -270,9 +272,11 @@ function ThreadView({ repo, pull, thread: t }: { repo: ReposRepo; pull: ReposPul
         <View style={{ gap: theme.space[2] }}>
           <TextArea value={reply} onChangeText={setReply} placeholder="Reply" accessibilityLabel="Reply" />
           <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-            <Button size="md" variant="secondary" loading={resolve.isPending} onPress={() => resolve.mutate({ commentId: t.root.id, resolved: !resolved })}>
-              {resolved ? "Unresolve" : "Resolve"}
-            </Button>
+            {reposSupports(repo, "resolve_threads") ? (
+              <Button size="md" variant="secondary" loading={resolve.isPending} onPress={() => resolve.mutate({ commentId: t.root.id, resolved: !resolved })}>
+                {resolved ? "Unresolve" : "Resolve"}
+              </Button>
+            ) : null}
             <Button
               size="md"
               disabled={!reply.trim()}
@@ -348,7 +352,8 @@ function ReviewSheet({ repo, pull: p, open, onClose }: { repo: ReposRepo; pull: 
   const theme = useTheme();
   const me = useMe().data;
   const submit = useSubmitReposReview(repo.id, p.number);
-  const canDecide = repo.can_push && !!me && p.author?.id !== me.id;
+  const own = p.is_author ?? (!!me && p.author?.id === me.id);
+  const canDecide = repo.can_push && !own;
   const [state, setState] = useState<"comment" | "approve" | "request_changes">("comment");
   const [body, setBody] = useState("");
   return (
@@ -361,7 +366,7 @@ function ReviewSheet({ repo, pull: p, open, onClose }: { repo: ReposRepo; pull: 
           options={[
             { value: "comment", label: "Comment" },
             { value: "approve", label: "Approve", disabled: !canDecide },
-            { value: "request_changes", label: "Changes", disabled: !canDecide },
+            ...(reposSupports(repo, "request_changes") ? [{ value: "request_changes" as const, label: "Changes", disabled: !canDecide }] : []),
           ]}
         />
         <Field label="Summary">

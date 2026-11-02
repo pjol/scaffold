@@ -50,7 +50,7 @@ var (
 	featureRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 	serviceRE = regexp.MustCompile(`^connectors:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	kindRE    = regexp.MustCompile(`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
-	idRE      = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,100}$`)
+	idRE      = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,200}$`)
 )
 
 func validFeature(f string) bool { return featureRE.MatchString(f) || serviceRE.MatchString(f) }

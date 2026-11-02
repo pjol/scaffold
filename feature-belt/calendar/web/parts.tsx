@@ -9,7 +9,7 @@ import {
   type CalendarOccurrence,
   type CalendarResponse,
 } from "@scaffoldapp/shared";
-import { Badge, Select, cn } from "@scaffoldapp/ui-web";
+import { Badge, ProviderIcon, Select, cn, sourceAccessibleLabel } from "@scaffoldapp/ui-web";
 import { useMemo } from "react";
 
 /** Token classes per event colour: a soft fill with strong text (chips), a solid dot. */
@@ -39,6 +39,21 @@ export function occurrenceClasses(o: Pick<CalendarOccurrence, "color" | "my_resp
   if (o.my_response === "declined") return "bg-surface text-fg-muted line-through border border-border";
   if (o.my_response === "needs_action") return cn("bg-surface border border-dashed border-border-strong", c.chip.split(" ")[1]);
   return c.chip;
+}
+
+/**
+ * The provider's mark on a connected event's chip (decorative: the chip's label names the
+ * source). Nothing for the app's own events. Rows with room use `SourceBadge`.
+ */
+export function SourceMark({ o, className }: { o: Pick<CalendarOccurrence, "source">; className?: string }) {
+  if (o.source?.type !== "connected") return null;
+  return <ProviderIcon provider={o.source.provider} product={o.source.product ?? null} size={12} className={cn("shrink-0 opacity-80", className)} />;
+}
+
+/** ", from Google Calendar · sam@acme.com" for a connected event's accessible label; "" for the app's own. */
+export function sourceSuffix(o: Pick<CalendarOccurrence, "source">): string {
+  if (o.source?.type !== "connected") return "";
+  return `, ${sourceAccessibleLabel(o.source.provider, o.source.product ?? null, o.source.account, undefined).replace(/^From /, "from ")}`;
 }
 
 export function ColorDot({ color, className }: { color: CalendarColor; className?: string }) {

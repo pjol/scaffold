@@ -1,6 +1,17 @@
 "use client";
 
-import { hasErrorCode, orgsNounA, orgsNounTitle, useActiveOrg, useCrmSettings, useCrmTaskSummary, useOrgPickerVisible, type CrmSettings } from "@scaffoldapp/shared";
+import {
+  hasErrorCode,
+  orgsNounA,
+  orgsNounTitle,
+  useActiveOrg,
+  useCrmSettings,
+  useCrmSources,
+  useCrmTaskSummary,
+  useOrgPickerVisible,
+  type CrmSettings,
+  type CrmSources,
+} from "@scaffoldapp/shared";
 import { Button, Card, EmptyState, ErrorState, Skeleton, SkeletonGroup } from "@scaffoldapp/ui-web";
 import { Building2, Building, CheckSquare, Handshake, LayoutDashboard, Lock, Settings2, Upload, UserRound } from "lucide-react";
 import Link from "next/link";
@@ -14,6 +25,8 @@ export interface CrmContextValue {
   orgId: string;
   orgName: string;
   settings: CrmSettings;
+  /** Where records come from (the app, connected HubSpot/Salesforce accounts); undefined while loading. */
+  sources: CrmSources | undefined;
 }
 
 const Ctx = createContext<CrmContextValue | null>(null);
@@ -48,12 +61,15 @@ export function CrmFrame({ children, actions }: { children: ReactNode; actions?:
   const { org, orgs, isPending } = useActiveOrg();
   const pickerVisible = useOrgPickerVisible();
   const settings = useCrmSettings(org?.id);
+  // An older backend has no source_mode: the app's own CRM.
+  const connectedMode = !!settings.data && (settings.data.source_mode ?? "app") !== "app";
+  const sources = useCrmSources(connectedMode ? org?.id : null);
   const pathname = usePathname() ?? "/crm";
   const router = useRouter();
 
   const denied = settings.isError && hasErrorCode(settings.error, "permission_required");
   let body: ReactNode;
-  if (isPending || (org && settings.isPending)) {
+  if (isPending || (org && settings.isPending) || (connectedMode && sources.isPending)) {
     body = (
       <SkeletonGroup label="Loading the CRM" className="flex flex-col gap-4">
         <Skeleton className="h-10 w-full max-w-md" />
@@ -83,7 +99,7 @@ export function CrmFrame({ children, actions }: { children: ReactNode; actions?:
       <ErrorState title="Couldn't load the CRM" info={settings.error.message} onRetry={() => void settings.refetch()} retrying={settings.isRefetching} />
     );
   } else if (settings.data) {
-    body = <Ctx.Provider value={{ orgId: org.id, orgName: org.name, settings: settings.data }}>{children}</Ctx.Provider>;
+    body = <Ctx.Provider value={{ orgId: org.id, orgName: org.name, settings: settings.data, sources: connectedMode ? sources.data : undefined }}>{children}</Ctx.Provider>;
   }
 
   const can = settings.data?.can;

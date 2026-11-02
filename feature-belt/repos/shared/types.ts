@@ -2,11 +2,36 @@
  * Repositories DTOs: snake_case, matching backend/internal/repos exactly.
  * Timestamps are RFC 3339 strings; ids are UUID strings; commit ids are 40 hex characters.
  */
+import type { SourceRef } from "../sources";
 import type { Page } from "../types";
 
 export type ReposLevel = "none" | "view" | "comment" | "edit" | "manage";
 
-/** A repository as clients see it (`GET /v1/repos/{id}`). */
+/**
+ * What a repository's host offers. The app's own repositories leave it out (everything but
+ * `checks` and `import`); connected GitHub and GitLab ones always send it. Read it with
+ * `reposSupports(repo, key)`.
+ */
+export interface ReposSupports {
+  settings: boolean;
+  credentials: boolean;
+  upload: boolean;
+  blame: boolean;
+  resolve_threads: boolean;
+  request_changes: boolean;
+  reviewers: boolean;
+  realtime: boolean;
+  checks: boolean;
+  /** Code search on any ref; otherwise the default branch only. */
+  code_search_refs: boolean;
+  tree_commits: boolean;
+  import: boolean;
+}
+
+/**
+ * A repository as clients see it (`GET /v1/repos/{id}`). Connected repositories have an id
+ * like `github~<connection>~acme~web`, `org_id` "", and `source`, `web_url`, `supports`.
+ */
 export interface ReposRepo {
   id: string;
   org_id: string;
@@ -30,6 +55,16 @@ export interface ReposRepo {
   pushed_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Connected: "acme/web", "acme/platform/api". */
+  full_name?: string;
+  source?: SourceRef | null;
+  web_url?: string;
+  private?: boolean;
+  archived?: boolean;
+  allow_rebase?: boolean;
+  supports?: ReposSupports;
+  /** Connected with reading only: the app path that turns on changes. */
+  grant_write_url?: string;
 }
 
 /** A row of the repository list. */
@@ -44,7 +79,22 @@ export interface ReposSummary {
   my_level: ReposLevel;
   pushed_at: string | null;
   updated_at: string;
+  full_name?: string;
+  /** Connected: the account or group that owns it. */
+  owner?: string;
+  private?: boolean;
+  source?: SourceRef | null;
 }
+
+/** One connected account's repositories (`GET /v1/repos/connections/{id}/repos`). */
+export interface ReposConnectedPage extends Page<ReposSummary> {
+  /** The account and the orgs or groups it belongs to, for the owner filter. */
+  owners: string[];
+  account: string;
+  provider: string;
+}
+
+export type ReposConnectedSort = "recent" | "name";
 
 export interface ReposCreateRequest {
   org_id: string;
@@ -321,6 +371,11 @@ export interface ReposPull {
   updated_at: string;
   /** Title, description, close and reopen. */
   can_edit: boolean;
+  /** Connected: the viewer's platform account opened it. */
+  is_author?: boolean;
+  draft?: boolean;
+  web_url?: string;
+  source?: SourceRef | null;
 }
 
 export type ReposPullPage = Page<ReposPull>;
@@ -434,7 +489,7 @@ export interface ReposMergeability {
   can_merge: boolean;
   conflicts: string[];
   blockers: string[];
-  methods: ("merge" | "squash")[];
+  methods: ReposMergeMethod[];
   approvals: number;
   required_approvals: number;
   head_sha: string;
@@ -443,12 +498,62 @@ export interface ReposMergeability {
   can_delete_branch: boolean;
 }
 
+/** "rebase" on GitHub repositories that allow it. */
+export type ReposMergeMethod = "merge" | "squash" | "rebase";
+
 export interface ReposMergeRequest {
-  method: "merge" | "squash";
+  method: ReposMergeMethod;
   title?: string;
   message?: string;
   expected_head?: string;
   delete_branch?: boolean;
+}
+
+/** One CI status check (GitHub check run or status, GitLab job), read-only. */
+export interface ReposCheck {
+  name: string;
+  status: "queued" | "in_progress" | "success" | "failure" | "neutral" | "cancelled" | "skipped";
+  description: string;
+  url: string;
+  allow_failure: boolean;
+}
+
+/** Every check on a commit (`GET /v1/repos/{id}/commits/{sha}/checks`); "none" for the app's own. */
+export interface ReposChecks {
+  sha: string;
+  state: "success" | "failure" | "pending" | "none";
+  items: ReposCheck[];
+  url: string;
+}
+
+/** Copy a connected repository into the drive (`POST /v1/repos/connected/import`). */
+export interface ReposImportConnectedRequest {
+  repo_id: string;
+  org_id: string;
+  folder_id?: string | null;
+  name?: string;
+}
+
+/** Link a connected repository into a drive folder (`POST /v1/repos/links`). */
+export interface ReposCreateLinkRequest {
+  repo_id: string;
+  org_id: string;
+  folder_id?: string | null;
+}
+
+/** A drive link to a connected repository, resolved for the person opening it. */
+export interface ReposLink {
+  id: string;
+  name: string;
+  provider: string;
+  full_name: string;
+  web_url: string;
+  folder_id: string | null;
+  /** The opener's connected id; null when none of their connections can open it. */
+  repo_id: string | null;
+  reason?: "no_connection" | "no_access" | "unavailable";
+  fix_url?: string;
+  source?: SourceRef | null;
 }
 
 export interface ReposPerson {

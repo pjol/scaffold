@@ -30,7 +30,10 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`UPDATE crm_properties SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE crm_tags SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE crm_settings SET updated_by = NULL WHERE updated_by = $1`,
+		`UPDATE crm_external_links SET created_by = NULL WHERE created_by = $1`,
 	}
+	// Schema and lookups cached from their connections (never records).
+	sourceCache.dropUser(userID)
 	for _, q := range stmts {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -139,5 +142,27 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		views = append(views, v)
 	}
 	rows.Close()
-	return map[string]any{"activities": acts, "owned_records": ownedList, "views": views}, nil
+	type link struct {
+		Company    string `json:"company"`
+		Provider   string `json:"provider"`
+		ExternalID string `json:"external_id"`
+		CreatedAt  string `json:"created_at"`
+	}
+	links := []link{}
+	rows, err = s.d.Pool.Query(ctx, `SELECT c.name, l.provider, l.external_id, to_char(l.created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
+		FROM crm_external_links l JOIN crm_companies c ON c.id = l.company_id WHERE l.created_by = $1 ORDER BY l.created_at LIMIT 5000`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var l link
+		if err := rows.Scan(&l.Company, &l.Provider, &l.ExternalID, &l.CreatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	rows.Close()
+	// Records in connected CRMs live on those platforms; nothing of theirs is stored here.
+	return map[string]any{"activities": acts, "owned_records": ownedList, "views": views, "linked_records": links}, nil
 }

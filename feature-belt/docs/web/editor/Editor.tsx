@@ -85,6 +85,20 @@ export interface EditorProps {
   onCreateDatabase: () => Promise<string | null>;
   onUpload: (file: File) => Promise<DocsFile>;
   onMoveToPage: (blockIds: string[]) => void;
+  /** A connected page (Notion, Google Docs): what it can take and what stays read-only. */
+  connected?: EditorConnected;
+}
+
+/** How a connected page limits the editor: the platform takes these block types, can't move blocks, and keeps some blocks read-only ("Edit in Notion"). */
+export interface EditorConnected {
+  types: readonly DocsBlockType[];
+  readOnly: ReadonlySet<string>;
+  /** "Notion", "Google Docs". */
+  platform: string;
+  /** The page on the platform. */
+  url: string;
+  /** Date mentions are written as the platform's own (Notion). */
+  dates?: boolean;
 }
 
 function isMod(e: { metaKey: boolean; ctrlKey: boolean }) {
@@ -145,7 +159,7 @@ function loadOpen(pageId: string): Set<string> {
  * select all) with delete, move, turn into, copy and paste, drag handles, undo and redo.
  */
 export function Editor(props: EditorProps) {
-  const { pageId, orgId, session, snap, refs, editable, canComment, viewers, commentCounts, threads, activeThread } = props;
+  const { pageId, orgId, session, snap, refs, editable, canComment, viewers, commentCounts, threads, activeThread, connected } = props;
   const handles = useRef(new Map<string, RichTextHandle>());
   const rows = useRef(new Map<string, HTMLElement>());
   const container = useRef<HTMLDivElement>(null);
@@ -318,7 +332,7 @@ export function Editor(props: EditorProps) {
       if (c <= slash.start || plain[slash.start] !== "/" || q.length > 24 || /\n|\s\s/.test(q)) setSlash(null);
       else setSlash({ ...slash, query: q, index: 0 });
     }
-    if (inserted === "@" && (c === 1 || /\s/.test(plain[c - 2] ?? " "))) {
+    if (inserted === "@" && !connected && (c === 1 || /\s/.test(plain[c - 2] ?? " "))) {
       setMention({ blockId: cur.id, start: c - 1, query: "", rect: rectNow(), index: 0, mode: "all", trigger: 1 });
     } else if (mention && mention.blockId === cur.id) {
       const q = plain.slice(mention.start + mention.trigger, c);
@@ -567,7 +581,7 @@ export function Editor(props: EditorProps) {
         applyMark(cur, "strike");
         return;
       }
-      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !connected) {
         e.preventDefault();
         const c = handles.current.get(cur.id)?.caret();
         const ops = shiftOps(now(), cur, e.key === "ArrowUp" ? -1 : 1);
@@ -644,6 +658,7 @@ export function Editor(props: EditorProps) {
       }
       case "Tab": {
         e.preventDefault();
+        if (connected) return; // nesting moves blocks, which the platform can't do from here
         const c = handles.current.get(cur.id)?.caret();
         const ops = e.shiftKey ? outdentOps(now(), cur) : indentOps(now(), cur);
         if (ops) {
@@ -662,7 +677,13 @@ export function Editor(props: EditorProps) {
 
   // ---- menus
 
-  const slashItems = useMemo(() => (slash ? filteredSlash(slash.query, { canCreatePages: editable }) : []), [slash, editable]);
+  const slashItems = useMemo(
+    () =>
+      slash
+        ? filteredSlash(slash.query, { canCreatePages: editable && !connected }).filter((i) => !connected || (i.type ? connected.types.includes(i.type) : i.action === "date" && !!connected.dates))
+        : [],
+    [slash, editable, connected],
+  );
   const mentionChoices = useMentionChoices(orgId, mention?.query ?? "", mention?.mode ?? "all", pageId);
 
   const removeTrigger = (blockId: string, start: number, end: number): { block: DocsBlock; text: DocsSpan[] } | null => {
@@ -970,6 +991,12 @@ export function Editor(props: EditorProps) {
 
   const startDrag = (b: DocsBlock, e: PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
+    if (connected) {
+      // The platform can't move blocks: the handle only opens the block's actions.
+      e.preventDefault();
+      setBlockMenu({ ids: [b.id], anchor: e.currentTarget });
+      return;
+    }
     e.preventDefault();
     const ids = selected.has(b.id) ? now().blocks.filter((x) => selected.has(x.id)).map((x) => x.id) : [b.id];
     dragState.current = { ids, x0: e.clientX, y0: e.clientY, active: false, blockId: b.id, handle: e.currentTarget };
@@ -1088,6 +1115,8 @@ export function Editor(props: EditorProps) {
     pageId,
     orgId,
     editable,
+    isReadOnly: (id) => !!connected?.readOnly.has(id),
+    canMove: !connected,
     canComment,
     refs,
     viewersByBlock,
@@ -1138,6 +1167,7 @@ export function Editor(props: EditorProps) {
   if (blockMenu && editable) {
     for (const t of TURN_INTO) {
       if (single && single.type === t) continue;
+      if (connected && (!connected.types.includes(t) || menuBlocks.some((b) => connected.readOnly.has(b.id)))) continue;
       if (!menuBlocks.every((b) => docsIsTextBlock(b.type) || b.type === "code")) break;
       menuItems.push({ id: `turn-${t}`, label: `Turn into ${DOCS_BLOCK_LABEL[t].toLowerCase()}`, icon: slashIcon(t === "code" ? "code" : t), onSelect: () => apply(menuBlocks.flatMap((b) => turnInto(now(), b, t)), { blocks: blockMenu.ids }) });
     }
@@ -1153,6 +1183,8 @@ export function Editor(props: EditorProps) {
       if (colsN > 1) menuItems.push({ id: "drop-col", label: "Delete last column", icon: <Trash2 />, onSelect: () => apply([{ op: "update", id: single.id, props: { rows: single.props.rows!.map((r) => r.slice(0, colsN - 1)) } }]) });
     }
     if (menuItems.length) menuItems.push("separator");
+  }
+  if (blockMenu && editable && !connected) {
     menuItems.push({ id: "dup", label: "Duplicate", icon: <Copy />, hint: "⌘D", onSelect: () => duplicate(blockMenu.ids) });
     if (single) {
       menuItems.push({ id: "up", label: "Move up", icon: <ArrowUp />, onSelect: () => apply(shiftOps(now(), single, -1) ?? [], { blocks: [single.id] }) });
@@ -1160,7 +1192,10 @@ export function Editor(props: EditorProps) {
     }
     menuItems.push({ id: "move", label: "Move to page…", icon: <CornerDownRight />, onSelect: () => props.onMoveToPage(blockMenu.ids) });
   }
-  if (blockMenu && single) {
+  if (blockMenu && single && connected?.readOnly.has(single.id)) {
+    menuItems.push({ id: "platform", label: `Edit in ${connected.platform}`, icon: <Link2 />, onSelect: () => void window.open(connected.url, "_blank", "noopener,noreferrer") });
+  }
+  if (blockMenu && single && !connected) {
     menuItems.push({
       id: "link",
       label: "Copy link to block",
@@ -1174,7 +1209,7 @@ export function Editor(props: EditorProps) {
     });
     if (canComment) menuItems.push({ id: "comment", label: "Comment", icon: <MessageSquarePlus />, onSelect: () => props.onComment({ blockId: single.id }) });
   }
-  if (blockMenu && editable) {
+  if (blockMenu && editable && !menuBlocks.some((b) => connected?.readOnly.has(b.id))) {
     menuItems.push("separator", { id: "delete", label: menuBlocks.length > 1 ? `Delete ${menuBlocks.length} blocks` : "Delete", icon: <Trash2 />, destructive: true, hint: "Del", onSelect: () => removeBlocks(blockMenu.ids) });
   }
 

@@ -24,6 +24,11 @@ export interface AgentsFeatureScope {
   resource_overrides: number;
   /** Services: still connected (false = a setting kept for a service no longer connected). */
   connected: boolean;
+  /**
+   * Set on a connected platform account (its provider id: google, github…): its level caps what
+   * agents read and change there through every feature, so it has no tools of its own.
+   */
+  platform?: string;
 }
 
 export interface AgentsAgentRef {

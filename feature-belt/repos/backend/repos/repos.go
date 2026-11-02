@@ -103,6 +103,7 @@ type Service struct {
 	publicAPI    string    // clone URLs start here
 	noreplyHost  string    // in-app commits use <user id>@users.noreply.<host>
 	seedNow      time.Time // cmd/seed only: backdates the seed's commits
+	rcache       *ttlCache // connected repositories: short per-person answers
 }
 
 // New reads the settings, checks git and registers the drive item type,
@@ -115,6 +116,7 @@ func New(d *app.Deps) *Service {
 		maxCommit:    int64(config.Int("REPOS_MAX_COMMIT_BYTES", 25<<20)),
 		httpTimeout:  config.Duration("REPOS_HTTP_TIMEOUT", 30*time.Minute),
 		cgiStderr:    slogWriter{},
+		rcache:       newTTLCache(),
 	}
 	dir := config.RequiredOutsideDev("REPOS_DIR", ".data/repos")
 	bin := config.String("REPOS_GIT_BIN", "git")
@@ -170,6 +172,7 @@ func New(d *app.Deps) *Service {
 		ConvertPath: "/repos/new?from_folder={folder}",
 		OnDelete:    s.onItemDeleted,
 	})
+	s.registerLinkType()
 	// An agent reading the inbox sees these only while it may read the
 	// repository (notifyIfVisible puts repo_id in every one).
 	repoTarget := notifications.DataTarget(RepoKind, "repo_id")
@@ -239,7 +242,18 @@ func (s *Service) MountUser(r chi.Router) {
 	repoWrite.Post("/repos", httpx.Handler(s.createRepo))
 	repoWrite.Post("/repos/import", httpx.Handler(s.importFolder))
 	r.Get("/repos/folders/{folderID}/preview", httpx.Handler(s.importPreview))
-	r.Get("/repos/{repoID}", httpx.Handler(s.getRepo))
+
+	// Connected platforms (GitHub, GitLab): sources, each account's
+	// repositories, and the bridges into the app.
+	r.Get("/repos/sources", httpx.Handler(s.listSources))
+	r.Get("/repos/connections/{connectionID}/repos", httpx.Handler(s.listConnectedRepos))
+	repoWrite.Post("/repos/connected/import", httpx.Handler(s.importConnected))
+	repoWrite.Post("/repos/links", httpx.Handler(s.createLink))
+	r.Get("/repos/links/{linkID}", httpx.Handler(s.openLink))
+
+	// Every {repoID} route serves the app's own repositories and connected
+	// ones (viaRead / viaWrite pick the implementation from the id).
+	r.Get("/repos/{repoID}", s.viaRead(s.getRepo, s.xGetRepo))
 	repoWrite.Patch("/repos/{repoID}", httpx.Handler(s.updateRepo))
 	r.Get("/repos/{repoID}/protections", httpx.Handler(s.listProtections))
 	repoWrite.Post("/repos/{repoID}/protections", httpx.Handler(s.createProtection))
@@ -247,45 +261,46 @@ func (s *Service) MountUser(r chi.Router) {
 	repoWrite.Delete("/repos/{repoID}/protections/{protectionID}", httpx.Handler(s.deleteProtection))
 
 	// Browsing.
-	r.Get("/repos/{repoID}/refs", httpx.Handler(s.listRefs))
-	r.Get("/repos/{repoID}/tree", httpx.Handler(s.getTree))
-	r.Get("/repos/{repoID}/tree/commits", httpx.Handler(s.getTreeCommits))
-	r.Get("/repos/{repoID}/blob", httpx.Handler(s.getBlob))
-	r.Get("/repos/{repoID}/raw", httpx.Handler(s.getRaw))
-	r.Get("/repos/{repoID}/download", httpx.Handler(s.getDownload))
-	r.Get("/repos/{repoID}/blame", httpx.Handler(s.getBlame))
-	r.Get("/repos/{repoID}/paths", httpx.Handler(s.findPaths))
-	r.With(auth.RateLimit(240, time.Hour)).Get("/repos/{repoID}/search", httpx.Handler(s.searchCode))
-	r.Get("/repos/{repoID}/commits", httpx.Handler(s.listCommits))
-	r.Get("/repos/{repoID}/commits/{sha}", httpx.Handler(s.getCommit))
-	r.Get("/repos/{repoID}/compare", httpx.Handler(s.compare))
+	r.Get("/repos/{repoID}/refs", s.viaRead(s.listRefs, s.xRefs))
+	r.Get("/repos/{repoID}/tree", s.viaRead(s.getTree, s.xTree))
+	r.Get("/repos/{repoID}/tree/commits", s.viaRead(s.getTreeCommits, s.xTreeCommits))
+	r.Get("/repos/{repoID}/blob", s.viaRead(s.getBlob, s.xGetBlob))
+	r.Get("/repos/{repoID}/raw", s.viaRead(s.getRaw, s.xRaw))
+	r.Get("/repos/{repoID}/download", s.viaRead(s.getDownload, s.xDownload))
+	r.Get("/repos/{repoID}/blame", s.viaRead(s.getBlame, s.xBlame))
+	r.Get("/repos/{repoID}/paths", s.viaRead(s.findPaths, s.xPaths))
+	r.With(auth.RateLimit(240, time.Hour)).Get("/repos/{repoID}/search", s.viaRead(s.searchCode, s.xSearch))
+	r.Get("/repos/{repoID}/commits", s.viaRead(s.listCommits, s.xCommits))
+	r.Get("/repos/{repoID}/commits/{sha}", s.viaRead(s.getCommit, s.xCommit))
+	r.Get("/repos/{repoID}/commits/{sha}/checks", s.viaRead(s.getChecks, s.xChecks))
+	r.Get("/repos/{repoID}/compare", s.viaRead(s.compare, s.xCompare))
 
 	// Writing.
-	commit.Post("/repos/{repoID}/commits", httpx.Handler(s.commitChanges))
-	repoWrite.Post("/repos/{repoID}/branches", httpx.Handler(s.createBranch))
-	repoWrite.Delete("/repos/{repoID}/branches", httpx.Handler(s.deleteBranch))
+	commit.Post("/repos/{repoID}/commits", s.viaWrite(s.commitChanges, s.xCommitChanges))
+	repoWrite.Post("/repos/{repoID}/branches", s.viaWrite(s.createBranch, s.xCreateBranch))
+	repoWrite.Delete("/repos/{repoID}/branches", s.viaWrite(s.deleteBranch, s.xDeleteBranch))
 
-	// Pull requests.
-	r.Get("/repos/{repoID}/pulls", httpx.Handler(s.listPulls))
-	pullWrite.Post("/repos/{repoID}/pulls", httpx.Handler(s.openPull))
-	r.Get("/repos/{repoID}/pulls/{number}", httpx.Handler(s.getPull))
-	pullWrite.Patch("/repos/{repoID}/pulls/{number}", httpx.Handler(s.updatePull))
-	pullWrite.Post("/repos/{repoID}/pulls/{number}/close", httpx.Handler(s.closePull))
-	pullWrite.Post("/repos/{repoID}/pulls/{number}/reopen", httpx.Handler(s.reopenPull))
-	r.Get("/repos/{repoID}/pulls/{number}/timeline", httpx.Handler(s.pullTimeline))
-	r.Get("/repos/{repoID}/pulls/{number}/commits", httpx.Handler(s.pullCommits))
-	r.Get("/repos/{repoID}/pulls/{number}/diff", httpx.Handler(s.pullDiff))
-	r.Get("/repos/{repoID}/pulls/{number}/threads", httpx.Handler(s.pullThreads))
-	r.Get("/repos/{repoID}/pulls/{number}/mergeability", httpx.Handler(s.pullMergeability))
-	pullWrite.Post("/repos/{repoID}/pulls/{number}/merge", httpx.Handler(s.mergePull))
-	comment.Post("/repos/{repoID}/pulls/{number}/comments", httpx.Handler(s.addComment))
-	comment.Patch("/repos/{repoID}/pulls/{number}/comments/{commentID}", httpx.Handler(s.editComment))
-	comment.Delete("/repos/{repoID}/pulls/{number}/comments/{commentID}", httpx.Handler(s.deleteComment))
-	comment.Put("/repos/{repoID}/pulls/{number}/comments/{commentID}/resolved", httpx.Handler(s.resolveThread))
-	comment.Post("/repos/{repoID}/pulls/{number}/reviews", httpx.Handler(s.submitReview))
+	// Pull requests (GitLab: merge requests).
+	r.Get("/repos/{repoID}/pulls", s.viaRead(s.listPulls, s.xPulls))
+	pullWrite.Post("/repos/{repoID}/pulls", s.viaWrite(s.openPull, s.xOpenPull))
+	r.Get("/repos/{repoID}/pulls/{number}", s.viaRead(s.getPull, s.xPull))
+	pullWrite.Patch("/repos/{repoID}/pulls/{number}", s.viaWrite(s.updatePull, s.xUpdatePull))
+	pullWrite.Post("/repos/{repoID}/pulls/{number}/close", s.viaWrite(s.closePull, s.xSetOpen(false)))
+	pullWrite.Post("/repos/{repoID}/pulls/{number}/reopen", s.viaWrite(s.reopenPull, s.xSetOpen(true)))
+	r.Get("/repos/{repoID}/pulls/{number}/timeline", s.viaRead(s.pullTimeline, s.xTimeline))
+	r.Get("/repos/{repoID}/pulls/{number}/commits", s.viaRead(s.pullCommits, s.xPullCommits))
+	r.Get("/repos/{repoID}/pulls/{number}/diff", s.viaRead(s.pullDiff, s.xPullDiff))
+	r.Get("/repos/{repoID}/pulls/{number}/threads", s.viaRead(s.pullThreads, s.xThreads))
+	r.Get("/repos/{repoID}/pulls/{number}/mergeability", s.viaRead(s.pullMergeability, s.xMergeability))
+	pullWrite.Post("/repos/{repoID}/pulls/{number}/merge", s.viaWrite(s.mergePull, s.xMerge))
+	comment.Post("/repos/{repoID}/pulls/{number}/comments", s.viaWrite(s.addComment, s.xAddComment))
+	comment.Patch("/repos/{repoID}/pulls/{number}/comments/{commentID}", s.viaWrite(s.editComment, s.xEditComment))
+	comment.Delete("/repos/{repoID}/pulls/{number}/comments/{commentID}", s.viaWrite(s.deleteComment, s.xDeleteComment))
+	comment.Put("/repos/{repoID}/pulls/{number}/comments/{commentID}/resolved", s.viaWrite(s.resolveThread, s.xResolve))
+	comment.Post("/repos/{repoID}/pulls/{number}/reviews", s.viaWrite(s.submitReview, s.xReview))
 	pullWrite.Post("/repos/{repoID}/pulls/{number}/reviewers", httpx.Handler(s.requestReviewers))
 	pullWrite.Delete("/repos/{repoID}/pulls/{number}/reviewers/{userID}", httpx.Handler(s.removeReviewer))
-	r.Get("/repos/{repoID}/people", httpx.Handler(s.repoPeople))
+	r.Get("/repos/{repoID}/people", s.viaRead(s.repoPeople, s.xPeople))
 
 	// Personal git credentials (people only, never agents).
 	r.Get("/repos/credentials", httpx.Handler(s.listCredentials))
@@ -302,14 +317,24 @@ func (s *Service) requireGit(next http.Handler) http.Handler {
 			if msg == "" {
 				msg = "Repositories aren't configured on this server (REPOS_DIR)."
 			}
-			// Credentials stay manageable without git.
-			if !strings.HasPrefix(r.URL.Path, "/v1/repos/credentials") {
+			// Credentials and connected repositories don't need git.
+			if !strings.HasPrefix(r.URL.Path, "/v1/repos/credentials") && !connectedPath(r.URL.Path) {
 				httpx.Fail(w, r, httpx.NewError(http.StatusServiceUnavailable, "git_unavailable", msg))
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// connectedPath is a route that only talks to connected platforms.
+func connectedPath(p string) bool {
+	rest, ok := strings.CutPrefix(p, "/v1/repos/")
+	if !ok {
+		return false
+	}
+	seg, _, _ := strings.Cut(rest, "/")
+	return isExternalID(seg) || seg == "sources" || seg == "connections" || seg == "links"
 }
 
 // GitInfo tells clients how to clone.

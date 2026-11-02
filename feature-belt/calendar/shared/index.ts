@@ -3,4 +3,5 @@ export * from "./types";
 export * from "./api";
 export * from "./time";
 export * from "./link";
+export * from "./connected";
 export * from "./hooks";

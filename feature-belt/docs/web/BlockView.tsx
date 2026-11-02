@@ -5,6 +5,7 @@ import { Skeleton, cn } from "@scaffoldapp/ui-web";
 import { Check, ChevronRight, Download, FileText, Globe, Lock } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
+import { ConnectedPageBlock } from "./connected/ConnectedPageBlock";
 import { mentionLabel } from "./editor/dom";
 import { formatBytes } from "./format";
 
@@ -61,15 +62,17 @@ interface ViewCtx {
   children: Map<string, DocsBlock[]>;
   pageHref: (id: string) => string | null;
   renderDatabase?: ((id: string) => ReactNode) | undefined;
+  orgId: string | null;
 }
 
 function ImageView({ b, ctx }: { b: DocsBlock; ctx: ViewCtx }) {
-  const file = useDocsFileUrl(b.props.file_id, ctx.token);
+  const file = useDocsFileUrl(b.props.url ? null : b.props.file_id, ctx.token);
+  const src = b.props.url || file.data?.url;
   return (
     <figure className="flex flex-col gap-1" style={{ width: `${b.props.width ?? 100}%` }}>
-      {file.data?.url ? (
+      {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={file.data.url} alt={(b.props.caption ?? []).map((s) => s.text).join("") || b.props.name || "Image"} loading="lazy" className="w-full rounded-md border border-border" />
+        <img src={src} referrerPolicy="no-referrer" alt={(b.props.caption ?? []).map((s) => s.text).join("") || b.props.name || "Image"} loading="lazy" className="w-full rounded-md border border-border" />
       ) : file.isError ? (
         <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-border type-label text-fg-muted">This image isn't available.</div>
       ) : (
@@ -86,9 +89,10 @@ function ImageView({ b, ctx }: { b: DocsBlock; ctx: ViewCtx }) {
 
 function FileView({ b, ctx }: { b: DocsBlock; ctx: ViewCtx }) {
   const [want, setWant] = useState(false);
-  const file = useDocsFileUrl(want ? b.props.file_id : null, ctx.token);
-  if (want && file.data?.url) {
-    window.open(file.data.url, "_blank", "noopener,noreferrer");
+  const file = useDocsFileUrl(want && !b.props.url ? b.props.file_id : null, ctx.token);
+  const link = b.props.url || file.data?.url;
+  if (want && link) {
+    window.open(link, "_blank", "noopener,noreferrer");
     setWant(false);
   }
   return (
@@ -252,6 +256,17 @@ function BlockItem({ b, ctx, depth, number }: { b: DocsBlock; ctx: ViewCtx; dept
     case "database":
       body = b.props.database_id && ctx.renderDatabase ? ctx.renderDatabase(b.props.database_id) : null;
       break;
+    case "connected_page":
+      // Published pages show only the link: each signed-in viewer opens it with their own connection.
+      body = ctx.token ? (
+        <a href={b.props.url} target="_blank" rel="noopener noreferrer nofollow" className="flex min-h-12 items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring">
+          <Globe aria-hidden className="size-5 shrink-0 text-fg-muted" />
+          <span className="min-w-0 flex-1 truncate type-body text-fg">{b.props.title || "Untitled"}</span>
+        </a>
+      ) : (
+        <ConnectedPageBlock block={b} orgId={ctx.orgId} />
+      );
+      break;
     default:
       body = <p className="py-1 type-body text-fg">{text}</p>;
   }
@@ -283,15 +298,18 @@ export function BlockView({
   token = null,
   pageHref,
   renderDatabase,
+  orgId = null,
 }: {
   blocks: readonly DocsBlock[];
   refs: DocsRefs;
   token?: string | null;
   pageHref?: (id: string) => string | null;
   renderDatabase?: (id: string) => ReactNode;
+  /** The workspace connected-page blocks open in (its connection policy). */
+  orgId?: string | null;
 }) {
   const children = useMemo(() => orderBlocks(new Map(blocks.map((b) => [b.id, b]))).children, [blocks]);
-  const ctx: ViewCtx = { refs, token, children, pageHref: pageHref ?? ((id) => `/docs/${id}`), renderDatabase };
+  const ctx: ViewCtx = { refs, token, children, pageHref: pageHref ?? ((id) => `/docs/${id}`), renderDatabase, orgId };
   if (blocks.length === 0) return <p className="type-body text-fg-subtle">This page is empty.</p>;
   return (
     <div className="flex flex-col">

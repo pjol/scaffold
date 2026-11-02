@@ -67,8 +67,22 @@ type BookingLink struct {
 	UpcomingCount       int             `json:"upcoming_count"`
 	CreatedAt           time.Time       `json:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at"`
+	// AddTo is the connected calendar bookings are also written to (the
+	// app's own event stays; the copy carries the meeting link), nil = only
+	// the app's calendar.
+	AddTo *LinkTarget `json:"add_to"`
+	// ConferenceProvider is the meeting provider for video bookings
+	// (ProviderApp default); ConferenceConnectionID its account.
+	ConferenceProvider     string  `json:"conference_provider"`
+	ConferenceConnectionID *string `json:"conference_connection_id"`
 
 	ownerID uuid.UUID
+}
+
+// LinkTarget names one of the owner's connected calendars.
+type LinkTarget struct {
+	ConnectionID string `json:"connection_id"`
+	CalendarID   string `json:"calendar_id"`
 }
 
 const linkCols = `l.id, l.owner_id, l.org_id, o.name, l.audience, l.slug, l.title, l.description, l.durations,
@@ -76,7 +90,7 @@ const linkCols = `l.id, l.owner_id, l.org_id, o.name, l.audience, l.slug, l.titl
 	l.min_notice, l.max_days_ahead, l.max_per_day, l.slot_interval, l.questions, l.confirmation_message, l.color,
 	l.active, l.allow_reschedule, l.allow_cancel, l.manage_cutoff,
 	(SELECT count(*) FROM calendar_bookings b WHERE b.link_id = l.id AND b.status = 'confirmed' AND b.starts_at > now())::int,
-	l.created_at, l.updated_at`
+	l.created_at, l.updated_at, l.write_connection_id, l.write_calendar_id, l.conference_provider, l.conference_connection_id`
 
 const linkFrom = ` FROM calendar_booking_links l LEFT JOIN orgs o ON o.id = l.org_id `
 
@@ -84,12 +98,17 @@ func (s *Service) scanLink(row pgx.Row) (BookingLink, error) {
 	var l BookingLink
 	var durations []int32
 	var hours, overrides, questions []byte
+	var writeConn, writeCal *string
 	err := row.Scan(&l.ID, &l.ownerID, &l.OrgID, &l.OrgName, &l.Audience, &l.Slug, &l.Title, &l.Description, &durations,
 		&l.LocationType, &l.LocationValue, &l.Timezone, &hours, &overrides, &l.BufferBefore, &l.BufferAfter,
 		&l.MinNotice, &l.MaxDaysAhead, &l.MaxPerDay, &l.SlotInterval, &questions, &l.ConfirmationMessage, &l.Color,
-		&l.Active, &l.AllowReschedule, &l.AllowCancel, &l.ManageCutoff, &l.UpcomingCount, &l.CreatedAt, &l.UpdatedAt)
+		&l.Active, &l.AllowReschedule, &l.AllowCancel, &l.ManageCutoff, &l.UpcomingCount, &l.CreatedAt, &l.UpdatedAt,
+		&writeConn, &writeCal, &l.ConferenceProvider, &l.ConferenceConnectionID)
 	if err != nil {
 		return l, err
+	}
+	if writeConn != nil && writeCal != nil {
+		l.AddTo = &LinkTarget{ConnectionID: *writeConn, CalendarID: *writeCal}
 	}
 	for _, d := range durations {
 		l.Durations = append(l.Durations, int(d))
@@ -128,6 +147,10 @@ type linkInput struct {
 	AllowReschedule     *bool            `json:"allow_reschedule"`
 	AllowCancel         *bool            `json:"allow_cancel"`
 	ManageCutoff        *int             `json:"manage_cutoff"`
+	// AddTo is {connection_id, calendar_id} or null (the app's calendar only).
+	AddTo                  json.RawMessage `json:"add_to"`
+	ConferenceProvider     *string         `json:"conference_provider"`
+	ConferenceConnectionID json.RawMessage `json:"conference_connection_id"`
 }
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -215,7 +238,68 @@ func (s *Service) applyLinkInput(ctx context.Context, callerID uuid.UUID, l *Boo
 	if in.AllowCancel != nil {
 		l.AllowCancel = *in.AllowCancel
 	}
+	if len(in.AddTo) > 0 {
+		l.AddTo = nil
+		if string(in.AddTo) != "null" {
+			var t LinkTarget
+			if err := json.Unmarshal(in.AddTo, &t); err != nil || t.ConnectionID == "" || t.CalendarID == "" || len(t.ConnectionID) > 200 || len(t.CalendarID) > 1024 {
+				return httpx.BadRequest("add_to must be {connection_id, calendar_id} or null.")
+			}
+			l.AddTo = &t
+		}
+	}
+	if in.ConferenceProvider != nil {
+		l.ConferenceProvider = trimProvider(*in.ConferenceProvider)
+	}
+	if len(in.ConferenceConnectionID) > 0 {
+		l.ConferenceConnectionID = nil
+		if string(in.ConferenceConnectionID) != "null" {
+			var v string
+			if err := json.Unmarshal(in.ConferenceConnectionID, &v); err != nil || len(v) > 200 {
+				return httpx.BadRequest("conference_connection_id must be a connection id or null.")
+			}
+			if v != "" {
+				l.ConferenceConnectionID = &v
+			}
+		}
+	}
 	return s.validateLink(ctx, callerID, l)
+}
+
+// validateLinkTarget checks a link's connected calendar and meeting provider
+// against the owner's connections (live; on save, not on every preview).
+func (s *Service) validateLinkTarget(ctx context.Context, callerID uuid.UUID, l *BookingLink) error {
+	if l.AddTo == nil && (l.LocationType != LocationVideo || l.ConferenceProvider == ProviderApp) {
+		return nil
+	}
+	org := uuid.Nil
+	if l.OrgID != nil {
+		org = *l.OrgID
+	}
+	connID, calID := "", ""
+	if l.AddTo != nil {
+		connID, calID = l.AddTo.ConnectionID, l.AddTo.CalendarID
+	}
+	opts, _, err := s.conferenceOptionsFor(ctx, callerID, org, connID, calID)
+	if err != nil {
+		return err
+	}
+	if l.LocationType != LocationVideo {
+		return nil
+	}
+	for _, o := range opts {
+		if o.ID == l.ConferenceProvider && (l.ConferenceConnectionID == nil || o.ConnectionID == "" || o.ConnectionID == *l.ConferenceConnectionID) {
+			if o.ConnectionID != "" && !o.Native {
+				id := o.ConnectionID
+				l.ConferenceConnectionID = &id
+			}
+			if o.Native {
+				l.ConferenceConnectionID = nil
+			}
+			return nil
+		}
+	}
+	return httpx.NewError(http.StatusConflict, "video_unavailable", "That meeting provider isn't available for this link's calendar.")
 }
 
 func (s *Service) validateLink(ctx context.Context, callerID uuid.UUID, l *BookingLink) error {
@@ -259,9 +343,21 @@ func (s *Service) validateLink(ctx context.Context, callerID uuid.UUID, l *Booki
 			return httpx.BadRequest("Meeting lengths are 5 to 480 minutes.")
 		}
 	}
+	if l.ConferenceProvider == "" {
+		l.ConferenceProvider = ProviderApp
+	}
+	switch l.ConferenceProvider {
+	case ProviderApp, ProviderZoom, ProviderTeams, ProviderGoogleMeet:
+	default:
+		return httpx.BadRequest("conference_provider must be app, google_meet, teams or zoom.")
+	}
 	switch l.LocationType {
 	case LocationVideo:
-		if !VideoAvailable() {
+		native := l.AddTo != nil && (l.ConferenceProvider == ProviderGoogleMeet || l.ConferenceProvider == ProviderTeams)
+		if l.ConferenceProvider == ProviderGoogleMeet && l.AddTo == nil {
+			return httpx.BadRequest("Google Meet links come from Google Calendar: add bookings to a Google calendar first.")
+		}
+		if !native && !VideoAvailable() {
 			return httpx.NewError(http.StatusConflict, "video_unavailable", "Video calls aren't set up in this app.")
 		}
 		l.LocationValue = ""
@@ -449,7 +545,7 @@ func (s *Service) newLinkDefaults(ctx context.Context, userID uuid.UUID) (Bookin
 		Audience: "external", Durations: []int{30}, LocationType: LocationPhone, Timezone: st.Timezone,
 		WeeklyHours: st.WorkingHours, DateOverrides: []DateOverride{}, MinNotice: 240, MaxDaysAhead: 60,
 		SlotInterval: 30, Questions: []Question{}, Color: "primary", Active: true, AllowReschedule: true,
-		AllowCancel: true, ManageCutoff: 60, ownerID: userID,
+		AllowCancel: true, ManageCutoff: 60, ConferenceProvider: ProviderApp, ownerID: userID,
 	}, nil
 }
 
@@ -485,6 +581,9 @@ func (s *Service) createLink(w http.ResponseWriter, r *http.Request) error {
 	if err := s.applyLinkInput(r.Context(), id.UserID, &l, in); err != nil {
 		return err
 	}
+	if err := s.validateLinkTarget(r.Context(), id.UserID, &l); err != nil {
+		return err
+	}
 	var newID uuid.UUID
 	for attempt := 0; ; attempt++ {
 		err := s.insertLink(r.Context(), id.UserID, &l, &newID)
@@ -515,13 +614,29 @@ func (s *Service) insertLink(ctx context.Context, ownerID uuid.UUID, l *BookingL
 	return s.d.Pool.QueryRow(ctx, `
 		INSERT INTO calendar_booking_links (owner_id, org_id, audience, slug, title, description, durations, location_type,
 		  location_value, timezone, weekly_hours, date_overrides, buffer_before, buffer_after, min_notice, max_days_ahead,
-		  max_per_day, slot_interval, questions, confirmation_message, color, active, allow_reschedule, allow_cancel, manage_cutoff)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		  max_per_day, slot_interval, questions, confirmation_message, color, active, allow_reschedule, allow_cancel, manage_cutoff,
+		  write_connection_id, write_calendar_id, conference_provider, conference_connection_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+		  $26, $27, $28, $29)
 		RETURNING id`,
 		ownerID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
 		l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
 		l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule, l.AllowCancel,
-		l.ManageCutoff).Scan(newID)
+		l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID).Scan(newID)
+}
+
+func (l *BookingLink) addToConn() *string {
+	if l.AddTo == nil {
+		return nil
+	}
+	return &l.AddTo.ConnectionID
+}
+
+func (l *BookingLink) addToCal() *string {
+	if l.AddTo == nil {
+		return nil
+	}
+	return &l.AddTo.CalendarID
 }
 
 func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
@@ -541,6 +656,11 @@ func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
 	if err := s.applyLinkInput(r.Context(), id.UserID, &l, in); err != nil {
 		return err
 	}
+	if len(in.AddTo) > 0 || in.ConferenceProvider != nil || len(in.ConferenceConnectionID) > 0 || in.LocationType != nil {
+		if err := s.validateLinkTarget(r.Context(), id.UserID, &l); err != nil {
+			return err
+		}
+	}
 	hours, _ := json.Marshal(l.WeeklyHours)
 	overrides, _ := json.Marshal(l.DateOverrides)
 	questions, _ := json.Marshal(l.Questions)
@@ -549,12 +669,13 @@ func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
 		  location_type = $9, location_value = $10, timezone = $11, weekly_hours = $12, date_overrides = $13,
 		  buffer_before = $14, buffer_after = $15, min_notice = $16, max_days_ahead = $17, max_per_day = $18,
 		  slot_interval = $19, questions = $20, confirmation_message = $21, color = $22, active = $23,
-		  allow_reschedule = $24, allow_cancel = $25, manage_cutoff = $26, updated_at = now()
+		  allow_reschedule = $24, allow_cancel = $25, manage_cutoff = $26, write_connection_id = $27, write_calendar_id = $28,
+		  conference_provider = $29, conference_connection_id = $30, updated_at = now()
 		WHERE id = $1 AND owner_id = $2`,
 		l.ID, id.UserID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
 		l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
 		l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule,
-		l.AllowCancel, l.ManageCutoff)
+		l.AllowCancel, l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID)
 	if db.IsUniqueViolation(err, "calendar_booking_links_slug_key") {
 		return httpx.Conflict("That link name is taken. Try another.")
 	}

@@ -18,7 +18,7 @@ import {
 import { cn } from "@scaffoldapp/ui-web";
 import { Repeat, Video } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { occurrenceClasses } from "./parts";
+import { occurrenceClasses, SourceMark, sourceSuffix } from "./parts";
 
 /** Pixels per hour in the time grid (48 = the touch target height). */
 export const HOUR_PX = 48;
@@ -191,9 +191,11 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
                       key={calendarOccurrenceKey(o)}
                       type="button"
                       onClick={() => onOpen(o)}
-                      className={cn("truncate rounded-sm px-1.5 text-left type-caption focus-visible:outline-2 focus-visible:outline-ring", occurrenceClasses(o))}
+                      aria-label={`${o.title}${sourceSuffix(o)}`}
+                      className={cn("flex items-center gap-1 truncate rounded-sm px-1.5 text-left type-caption focus-visible:outline-2 focus-visible:outline-ring", occurrenceClasses(o))}
                     >
-                      {o.title}
+                      <SourceMark o={o} />
+                      <span className="truncate">{o.title}</span>
                     </button>
                   ))}
                 </div>
@@ -262,7 +264,7 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
                         key={calendarOccurrenceKey(o)}
                         type="button"
                         aria-keyshortcuts={o.role === "owner" ? "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight" : undefined}
-                        aria-label={`${o.title}, ${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}`}
+                        aria-label={`${o.title}, ${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}${sourceSuffix(o)}`}
                         onPointerDown={(e) => startMove(e, o, "move", di)}
                         onClick={(e) => {
                           // Organizers' pointer clicks open on pointerup (after a possible drag);
@@ -284,6 +286,7 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
                         }}
                       >
                         <span className="flex min-w-0 items-center gap-1 type-caption font-semibold">
+                          <SourceMark o={o} />
                           <span className="truncate">{o.title}</span>
                           {o.recurring ? <Repeat className="size-3 shrink-0 opacity-70" aria-hidden /> : null}
                           {o.conference_url ? <Video className="size-3 shrink-0 opacity-70" aria-hidden /> : null}

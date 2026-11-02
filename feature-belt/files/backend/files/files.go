@@ -126,7 +126,9 @@ func New(d *app.Deps) *Service {
 	access.OnChange(s.accessChanged)
 	moderation.RegisterTarget(Kind, itemTarget{s})
 	notifications.RegisterKind(notifications.Kind{ID: KindPublicDisabled, Label: "Public links turned off by staff", Push: true, Email: true})
-	httpx.RedactPathPrefix("/v1/files/public/", "/files-archive/")
+	httpx.RedactPathPrefix("/v1/files/public/", "/files-archive/", "/files-connected/")
+	RegisterItemType(ItemType{Type: TypeLink, Title: "Shortcut", Icon: "link", Link: itemLink,
+		OnDelete: func(context.Context, pgx.Tx, uuid.UUID) error { return nil }}) // files_links goes with the row
 	return s
 }
 
@@ -173,6 +175,7 @@ func (s *Service) MountUser(r chi.Router) {
 	w.Post("/files/items/{id}/restore", h(s.restoreRoute))
 	w.Delete("/files/items/{id}", h(s.deleteRoute))
 	w.With(auth.RateLimit(300, time.Hour)).Post("/files/items/{id}/versions/{versionID}/restore", h(s.restoreVersion))
+	s.mountConnected(r)
 }
 
 func (s *Service) MountPublic(r chi.Router) {
@@ -191,6 +194,7 @@ func (s *Service) MountPublic(r chi.Router) {
 // timeout, authorized by a short-lived token minted by a signed-in route.
 func (s *Service) MountRoot(r chi.Router) {
 	r.With(refuseAgentCredential).Get("/files-archive/{token}", s.serveArchive)
+	r.With(refuseAgentCredential).Get("/files-connected/{token}", s.serveConnected)
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
@@ -345,6 +349,7 @@ func (s *Service) cleanup(ctx context.Context) error {
 		`DELETE FROM files_uploads WHERE completed_at IS NULL AND expires_at < now()`,
 		`DELETE FROM files_uploads WHERE completed_at < now() - interval '1 day'`,
 		`DELETE FROM files_archives WHERE expires_at < now()`,
+		`DELETE FROM files_connected_downloads WHERE expires_at < now()`,
 		`DELETE FROM files_recents WHERE at < now() - interval '90 days'`,
 	} {
 		if _, err := s.d.Pool.Exec(ctx, q); err != nil {

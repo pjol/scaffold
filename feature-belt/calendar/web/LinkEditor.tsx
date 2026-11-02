@@ -13,6 +13,11 @@ import {
   useCalendarLink,
   useCalendarLinkPreview,
   useCalendarSettings,
+  useCalendarSources,
+  calendarConferenceOptions,
+  calendarProviderLabel,
+  calendarWritableCalendars,
+  sourceProductLabel,
   useCreateCalendarLink,
   useDebouncedValue,
   useOrgs,
@@ -22,12 +27,13 @@ import {
   type CalendarQuestion,
   type CalendarSlot,
 } from "@scaffoldapp/shared";
-import { Banner, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, SegmentedControl, Select, Skeleton, SkeletonGroup, Switch, Tab, Tabs, TabsList, TextArea, ToggleChip, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
+import { Banner, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, ProviderIcon, SegmentedControl, Select, Skeleton, SkeletonGroup, Switch, Tab, Tabs, TabsList, TextArea, ToggleChip, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
 import { Check, ChevronLeft, Copy, Link2, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
+import { APP_NAME } from "@/lib/app";
 import { HoursEditor, OverridesEditor } from "./HoursEditor";
 import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ZoneSelect, copyText } from "./parts";
 import { LinkHeader } from "./PublicBookingScreen";
@@ -69,8 +75,13 @@ function draftFrom(l: CalendarBookingLink | null, zone: string, hours: Draft["we
     allow_reschedule: l?.allow_reschedule ?? true,
     allow_cancel: l?.allow_cancel ?? true,
     manage_cutoff: l?.manage_cutoff ?? 60,
+    add_to: l?.add_to ?? null,
+    conference_provider: l?.conference_provider ?? "app",
+    conference_connection_id: l?.conference_connection_id ?? null,
   };
 }
+
+const SEP = "|";
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -122,8 +133,14 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
   const create = useCreateCalendarLink();
   const update = useUpdateCalendarLink();
   const orgs = useOrgs();
+  const sources = useCalendarSources();
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((s) => ({ ...s, [k]: v }));
   const orgList = orgs.data?.items ?? [];
+  // Bookings can also go to a connected calendar, whose platform can make the meeting link.
+  const writable = calendarWritableCalendars(sources.data);
+  const providers = calendarConferenceOptions(sources.data, d.add_to);
+  const providerKey = `${d.conference_provider}${SEP}${d.conference_provider === "app" ? "" : (d.conference_connection_id ?? providers.find((o) => o.id === d.conference_provider)?.connection_id ?? "")}`;
+  const canVideo = videoAvailable || providers.length > 0;
 
   useEffect(() => {
     if (d.audience === "internal" && !d.org_id && orgList[0]) set("org_id", orgList[0].id);
@@ -187,13 +204,61 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
             value={d.location_type}
             onValueChange={(v) => set("location_type", v as Draft["location_type"])}
             options={[
-              ...(videoAvailable || d.location_type === "video" ? [{ value: "video", label: "Video call (link made per booking)" }] : []),
+              ...(canVideo || d.location_type === "video" ? [{ value: "video", label: "Video call (link made per booking)" }] : []),
               { value: "phone", label: "Phone call" },
               { value: "in_person", label: "In person" },
               { value: "custom", label: "Other" },
             ]}
           />
         </Field>
+        {writable.length > 0 || d.add_to ? (
+          <Field label="Add bookings to" info={`Each booking is on your ${APP_NAME} calendar. Choose a connected calendar to add it there too: it counts as busy there, and Google Meet or Teams links come from it.`}>
+            <Select
+              value={d.add_to ? `${d.add_to.connection_id}${SEP}${d.add_to.calendar_id}` : "app"}
+              onValueChange={(v) => {
+                const i = v.indexOf(SEP);
+                const next = i > 0 ? { connection_id: v.slice(0, i), calendar_id: v.slice(i + 1) } : null;
+                const opts = calendarConferenceOptions(sources.data, next);
+                setD((s) => ({
+                  ...s,
+                  add_to: next,
+                  // Keep the provider when the new calendar offers it, else the app's own.
+                  ...(opts.some((o) => o.id === s.conference_provider) ? {} : { conference_provider: "app", conference_connection_id: null }),
+                }));
+              }}
+              options={[
+                { value: "app", label: `${APP_NAME} calendar only` },
+                ...(d.add_to && !writable.some((w) => w.source.id === d.add_to!.connection_id && w.calendar.id === d.add_to!.calendar_id)
+                  ? [{ value: `${d.add_to.connection_id}${SEP}${d.add_to.calendar_id}`, label: "A connected calendar that isn't available now" }]
+                  : []),
+                ...writable.map((w) => ({
+                  value: `${w.source.id}${SEP}${w.calendar.id}`,
+                  label: `${w.calendar.primary && w.calendar.name === w.source.account ? sourceProductLabel(w.source.provider ?? "", w.source.product) : w.calendar.name} · ${w.source.account}`,
+                  icon: <ProviderIcon provider={w.source.provider ?? ""} product={w.source.product ?? null} size={16} />,
+                })),
+              ]}
+            />
+          </Field>
+        ) : null}
+        {d.location_type === "video" && providers.length > 0 ? (
+          <Field label="Video call with" info="The app's own calls open in the browser; Google Meet, Teams and Zoom open in their own apps.">
+            <Select
+              value={providerKey}
+              onValueChange={(v) => {
+                const o = providers.find((x) => `${x.id}${SEP}${x.connection_id ?? ""}` === v || (x.id === "app" && v.startsWith(`app${SEP}`)));
+                if (o) setD((s) => ({ ...s, conference_provider: o.id, conference_connection_id: o.native || o.id === "app" ? null : (o.connection_id ?? null) }));
+              }}
+              options={[
+                ...(providers.some((o) => o.id === d.conference_provider) ? [] : [{ value: providerKey, label: `${calendarProviderLabel(d.conference_provider)} (not available now)` }]),
+                ...providers.map((o) => ({
+                value: `${o.id}${SEP}${o.id === "app" ? "" : (o.connection_id ?? "")}`,
+                label: o.account && !o.native ? `${o.label} · ${o.account}` : o.label,
+                ...(o.platform ? { icon: <ProviderIcon provider={o.platform} product={o.id === "google_meet" ? "meet" : o.id === "teams" ? "teams" : null} size={16} /> } : {}),
+              })),
+              ]}
+            />
+          </Field>
+        ) : null}
         {d.location_type === "phone" ? (
           <Field label="Your phone number" info="Leave empty and the booker gives a number for you to call.">
             <Input type="tel" value={d.location_value} onChange={(e) => set("location_value", e.target.value)} maxLength={40} />
@@ -329,7 +394,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
           </TabsList>
         </Tabs>
       ) : null}
-      <div className="grid gap-section lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 gap-section lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {wide || tab === "settings" ? form : null}
         {wide || tab === "preview" ? (
           <div className="lg:sticky lg:top-24 lg:self-start">
@@ -354,7 +419,7 @@ function Preview({ draft, linkId, zone }: { draft: Draft; linkId: string | null;
     [debounced, linkId, win, dur],
   );
   const preview = useCalendarLinkPreview(body);
-  const label = { video: "Video call", phone: draft.location_value ? `Phone call: you call ${draft.location_value}` : "Phone call: you'll be called", in_person: "In person", custom: draft.location_value }[draft.location_type];
+  const label = { video: draft.conference_provider && draft.conference_provider !== "app" ? calendarProviderLabel(draft.conference_provider) : "Video call", phone: draft.location_value ? `Phone call: you call ${draft.location_value}` : "Phone call: you'll be called", in_person: "In person", custom: draft.location_value }[draft.location_type];
   return (
     <Card className="flex flex-col gap-6" aria-label="Preview">
       <span className="type-caption uppercase text-fg-subtle">Preview</span>

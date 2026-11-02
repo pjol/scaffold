@@ -19,6 +19,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type DragEvent, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
+import { ConnectedDocsSection } from "./connected/ConnectedDocsSection";
 import { ImportDialog, PagePicker, TrashDialog } from "./Dialogs";
 
 const OPEN_KEY = "scaffoldapp.docs.tree";
@@ -320,6 +321,7 @@ export function Sidebar({ orgId, orgName }: { orgId: string; orgName: string }) 
             <Section title="Private" info="Only you can see these, until you share them." action={<IconButton label="New private page" icon={<Plus />} size="sm" variant="ghost" onClick={() => newPage(null, false)} />}>
               {sidebar.data.private.length ? list(sidebar.data.private) : <p className="px-3 py-1 type-caption text-fg-subtle">No private pages</p>}
             </Section>
+            <ConnectedDocsSection orgId={orgId} />
           </>
         )}
       </nav>

@@ -10,14 +10,17 @@ import {
   errorMessage,
   formatCalendarDayLong,
   formatCalendarTime,
+  isCalendarConnected,
+  useCalendarConnectedRange,
   useCalendarRange,
+  useCalendarSources,
   useNow,
   type CalendarOccurrence,
 } from "@scaffoldapp/shared";
-import { Button, EmptyState, ErrorState, IconButton, SegmentedControl, Skeleton, Text, useTheme } from "@scaffoldapp/ui-native";
+import { Button, ConnectPrompt, EmptyState, ErrorState, IconButton, ProviderIcon, SegmentedControl, Skeleton, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
 import { CalendarDays, ChevronLeft, ChevronRight, Link2, Plus, Repeat } from "lucide-react-native";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { CalendarDot, calendarColors, useCalendarZone } from "./parts";
@@ -26,7 +29,16 @@ const HOUR = 56;
 const AGENDA_DAYS = 14;
 
 function openEvent(o: CalendarOccurrence) {
+  if (isCalendarConnected(o)) {
+    router.push({ pathname: "/calendar/connected", params: { connection_id: o.connection_id, calendar_id: o.calendar_id, event_id: o.external_id } });
+    return;
+  }
   router.push({ pathname: "/calendar/event/[id]", params: { id: o.event_id, ...(o.occurrence_start ? { occurrence: o.occurrence_start } : {}) } });
+}
+
+/** ", from Google Calendar · sam@acme.com" for screen readers; "" for the app's own events. */
+function sourceText(o: CalendarOccurrence): string {
+  return o.source?.type === "connected" ? `, from ${o.source.account ? `${o.source.provider} ${o.source.account}` : o.source.provider}` : "";
 }
 
 function newEvent(startsAt?: string, endsAt?: string) {
@@ -47,7 +59,15 @@ export function CalendarScreen() {
   const from = ready ? calendarDayStart(day, zone) : null;
   const to = ready ? calendarDayStart(calendarAddDays(day, span), zone) : null;
   const range = useCalendarRange(from, to);
-  const items = range.data?.items ?? [];
+  // Connected calendars' events (Google, Outlook) join the app's own; hidden calendars drop out.
+  const connected = useCalendarConnectedRange(from, to);
+  const sources = useCalendarSources();
+  const items = useMemo(() => {
+    const hidden = new Set<string>();
+    for (const src of sources.data?.sources ?? []) for (const cal of src.calendars) if (cal.hidden) hidden.add(`${src.id}|${cal.id}`);
+    return [...(range.data?.items ?? []), ...(connected.data?.items ?? []).filter((o) => !hidden.has(`${o.connection_id}|${o.calendar_id}`))];
+  }, [range.data, connected.data, sources.data]);
+  const hasConnected = (sources.data?.sources ?? []).some((x) => x.type === "connected");
 
   return (
     <View style={{ flex: 1, backgroundColor: c.canvas }}>
@@ -101,13 +121,27 @@ export function CalendarScreen() {
       ) : view === "day" ? (
         <DayTimeline day={day} zone={zone} items={items} refreshing={range.isRefetching} onRefresh={() => void range.refetch()} />
       ) : (
-        <Agenda day={day} zone={zone} items={items} refreshing={range.isRefetching} onRefresh={() => void range.refetch()} />
+        <Agenda
+          day={day}
+          zone={zone}
+          items={items}
+          refreshing={range.isRefetching}
+          onRefresh={() => {
+            void range.refetch();
+            void connected.refetch();
+          }}
+          footer={
+            !hasConnected ? (
+              <ConnectPrompt offers={sources.data?.offers} onConnect={(o) => router.push(o.connect_url.slice(1) as never)} title="Your other calendars" />
+            ) : null
+          }
+        />
       )}
     </View>
   );
 }
 
-function Agenda({ day, zone, items, refreshing, onRefresh }: { day: string; zone: string; items: CalendarOccurrence[]; refreshing: boolean; onRefresh: () => void }) {
+function Agenda({ day, zone, items, refreshing, onRefresh, footer }: { day: string; zone: string; items: CalendarOccurrence[]; refreshing: boolean; onRefresh: () => void; footer?: ReactNode }) {
   const theme = useTheme();
   const s = theme.space;
   const c = theme.colors;
@@ -145,7 +179,7 @@ function Agenda({ day, zone, items, refreshing, onRefresh }: { day: string; zone
                 <Pressable
                   key={calendarOccurrenceKey(o)}
                   accessibilityRole="button"
-                  accessibilityLabel={`${o.title}, ${o.all_day ? "all day" : `${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}`}${declined ? ", declined" : ""}`}
+                  accessibilityLabel={`${o.title}, ${o.all_day ? "all day" : `${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}`}${declined ? ", declined" : ""}${sourceText(o)}`}
                   onPress={() => openEvent(o)}
                   style={({ pressed }) => ({
                     minHeight: theme.tap.lg,
@@ -169,6 +203,7 @@ function Agenda({ day, zone, items, refreshing, onRefresh }: { day: string; zone
                       {o.all_day ? "All day" : `${formatCalendarTime(o.starts_at, zone)} – ${formatCalendarTime(o.ends_at, zone)}`}
                       {o.location ? ` · ${o.location}` : ""}
                     </Text>
+                    <SourceBadge source={o.source} style={{ alignSelf: "flex-start" }} />
                   </View>
                   {o.recurring ? <Repeat size={16} color={c.textSubtle} /> : null}
                 </Pressable>
@@ -177,6 +212,7 @@ function Agenda({ day, zone, items, refreshing, onRefresh }: { day: string; zone
           </View>
         ))
       )}
+      {footer}
     </ScrollView>
   );
 }
@@ -207,7 +243,7 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
           {allDay.map((o) => {
             const col = calendarColors(theme, o.color);
             return (
-              <Pressable key={calendarOccurrenceKey(o)} accessibilityRole="button" accessibilityLabel={`${o.title}, all day`} onPress={() => openEvent(o)} style={{ minHeight: theme.tap.sm, justifyContent: "center", paddingHorizontal: s[3], borderRadius: theme.radius.sm, backgroundColor: col.bg }}>
+              <Pressable key={calendarOccurrenceKey(o)} accessibilityRole="button" accessibilityLabel={`${o.title}, all day${sourceText(o)}`} onPress={() => openEvent(o)} style={{ minHeight: theme.tap.sm, justifyContent: "center", paddingHorizontal: s[3], borderRadius: theme.radius.sm, backgroundColor: col.bg }}>
                 <Text role="label" weight={600} style={{ color: col.fg }} numberOfLines={1}>
                   {o.title}
                 </Text>
@@ -243,7 +279,7 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
                 <Pressable
                   key={calendarOccurrenceKey(o)}
                   accessibilityRole="button"
-                  accessibilityLabel={`${o.title}, ${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}`}
+                  accessibilityLabel={`${o.title}, ${formatCalendarTime(o.starts_at, zone)} to ${formatCalendarTime(o.ends_at, zone)}${sourceText(o)}`}
                   onPress={() => openEvent(o)}
                   style={{
                     position: "absolute",
@@ -260,9 +296,12 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
                     overflow: "hidden",
                   }}
                 >
-                  <Text role="label" weight={600} numberOfLines={1} style={{ color: o.my_response === "declined" ? c.textMuted : col.fg }}>
-                    {o.title}
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: s[1] }}>
+                    {o.source?.type === "connected" ? <ProviderIcon provider={o.source.provider} product={o.source.product ?? null} size={12} color={col.fg} /> : null}
+                    <Text role="label" weight={600} numberOfLines={1} style={{ flex: 1, color: o.my_response === "declined" ? c.textMuted : col.fg }}>
+                      {o.title}
+                    </Text>
+                  </View>
                   {p.height >= 45 ? (
                     <Text role="caption" numberOfLines={1} style={{ color: col.fg }}>
                       {formatCalendarTime(o.starts_at, zone)} – {formatCalendarTime(o.ends_at, zone)}

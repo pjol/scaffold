@@ -84,3 +84,11 @@ export { TopBar, type TopBarProps } from "./shell/TopBar";
 export { SideNav, type SideNavProps } from "./shell/SideNav";
 export { BottomNav, type BottomNavProps } from "./shell/BottomNav";
 export { isNavItemActive, badgeText, type ShellNavItem, type LinkComponent } from "./shell/nav";
+
+// connected sources (provider marks: Simple Icons, CC0; monograms where none)
+export { ProviderIcon, type ProviderIconProps } from "./sources/ProviderIcon";
+export { SourceBadge, type SourceBadgeProps, type SourceBadgeSource } from "./sources/SourceBadge";
+export { SourceFilter, sourceFilterOptions, type SourceFilterProps, type SourceFilterOption, type SourceFilterSource, type SourceFilterOptionsInput } from "./sources/SourceFilter";
+export { ConnectPrompt, withReturnTo, type ConnectPromptProps, type ConnectPromptOffer } from "./sources/ConnectPrompt";
+export { ConnectedSection, connectedSectionItems, type ConnectedSectionProps, type ConnectedSectionItem } from "./sources/ConnectedSection";
+export { sourcePlatformName, sourceProductName, sourceAccessibleLabel, sourceMark, SOURCE_MARKS, SOURCE_MONOGRAMS, SOURCE_PLATFORM_NAMES, SOURCE_PRODUCT_NAMES, type SourceStatus } from "./sources/marks";

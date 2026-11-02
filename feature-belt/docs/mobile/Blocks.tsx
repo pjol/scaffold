@@ -15,6 +15,7 @@ import { router } from "expo-router";
 import { Check, ChevronRight, Download, FileText, Globe, Lock } from "lucide-react-native";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Linking, Platform, Pressable, ScrollView, TextInput, View } from "react-native";
+import { ConnectedPageCard } from "./ConnectedPageCard";
 import { RichText } from "./RichText";
 
 const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
@@ -59,18 +60,24 @@ export interface BlockListProps {
   onBlockMenu?: (b: DocsBlock) => void;
   onBackspaceEmpty?: (b: DocsBlock) => void;
   renderDatabase?: (id: string) => ReactNode;
+  /** Connected pages: blocks shown but not changed here. */
+  readOnly?: ReadonlySet<string>;
+  /** The workspace connected-page blocks open in. */
+  orgId?: string | null;
 }
 
 function ImageBlock({ b, token }: { b: DocsBlock; token: string | null }) {
   const theme = useTheme();
-  const file = useDocsFileUrl(b.props.file_id, token);
+  // Connected pages carry the platform's image link instead of an upload.
+  const file = useDocsFileUrl(b.props.url ? null : b.props.file_id, token);
+  const src = b.props.url || file.data?.url;
   const [ratio, setRatio] = useState(4 / 3);
   const caption = docsPlain(b.props.caption);
   return (
     <View style={{ gap: theme.space[1], width: `${b.props.width ?? 100}%` }}>
-      {file.data?.url ? (
+      {src ? (
         <Image
-          source={{ uri: file.data.url }}
+          source={{ uri: src }}
           accessibilityLabel={caption || b.props.name || "Image"}
           contentFit="cover"
           onLoad={(e) => e.source.width && e.source.height && setRatio(e.source.width / e.source.height)}
@@ -95,13 +102,14 @@ function ImageBlock({ b, token }: { b: DocsBlock; token: string | null }) {
 function FileBlock({ b, token }: { b: DocsBlock; token: string | null }) {
   const theme = useTheme();
   const [want, setWant] = useState(false);
-  const file = useDocsFileUrl(want ? b.props.file_id : null, token);
+  const file = useDocsFileUrl(want && !b.props.url ? b.props.file_id : null, token);
+  const link = b.props.url || file.data?.url;
   useEffect(() => {
-    if (want && file.data?.url) {
-      void Linking.openURL(file.data.url);
+    if (want && link) {
+      void Linking.openURL(link);
       setWant(false);
     }
-  }, [want, file.data?.url]);
+  }, [want, link]);
   return (
     <Pressable
       accessibilityRole="button"
@@ -150,7 +158,8 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
   const kids = props.children.get(b.id) ?? [];
   const viewers = props.viewersByBlock?.get(b.id);
   const textual = docsIsTextBlock(b.type);
-  const editing = props.editable && props.editingId === b.id && textual;
+  const editable = props.editable && !props.readOnly?.has(b.id);
+  const editing = editable && props.editingId === b.id && textual;
   const role = textual ? ROLE[b.type as DocsTextBlockType] : "body";
   const checked = b.type === "to_do" && !!b.props.checked;
   const text = editing ? (
@@ -165,17 +174,17 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
   ) : (
     <Pressable
       style={{ flex: 1, paddingVertical: s[1] }}
-      disabled={!props.editable || !textual}
+      disabled={!editable || !textual}
       onPress={() => props.onEdit?.(b.id)}
       onLongPress={() => props.onBlockMenu?.(b)}
-      accessibilityRole={props.editable ? "button" : "text"}
-      accessibilityHint={props.editable ? "Edit. Long press for block actions." : undefined}
+      accessibilityRole={editable ? "button" : "text"}
+      accessibilityHint={editable ? "Edit. Long press for block actions." : undefined}
     >
       {docsPlain(b.props.text) ? (
         <RichText spans={b.props.text ?? []} refs={props.refs} role={role} {...(props.pageHref ? { pageHref: props.pageHref } : {})} style={checked ? { color: c.textMuted, textDecorationLine: "line-through" } : undefined} />
       ) : (
         <Text role={role} tone="subtle">
-          {props.editable ? PLACEHOLDER[b.type as DocsTextBlockType] : " "}
+          {editable ? PLACEHOLDER[b.type as DocsTextBlockType] : " "}
         </Text>
       )}
     </Pressable>
@@ -213,9 +222,9 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
         <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
           <Pressable
             accessibilityRole="checkbox"
-            accessibilityState={{ checked, disabled: !props.editable }}
+            accessibilityState={{ checked, disabled: !editable }}
             accessibilityLabel={checked ? "Done" : "Not done"}
-            disabled={!props.editable}
+            disabled={!editable}
             onPress={() => props.onToggleTodo?.(b)}
             hitSlop={12}
             style={{ width: s[6], height: 32, alignItems: "center", justifyContent: "center" }}
@@ -251,7 +260,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       break;
     case "code":
       body = (
-        <Pressable onLongPress={() => props.onBlockMenu?.(b)} disabled={!props.editable}>
+        <Pressable onLongPress={() => props.onBlockMenu?.(b)} disabled={!editable}>
           <ScrollView horizontal style={{ backgroundColor: c.sunken, borderRadius: theme.radius.md }} contentContainerStyle={{ padding: s[3] }}>
             <Text role="label" style={{ fontFamily: MONO }}>
               {b.props.code}
@@ -262,7 +271,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       break;
     case "divider":
       body = (
-        <Pressable onLongPress={() => props.onBlockMenu?.(b)} disabled={!props.editable} style={{ paddingVertical: s[3] }} accessibilityRole="none" accessibilityLabel="Divider">
+        <Pressable onLongPress={() => props.onBlockMenu?.(b)} disabled={!editable} style={{ paddingVertical: s[3] }} accessibilityRole="none" accessibilityLabel="Divider">
           <View style={{ height: 1, backgroundColor: c.border }} />
         </Pressable>
       );
@@ -330,6 +339,9 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       break;
     case "database":
       body = b.props.database_id && props.renderDatabase ? props.renderDatabase(b.props.database_id) : null;
+      break;
+    case "connected_page":
+      body = <ConnectedPageCard b={b} orgId={props.orgId ?? null} token={props.token ?? null} />;
       break;
   }
   return (

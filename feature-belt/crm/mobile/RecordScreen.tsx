@@ -7,6 +7,8 @@ import {
   crmDuration,
   crmMoney,
   crmOutcomeLabel,
+  crmIsConnectedId,
+  crmSourceIdOf,
   crmUpcoming,
   errorMessage,
   topic,
@@ -36,12 +38,14 @@ import {
   SegmentedControl,
   Sheet,
   Skeleton,
+  SourceBadge,
   Text,
+  sourcePlatformName,
   toast,
   useTheme,
 } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
-import { ArrowRightLeft, Check, History, Mail, NotebookPen, Phone, SearchX } from "lucide-react-native";
+import { ArrowRightLeft, Check, ExternalLink, History, Mail, NotebookPen, Phone, SearchX } from "lucide-react-native";
 import { useState } from "react";
 import { Linking, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
@@ -67,7 +71,8 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
   const s = theme.space;
   const rec = useCrmRecord(type, id);
   const timeline = useCrmTimeline(type, id);
-  useTopic(topic("crm", id));
+  const connected = crmIsConnectedId(id);
+  useTopic(connected ? null : topic("crm", id));
   const [pane, setPane] = useState<Pane>("activity");
   const [logging, setLogging] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -87,7 +92,11 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
       <Screen edges={["bottom"]} centered>
         <Stack.Screen options={{ title: CRM_TYPE_LABEL[type].One }} />
         {rec.error.status === 404 ? (
-          <EmptyState icon={SearchX} title={`${CRM_TYPE_LABEL[type].One} not found`} info="It was deleted, merged, or isn't shared with you." />
+          <EmptyState
+            icon={SearchX}
+            title={`${CRM_TYPE_LABEL[type].One} not found`}
+            info={connected ? "It was deleted on its platform, or your account there can't see it." : "It was deleted, merged, or isn't shared with you."}
+          />
         ) : (
           <ErrorState title={`Couldn't load this ${CRM_TYPE_LABEL[type].one}`} info={rec.error.message} onRetry={() => void rec.refetch()} retrying={rec.isRefetching} />
         )}
@@ -100,6 +109,7 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
   const email = record.type === "contact" ? record.emails[0] : undefined;
   const phone = record.type === "contact" ? record.phones[0] : record.type === "company" ? record.phone || undefined : undefined;
   const upcoming = crmUpcoming(timeline.data);
+  const external = record.source?.type === "connected" ? record.source : null;
   return (
     <Screen
       edges={["bottom"]}
@@ -117,11 +127,13 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
       <Stack.Screen
         options={{
           title: CRM_TYPE_LABEL[type].One,
-          headerRight: () => <ResourceMenu feature="crm" kind={CRM_KIND[type]} id={record.id} title={record.title} orgId={orgId} />,
+          // Connected records aren't the app's to share; their platform decides who sees them.
+          headerRight: () => <ResourceMenu feature="crm" {...(external ? {} : { kind: CRM_KIND[type], id: record.id })} title={record.title} orgId={orgId} />,
         }}
       />
       <View style={{ gap: s[3] }}>
         <Headline>{record.title}</Headline>
+        <SourceBadge source={record.source} showAccount />
         <FactRow>
           {record.type === "contact" ? (
             <>
@@ -131,7 +143,7 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
                   {record.company.name}
                 </Text>
               ) : null}
-              <Badge>{CRM_LIFECYCLE_LABEL[record.lifecycle_stage]}</Badge>
+              {CRM_LIFECYCLE_LABEL[record.lifecycle_stage] && !(external && record.lifecycle_stage === "other") ? <Badge>{CRM_LIFECYCLE_LABEL[record.lifecycle_stage]}</Badge> : null}
             </>
           ) : record.type === "company" ? (
             <>
@@ -172,6 +184,11 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
         {record.type === "deal" && canEdit ? (
           <Button variant="secondary" size="md" leftIcon={ArrowRightLeft} onPress={() => setMoving(true)}>
             Stage
+          </Button>
+        ) : null}
+        {external?.url ? (
+          <Button variant="ghost" size="md" leftIcon={ExternalLink} onPress={() => void Linking.openURL(external.url ?? "")}>
+            {`Open in ${sourcePlatformName(external.provider)}`}
           </Button>
         ) : null}
       </View>
@@ -216,7 +233,9 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
       ) : (
         <Related associations={associations} type={type} />
       )}
-      {canComment ? <LogSheet type={type} id={id} alsoOn={suggestions(record, associations)} open={logging} onClose={() => setLogging(false)} /> : null}
+      {canComment ? (
+        <LogSheet type={type} id={id} alsoOn={external ? [] : suggestions(record, associations)} open={logging} onClose={() => setLogging(false)} platform={external ? sourcePlatformName(external.provider) : null} />
+      ) : null}
       {record.type === "deal" ? <StageSheet deal={record} orgId={orgId} open={moving} onClose={() => setMoving(false)} /> : null}
     </Screen>
   );
@@ -393,7 +412,7 @@ function Related({ associations: a, type }: { associations: CrmAssociations; typ
 /** Move a deal to another stage of its pipeline (edit needed). */
 export function StageSheet({ deal, orgId, open, onClose }: { deal: CrmDeal; orgId: string; open: boolean; onClose: () => void }) {
   const theme = useTheme();
-  const pipelines = useCrmPipelines(orgId);
+  const pipelines = useCrmPipelines(orgId, crmSourceIdOf(deal));
   const move = useCrmMoveStage(orgId);
   const pl = pipelines.data?.find((p) => p.id === deal.pipeline_id);
   return (

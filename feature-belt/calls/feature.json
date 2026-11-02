@@ -1,8 +1,8 @@
 {
   "name": "calls",
   "title": "Calls",
-  "version": "1.2.1",
-  "summary": "Video meetings with a shareable link and a lobby for guests, and instant calls that ring people's devices.",
+  "version": "1.3.0",
+  "summary": "Video meetings with a shareable link and a lobby for guests, instant calls that ring people's devices, and Zoom or Teams meetings (plus Meet from Google Calendar) beside them.",
   "requires": [
     "orgs",
     "notifications"
@@ -203,6 +203,7 @@
     "Channels and DMs: a \"Start call\" button calls POST /v1/calls/calls {user_ids} (or calls.StartCall from Go) and opens /meet/<code>?autojoin=1. Keep the product words the same everywhere: Start call (an instant call), New meeting (a link), Video call (a calendar location type).",
     "Set PUBLIC_WEB_URL: join links are PUBLIC_WEB_URL/meet/<code> (public on web: guests knock there). Mobile: configure universal links for /meet/* to open the app's meet/[code] route.",
     "Privacy policy: name LiveKit (or your SFU host) as a processor of call audio and video; calls aren't recorded. Mobile: the plugin adds camera and microphone purpose strings and iOS background audio; rebuild the dev client.",
-    "Mobile placement: Calls is a Home row; give it a tab if calls are a primary destination."
+    "Mobile placement: Calls is a Home row; give it a tab if calls are a primary destination.",
+    "Meeting providers: with the connectors feature (2.0+), people connect Zoom (calls.zoom.meetings) and Microsoft (calls.microsoft.teams); offer them in your calendar's \"Video call\" (calls.Providers, CreateProviderMeeting / UpdateProviderMeeting / CancelProviderMeeting from your calendar.Conferencing) and list calendar meetings in Calls with calls.SetCalendarMeetings (e.g. over calendar.PlatformMeetings)."
   ]
 }

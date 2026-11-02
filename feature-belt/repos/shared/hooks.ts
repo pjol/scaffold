@@ -6,7 +6,14 @@ import { useEndpoints } from "../hooks/context";
 import { useApiQuery, useDebouncedValue, usePagedQuery, type PagedQueryResult, type QueryOverrides } from "../hooks/internal";
 import { registerReconnectRefetch, registerRealtimeHandler } from "../hooks/realtime-handlers";
 import { reposEndpoints, type ReposAt, type ReposPullFilter } from "./api";
+import type { FeatureSources } from "../sources";
 import type {
+  ReposChecks,
+  ReposConnectedPage,
+  ReposConnectedSort,
+  ReposCreateLinkRequest,
+  ReposImportConnectedRequest,
+  ReposLink,
   ReposBlameRange,
   ReposBlob,
   ReposComment,
@@ -77,6 +84,10 @@ export const reposKeys = {
   mergeability: (id: string, n: number) => ["repos", "repo", id, "pull", n, "mergeability"] as const,
   importPreview: (folderId: string) => ["repos", "import", folderId] as const,
   credentials: () => ["repos", "credentials"] as const,
+  sources: (orgId: string) => ["repos", "sources", orgId] as const,
+  connected: (connectionId: string, q: string, sort: string, owner: string) => ["repos", "connected", connectionId, q, sort, owner] as const,
+  checks: (id: string, sha: string) => ["repos", "repo", id, "checks", sha] as const,
+  link: (linkId: string) => ["repos", "link", linkId] as const,
   gitInfo: () => ["repos", "git-info"] as const,
 };
 
@@ -155,6 +166,76 @@ export function useReposPeople(id: string, q: string): UseQueryResult<{ items: R
   const r = useEndpoints(reposEndpoints);
   const query = useDebouncedValue(q.trim(), 200);
   return useApiQuery(reposKeys.people(id, query), ({ signal }) => r.people(id, query, { signal }), { placeholderData: keepPreviousData });
+}
+
+// ---- connected platforms -------------------------------------------------------
+
+/** The app's own repositories, each connected GitHub/GitLab account (with status), and offers. */
+export function useReposSources(orgId: string | null | undefined): UseQueryResult<FeatureSources, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.sources(orgId ?? ""), ({ signal }) => r.sources(orgId ?? undefined, { signal }), { ...read, staleTime: 60_000 }, !!orgId);
+}
+
+export interface ReposConnectedQuery {
+  q?: string;
+  sort?: ReposConnectedSort;
+  owner?: string;
+  orgId?: string | null | undefined;
+}
+
+/** One connected account's repositories, most recently active first (live from the platform). */
+export function useReposConnectedList(connectionId: string | null | undefined, query: ReposConnectedQuery = {}): PagedQueryResult<ReposSummary> & { meta: Omit<ReposConnectedPage, "items" | "next_cursor"> | undefined } {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const q = useDebouncedValue((query.q ?? "").trim(), 300);
+  const sort = query.sort ?? "recent";
+  const owner = query.owner ?? "";
+  const key = reposKeys.connected(connectionId ?? "", q, sort, owner);
+  const res = usePagedQuery(
+    key,
+    (cursor, signal) => r.connected(connectionId ?? "", { cursor, q, sort, owner, orgId: query.orgId ?? undefined }, { signal }),
+    { placeholderData: keepPreviousData, retry: retryUnlessClientError, staleTime: 60_000 },
+    !!connectionId,
+  );
+  // The first page's account, provider and owners (the select keeps only rows).
+  const first = qc.getQueryData<{ pages: ReposConnectedPage[] }>(key)?.pages?.[0];
+  return Object.assign(res, { meta: first ? { owners: first.owners, account: first.account, provider: first.provider } : undefined });
+}
+
+/** CI checks on a commit (connected repositories; the app's own have none). */
+export function useReposChecks(id: string, sha: string | null | undefined, enabled = true): UseQueryResult<ReposChecks, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.checks(id, sha ?? ""), ({ signal }) => r.checks(id, sha ?? "", { signal }), { ...read, staleTime: 30_000, refetchInterval: 60_000 }, enabled && !!sha);
+}
+
+/** Copy a connected repository into the drive (branches and tags). */
+export function useImportConnectedRepo(): UseMutationResult<ReposRepo, ApiError, ReposImportConnectedRequest> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposRepo, ApiError, ReposImportConnectedRequest>({
+    mutationFn: (body) => r.importConnected(body),
+    onSuccess: (repo) => {
+      qc.setQueryData(reposKeys.info(repo.id), repo);
+      void qc.invalidateQueries({ queryKey: reposKeys.lists() });
+      void qc.invalidateQueries({ queryKey: ["files"] });
+    },
+  });
+}
+
+/** Put a link to a connected repository in a drive folder. */
+export function useCreateReposLink(): UseMutationResult<ReposLink, ApiError, ReposCreateLinkRequest> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposLink, ApiError, ReposCreateLinkRequest>({
+    mutationFn: (body) => r.createLink(body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["files"] }),
+  });
+}
+
+/** A drive link to a connected repository, resolved with the opener's own connections. */
+export function useReposLink(linkId: string | null | undefined): UseQueryResult<ReposLink, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.link(linkId ?? ""), ({ signal }) => r.link(linkId ?? "", { signal }), read, !!linkId);
 }
 
 // ---- protection ----------------------------------------------------------------

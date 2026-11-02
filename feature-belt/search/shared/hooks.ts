@@ -9,7 +9,8 @@ import { SEARCH_MIN_QUERY_CHARS, type SearchParams, type SearchResponse } from "
 
 export const searchKeys = {
   all: () => ["search"] as const,
-  query: (q: string, kinds: readonly string[] = [], limit?: number, orgId?: string) => ["search", q, [...kinds].sort().join(","), limit ?? null, orgId ?? null] as const,
+  query: (q: string, kinds: readonly string[] = [], limit?: number, orgId?: string, source?: string) =>
+    ["search", q, [...kinds].sort().join(","), limit ?? null, orgId ?? null, source ?? null] as const,
 };
 
 /**
@@ -22,7 +23,7 @@ export function useSearch(params: SearchParams, options: { enabled?: boolean } =
   const q = params.q.trim().replace(/\s+/g, " ");
   const enabled = (options.enabled ?? true) && q.length >= SEARCH_MIN_QUERY_CHARS;
   return useApiQuery<SearchResponse>(
-    searchKeys.query(q, params.kinds, params.limit, params.orgId || undefined),
+    searchKeys.query(q, params.kinds, params.limit, params.orgId || undefined, params.source || undefined),
     ({ signal }) => ep.search({ ...params, q }, { signal }),
     { placeholderData: keepPreviousData, staleTime: 30_000, retry: false },
     enabled,

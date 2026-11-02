@@ -6,6 +6,7 @@ import {
   groupSearchResults,
   SEARCH_MIN_QUERY_CHARS,
   searchResultContext,
+  searchSourceOptions,
   unansweredSearchProviders,
   useDebouncedValue,
   useMe,
@@ -13,7 +14,7 @@ import {
   useSearchScope,
   type SearchResult,
 } from "@scaffoldapp/shared";
-import { AnimatePresence, Button, cn, motion, Skeleton, Spinner, ToggleChip, useMotionTokens } from "@scaffoldapp/ui-web";
+import { AnimatePresence, Button, cn, motion, Skeleton, SourceBadge, SourceFilter, Spinner, ToggleChip, useMotionTokens } from "@scaffoldapp/ui-web";
 import { ArrowRight, Clock, CornerDownLeft, SearchX, TriangleAlert, X } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -75,7 +76,9 @@ function Palette() {
   const scope = useSearchScope();
   const [everywhere, setEverywhere] = useState(false);
   const orgId = scope && !everywhere ? scope.id : undefined;
-  const search = useSearch({ q, limit: 30, orgId }, { enabled: searchable });
+  const [source, setSource] = useState("all");
+  const search = useSearch({ q, limit: 30, orgId, ...(source !== "all" ? { source } : {}) }, { enabled: searchable });
+  const sourceOptions = useMemo(() => searchSourceOptions(search.data?.sources, APP_NAME), [search.data?.sources]);
   const groups = useMemo(() => (searchable && search.data ? groupSearchResults(search.data.items) : []), [searchable, search.data]);
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -84,6 +87,10 @@ function Palette() {
   const scopeTo = (all: boolean) => {
     setEverywhere(all);
     inputRef.current?.focus(); // keep typing and arrow keys working
+  };
+  const sourceTo = (id: string) => {
+    setSource(id);
+    inputRef.current?.focus();
   };
 
   const rows: Row[] = useMemo(() => {
@@ -112,7 +119,7 @@ function Palette() {
     if (!row) return;
     if (row.type === "recent") setQuery(row.query);
     else if (row.type === "result") go(row.item.link, newTab);
-    else go(allResultsHref(query, scope && everywhere), newTab);
+    else go(allResultsHref(query, scope && everywhere, source), newTab);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -130,7 +137,7 @@ function Palette() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (n) choose(rows[active], e.metaKey || e.ctrlKey);
-      else if (searchable) go(allResultsHref(query, scope && everywhere), e.metaKey || e.ctrlKey);
+      else if (searchable) go(allResultsHref(query, scope && everywhere, source), e.metaKey || e.ctrlKey);
     }
   };
 
@@ -199,7 +206,11 @@ function Palette() {
       <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
         <SearchX aria-hidden className="size-6 text-fg-subtle" />
         <p className="type-body text-fg">No results for “{q}”</p>
-        {scope && !everywhere ? (
+        {source !== "all" ? (
+          <Button size="sm" variant="secondary" onClick={() => sourceTo("all")}>
+            Search every source
+          </Button>
+        ) : scope && !everywhere ? (
           <Button size="sm" variant="secondary" onClick={() => scopeTo(true)}>
             Search {scope.allLabel.charAt(0).toLowerCase() + scope.allLabel.slice(1)}
           </Button>
@@ -221,6 +232,8 @@ function Palette() {
                 <span className="truncate type-body text-fg">{item.title}</span>
                 {sub ? <span className="truncate type-label text-fg-muted">{sub}</span> : null}
               </span>
+              <SourceBadge source={item.source} className="hidden sm:inline-flex" />
+              <SourceBadge source={item.source} iconOnly className="sm:hidden" />
               <span className="shrink-0 type-caption text-fg-subtle">{formatRelative(item.at)}</span>
             </Option>
           );
@@ -286,6 +299,7 @@ function Palette() {
                 </ToggleChip>
               </div>
             ) : null}
+            {searchable ? <SourceFilter options={sourceOptions} value={source} onChange={sourceTo} label="Source" className="border-b border-border px-4 py-2" /> : null}
             {unanswered.length > 0 && searchable ? (
               <div role="status" className="flex items-center gap-2 border-b border-border bg-warning-soft px-4 py-2 type-label text-warning-strong">
                 <TriangleAlert aria-hidden className="size-4 shrink-0" />
@@ -330,9 +344,9 @@ function Palette() {
   );
 }
 
-/** The results page for a query; `everywhere` keeps the "every org" choice. */
-function allResultsHref(query: string, everywhere: boolean | null): string {
-  return `/search?q=${encodeURIComponent(query.trim())}${everywhere ? "&scope=all" : ""}`;
+/** The results page for a query; `everywhere` keeps the "every org" choice, `source` the source chip. */
+function allResultsHref(query: string, everywhere: boolean | null, source = "all"): string {
+  return `/search?q=${encodeURIComponent(query.trim())}${everywhere ? "&scope=all" : ""}${source !== "all" ? `&source=${encodeURIComponent(source)}` : ""}`;
 }
 
 function Group({ label, action, children }: { label: string; action?: ReactNode; children: ReactNode }) {

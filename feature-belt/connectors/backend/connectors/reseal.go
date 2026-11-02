@@ -36,6 +36,11 @@ var sealedColumns = []sealedColumn{
 	{"connector_oauth_flows", "refresh_token_enc", func(id uuid.UUID) string { return aadFlow(id, "refresh") }},
 	{"connector_revocations", "client_secret_enc", func(id uuid.UUID) string { return aadRevocation(id, "client_secret") }},
 	{"connector_revocations", "token_enc", func(id uuid.UUID) string { return aadRevocation(id, "token") }},
+	{"connector_platform_connections", "access_token_enc", func(id uuid.UUID) string { return aadPlatform(id, "access") }},
+	{"connector_platform_connections", "refresh_token_enc", func(id uuid.UUID) string { return aadPlatform(id, "refresh") }},
+	{"connector_platform_flows", "code_verifier_enc", func(id uuid.UUID) string { return aadPlatformFlow(id, "verifier") }},
+	{"connector_platform_flows", "access_token_enc", func(id uuid.UUID) string { return aadPlatformFlow(id, "access") }},
+	{"connector_platform_flows", "refresh_token_enc", func(id uuid.UUID) string { return aadPlatformFlow(id, "refresh") }},
 }
 
 const resealBatch = 200

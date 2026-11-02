@@ -1,7 +1,7 @@
 {
   "name": "agents",
   "title": "AI agent scope",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "summary": "People decide what AI agents acting for them may do (off, read, suggest, edit) by default, per feature, per external service and per item; suggested changes arrive as notifications to accept or reject.",
   "requires": [
     "access",
@@ -134,11 +134,11 @@
     }
   ],
   "stitch": [
-    "Put a \u22ee ResourceMenu (web and mobile src/components/resource/ResourceMenu.tsx) on every feature section and resource screen, with feature, and kind + id for one item; the AI agent access row appears there by itself. External services pass feature connectors:<id>.",
+    "Put a ⋮ ResourceMenu (web and mobile src/components/resource/ResourceMenu.tsx) on every feature section and resource screen, with feature, and kind + id for one item; the AI agent access row appears there by itself. External services pass feature connectors:<id>.",
     "Give every write tool a Target (the one resource it changes) and a Preview (summary, before/after). A Target must return its kind even when the input has no id (agents learn which kinds a feature acts on by calling it with {}); otherwise declare them with agents.SetFeatureKinds. Tools without a Preview show their name and input.",
-    "Filter agent reads in features whose rows aren't access resources: when auth.AgentFrom(ctx) is set, drop rows with app.AgentAllows(\u2026, app.AgentRead) (only FeatureLevel's max < AgentRead may skip the per-row check). Access resources narrow by themselves through access_level/access_visible with access.ViaAgent(ctx).",
+    "Filter agent reads in features whose rows aren't access resources: when auth.AgentFrom(ctx) is set, drop rows with app.AgentAllows(…, app.AgentRead) (only FeatureLevel's max < AgentRead may skip the per-row check). Access resources narrow by themselves through access_level/access_visible with access.ViaAgent(ctx).",
     "Turn on ASSISTANT_ALLOW_WRITES if suggest and edit should matter in the assistant (it never offers app write tools otherwise); MCP connections need the write scope for the same reason. External-service writes still ask the person in the assistant even at Edit.",
-    "Name modules that don't read well capitalised with agents.SetFeatureLabel (\"crm\" \u2192 \"CRM\") and add any write tool the word rule misses with agents.ForbidTool. Settings list content features only (mcp, moderation, notifications and search are hidden and keep the default level); adjust with agents.HideFeature / agents.ShowFeature.",
+    "Name modules that don't read well capitalised with agents.SetFeatureLabel (\"crm\" → \"CRM\") and add any write tool the word rule misses with agents.ForbidTool. Settings list content features only (mcp, moderation, notifications and search are hidden and keep the default level); adjust with agents.HideFeature / agents.ShowFeature.",
     "Decide AGENTS_SUGGESTION_TTL, AGENTS_MAX_PENDING and AGENTS_SUGGESTIONS_PER_HOUR for how much agents should be able to queue.",
     "Mention in the privacy policy that suggestions store the change an agent proposed (its input and a before/after preview) until they are decided and for AGENTS_SUGGESTION_RETENTION after."
   ]

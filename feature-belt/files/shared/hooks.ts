@@ -6,13 +6,18 @@ import { useApi, useEndpoints } from "../hooks/context";
 import { useApiQuery, usePagedQuery, type InfiniteOverrides, type PagedData, type PagedQueryResult, type QueryOverrides } from "../hooks/internal";
 import { registerReconnectRefetch, registerRealtimeHandler } from "../hooks/realtime-handlers";
 import { filesEndpoints } from "./api";
-import { filesUpload, type FilesUploadInput } from "./upload";
+import { filesConnectedUpload, filesUpload, type FilesConnectedUploadInput, type FilesUploadInput } from "./upload";
 import type {
   FilesActivity,
   FilesAdminPublicItem,
   FilesArchive,
   FilesBatchAction,
   FilesBatchResult,
+  FilesConnectedDetail,
+  FilesConnectedDrive,
+  FilesConnectedItem,
+  FilesConnectedSharing,
+  FilesConnectedText,
   FilesCreateFileRequest,
   FilesCreateFolderRequest,
   FilesDriveInfo,
@@ -23,6 +28,8 @@ import type {
   FilesPublicView,
   FilesSearchHit,
   FilesSection,
+  FilesShortcutTarget,
+  FilesSources,
   FilesTextContent,
   FilesTypeSummary,
   FilesUrl,
@@ -47,6 +54,13 @@ export const filesKeys = {
   publicText: (token: string, itemId: string) => ["files", "public", token, itemId, "text"] as const,
   adminPublic: (status: string) => ["files", "admin", "public", status] as const,
   adminItem: (id: string) => ["files", "admin", "item", id] as const,
+  sources: (orgId: string) => ["files", "sources", orgId] as const,
+  connected: (connId: string) => ["files", "connected", connId] as const,
+  connectedDrives: (connId: string, orgId: string) => ["files", "connected", connId, "drives", orgId] as const,
+  connectedItem: (connId: string, ref: string) => ["files", "connected", connId, "item", ref] as const,
+  connectedChildren: (connId: string, ref: string, p: FilesListParams = {}) => ["files", "connected", connId, "children", ref, p] as const,
+  connectedSearch: (connId: string, q: string) => ["files", "connected", connId, "search", q] as const,
+  shortcut: (id: string) => ["files", "item", id, "shortcut"] as const,
 };
 
 /** Lists and the item page show changes from any device (the realtime event) and after any write. */
@@ -272,6 +286,181 @@ export function useFilesRestoreVersion(id: string): UseMutationResult<FilesItem,
 export function useFilesArchive(orgId: string): UseMutationResult<FilesArchive, ApiError, { ids: string[]; name?: string }> {
   const f = useEndpoints(filesEndpoints);
   return useMutation<FilesArchive, ApiError, { ids: string[]; name?: string }>({ mutationFn: ({ ids, name }) => f.archive(orgId, ids, name) });
+}
+
+// ---- connected drives ----------------------------------------------------------------------
+
+/** The app's drive and your connected accounts in Files, with capabilities still on offer (FeatureSources). */
+export function useFilesSources(orgId: string | null | undefined, options?: QueryOverrides<FilesSources>): UseQueryResult<FilesSources, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.sources(orgId ?? ""), ({ signal }) => f.sources(orgId, { signal }), { staleTime: 60_000, retry: retryServerErrors, ...options });
+}
+
+/** The places to browse in one connection (My Drive, Shared with me, shared drives; OneDrive, libraries). */
+export function useFilesConnectedDrives(
+  connId: string | null | undefined,
+  orgId?: string | null,
+  options?: InfiniteOverrides<FilesConnectedDrive>,
+): PagedQueryResult<FilesConnectedDrive> {
+  const f = useEndpoints(filesEndpoints);
+  return usePagedQuery(
+    filesKeys.connectedDrives(connId ?? "", orgId ?? ""),
+    (cursor, signal) => f.connectedDrives(connId ?? "", orgId, cursor, { signal }),
+    { staleTime: 5 * 60_000, retry: retryServerErrors, ...options },
+    !!connId,
+  );
+}
+
+/** A connected item with its folders. 404 when your account can't open it. */
+export function useFilesConnectedItem(connId: string | null | undefined, ref: string | null | undefined, orgId?: string | null, options?: QueryOverrides<FilesConnectedDetail>): UseQueryResult<FilesConnectedDetail, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.connectedItem(connId ?? "", ref ?? ""), ({ signal }) => f.connectedItem(connId ?? "", ref ?? "", orgId, { signal }), { retry: retryServerErrors, staleTime: 30_000, ...options }, !!connId && !!ref);
+}
+
+/** What a connected folder holds, in the platform's pages. */
+export function useFilesConnectedChildren(
+  connId: string | null | undefined,
+  ref: string | null | undefined,
+  params: FilesListParams = {},
+  orgId?: string | null,
+  options?: InfiniteOverrides<FilesConnectedItem>,
+): PagedQueryResult<FilesConnectedItem> {
+  const f = useEndpoints(filesEndpoints);
+  return usePagedQuery(
+    filesKeys.connectedChildren(connId ?? "", ref ?? "", params),
+    (cursor, signal) => f.connectedChildren(connId ?? "", ref ?? "", { ...params, cursor }, orgId, { signal }),
+    { placeholderData: keepPreviousData, staleTime: 30_000, retry: retryServerErrors, ...options },
+    !!connId && !!ref,
+  );
+}
+
+/** The platform's own search in one connection (pass a debounced query). */
+export function useFilesConnectedSearch(connId: string | null | undefined, q: string, orgId?: string | null, options?: InfiniteOverrides<FilesConnectedItem>): PagedQueryResult<FilesConnectedItem> {
+  const f = useEndpoints(filesEndpoints);
+  const query = q.trim();
+  return usePagedQuery(
+    filesKeys.connectedSearch(connId ?? "", query),
+    (cursor, signal) => f.connectedSearch(connId ?? "", query, cursor, orgId, { signal }),
+    { retry: retryServerErrors, ...options },
+    !!connId && query.length > 0,
+  );
+}
+
+/** A connected text file's content (first 1 MB). */
+export function useFilesConnectedText(connId: string | null | undefined, ref: string | null | undefined, orgId?: string | null, enabled = true): UseQueryResult<FilesConnectedText, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery([...filesKeys.connectedItem(connId ?? "", ref ?? ""), "text"], ({ signal }) => f.connectedText(connId ?? "", ref ?? "", orgId, { signal }), { staleTime: 60_000, retry: retryServerErrors }, !!connId && !!ref && enabled);
+}
+
+/** An inline preview link for a connected file, refreshed before it expires. */
+export function useFilesConnectedPreviewUrl(connId: string | null | undefined, ref: string | null | undefined, orgId?: string | null, enabled = true): UseQueryResult<FilesUrl, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(
+    [...filesKeys.connectedItem(connId ?? "", ref ?? ""), "preview-url"],
+    ({ signal }) => f.connectedUrl(connId ?? "", ref ?? "", "inline", orgId, { signal }),
+    { staleTime: 10 * 60_000, refetchInterval: 12 * 60_000, retry: retryServerErrors },
+    !!connId && !!ref && enabled,
+  );
+}
+
+/** A download link for a connected file (names and types kept; documents export as Office files). */
+export function useFilesConnectedGetUrl(): UseMutationResult<FilesUrl, ApiError, { connId: string; ref: string; orgId?: string | null; disposition?: "inline" | "attachment" }> {
+  const f = useEndpoints(filesEndpoints);
+  return useMutation<FilesUrl, ApiError, { connId: string; ref: string; orgId?: string | null; disposition?: "inline" | "attachment" }>({
+    mutationFn: ({ connId, ref, orgId, disposition }) => f.connectedUrl(connId, ref, disposition ?? "attachment", orgId),
+  });
+}
+
+/** The platform's sharing summary (read-only). */
+export function useFilesConnectedSharing(connId: string | null | undefined, ref: string | null | undefined, orgId?: string | null): UseQueryResult<FilesConnectedSharing, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery([...filesKeys.connectedItem(connId ?? "", ref ?? ""), "sharing"], ({ signal }) => f.connectedSharing(connId ?? "", ref ?? "", orgId, { signal }), { staleTime: 60_000, retry: retryServerErrors }, !!connId && !!ref);
+}
+
+function refreshConnected(qc: QueryClient, connId: string) {
+  void qc.invalidateQueries({ queryKey: filesKeys.connected(connId) });
+}
+
+export function useFilesConnectedCreateFolder(connId: string, orgId?: string | null): UseMutationResult<FilesConnectedItem, ApiError, { parentRef: string; name: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesConnectedItem, ApiError, { parentRef: string; name: string }>({
+    mutationFn: ({ parentRef, name }) => f.connectedCreateFolder(connId, { parent_ref: parentRef, name }, orgId),
+    onSuccess: () => refreshConnected(qc, connId),
+  });
+}
+
+export function useFilesConnectedRename(orgId?: string | null): UseMutationResult<FilesConnectedItem, ApiError, { connId: string; ref: string; name: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesConnectedItem, ApiError, { connId: string; ref: string; name: string }>({
+    mutationFn: ({ connId, ref, name }) => f.connectedRename(connId, ref, name, orgId),
+    onSuccess: (_it, v) => refreshConnected(qc, v.connId),
+  });
+}
+
+export function useFilesConnectedMove(orgId?: string | null): UseMutationResult<FilesConnectedItem, ApiError, { connId: string; ref: string; parentRef: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesConnectedItem, ApiError, { connId: string; ref: string; parentRef: string }>({
+    mutationFn: ({ connId, ref, parentRef }) => f.connectedMove(connId, ref, parentRef, orgId),
+    onSuccess: (_it, v) => refreshConnected(qc, v.connId),
+  });
+}
+
+export function useFilesConnectedTrash(orgId?: string | null): UseMutationResult<void, ApiError, { connId: string; ref: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { connId: string; ref: string }>({
+    mutationFn: ({ connId, ref }) => f.connectedTrash(connId, ref, orgId),
+    onSuccess: (_d, v) => refreshConnected(qc, v.connId),
+  });
+}
+
+/** Upload a file to a connected folder (resumable, straight to the platform). */
+export function useFilesConnectedUpload(): UseMutationResult<FilesConnectedItem, ApiError, FilesConnectedUploadInput> {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation<FilesConnectedItem, ApiError, FilesConnectedUploadInput>({
+    mutationFn: (input) => filesConnectedUpload(api.http, input),
+    onSuccess: (_it, input) => refreshConnected(qc, input.connectionId),
+  });
+}
+
+/** Copy a connected file into a Files folder (null: the top of your My drive). */
+export function useFilesCopyToFiles(): UseMutationResult<FilesItem, ApiError, { connId: string; ref: string; orgId: string; parentId: string | null }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesItem, ApiError, { connId: string; ref: string; orgId: string; parentId: string | null }>({
+    mutationFn: ({ connId, ref, orgId, parentId }) => f.copyToFiles(connId, ref, { org_id: orgId, parent_id: parentId }),
+    onSuccess: (it) => refreshFiles(qc, [], it.org_id),
+  });
+}
+
+/** Pin a connected item into a Files folder as a shortcut colleagues open with their own connection. */
+export function useFilesCreateShortcut(orgId: string): UseMutationResult<FilesItem, ApiError, { connId: string; ref: string; parentId: string | null }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesItem, ApiError, { connId: string; ref: string; parentId: string | null }>({
+    mutationFn: ({ connId, ref, parentId }) => f.createShortcut(orgId, { connection_id: connId, ref, parent_id: parentId }),
+    onSuccess: () => refreshFiles(qc, [], orgId),
+  });
+}
+
+/** What a shortcut opens for you, checked live with your own connection. */
+export function useFilesShortcut(id: string | null | undefined, options?: QueryOverrides<FilesShortcutTarget>): UseQueryResult<FilesShortcutTarget, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.shortcut(id ?? ""), ({ signal }) => f.shortcut(id ?? "", { signal }), { retry: retryServerErrors, staleTime: 15_000, ...options }, !!id);
+}
+
+/** Save a Files file to a connected Google Drive or OneDrive folder. */
+export function useFilesSaveTo(): UseMutationResult<FilesConnectedItem, ApiError, { id: string; connId: string; parentRef?: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesConnectedItem, ApiError, { id: string; connId: string; parentRef?: string }>({
+    mutationFn: ({ id, connId, parentRef }) => f.saveTo(id, { connection_id: connId, ...(parentRef ? { parent_ref: parentRef } : {}) }),
+    onSuccess: (_it, v) => refreshConnected(qc, v.connId),
+  });
 }
 
 // ---- public links ------------------------------------------------------------------------

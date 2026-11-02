@@ -14,24 +14,36 @@ import {
   errorMessage,
   formatCalendarDayLong,
   formatCalendarMonth,
+  calendarConnectedRef,
+  isCalendarConnected,
+  parseCalendarConnectedRef,
   parseCalendarNewEventLink,
+  sourceProductLabel,
+  useCalendarConnectedRange,
   useCalendarPeopleByIds,
   useCalendarRange,
   useCalendarSettings,
+  useCalendarSources,
   useCalendarSubscriptions,
+  useUpdateCalendarConnectedEvent,
   useUpdateCalendarEvent,
+  type CalendarConnectedEventDetail,
+  type CalendarConnectedOccurrence,
+  type CalendarConnectedRef,
   type CalendarEventDetail,
   type CalendarOccurrence,
   type CalendarScope,
 } from "@scaffoldapp/shared";
-import { Button, ErrorState, IconButton, SegmentedControl, Select, Sheet, Skeleton, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
-import { CalendarCog, ChevronLeft, ChevronRight, Link2, ListChecks, Plus, Rss } from "lucide-react";
+import { Button, ErrorState, IconButton, SegmentedControl, Select, Sheet, Skeleton, SourceFilter, cn, sourceFilterOptions, toast, useMediaQuery } from "@scaffoldapp/ui-web";
+import { CalendarCheck, CalendarCog, ChevronLeft, ChevronRight, Link2, ListChecks, Plus, Rss } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { useUrlState } from "@/lib/url-state";
 import { AgendaView } from "./AgendaView";
+import { ConnectedCalendars } from "./ConnectedCalendars";
+import { ConnectedEventPanel } from "./ConnectedEvent";
 import { EventDetailPanel } from "./EventDetail";
 import { EventDialog, ScopeDialog, type EventDialogTarget } from "./EventDialog";
 import { MiniMonth, MonthView } from "./MonthView";
@@ -48,6 +60,30 @@ function weekTitle(first: string, last: string): string {
   if (first.slice(0, 7) === last.slice(0, 7)) return formatCalendarMonth(first);
   const short = (d: string, year: boolean) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", ...(year ? { year: "numeric" } : {}), timeZone: "UTC" });
   return first.slice(0, 4) === last.slice(0, 4) ? `${short(first, false)} – ${short(last, true)}` : `${short(first, true)} – ${short(last, true)}`;
+}
+
+type OpenEvent = { kind: "app"; id: string; occurrence: string | null } | { kind: "connected"; ref: CalendarConnectedRef };
+
+const openOf = (o: CalendarOccurrence): OpenEvent =>
+  isCalendarConnected(o) ? { kind: "connected", ref: calendarConnectedRef(o) } : { kind: "app", id: o.event_id, occurrence: o.occurrence_start };
+
+/**
+ * Opens a connected event named by `?open=<connection>:<calendar>:<event>` (search results
+ * link to the day with it) once, then drops the parameter.
+ */
+function useOpenParam(ready: boolean, open: (o: OpenEvent) => void) {
+  const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const raw = params.get("open");
+  useEffect(() => {
+    const ref = parseCalendarConnectedRef(raw);
+    if (!raw || !ready) return;
+    if (ref) open({ kind: "connected", ref });
+    const sp = new URLSearchParams(window.location.search);
+    sp.delete("open");
+    router.replace(`${pathname}?${sp.toString()}`, { scroll: false });
+  }, [raw, ready, open, router, pathname]);
 }
 
 /** Query parameters of a new-event link (`calendarNewEventLink`), dropped once it opens. */
@@ -113,11 +149,17 @@ export function CalendarScreen() {
   const from = ready ? calendarDayStart(days[0]!, zone) : null;
   const to = ready ? calendarDayStart(calendarAddDays(days[days.length - 1]!, 1), zone) : null;
   const range = useCalendarRange(from, to);
+  const sources = useCalendarSources();
+  const connected = useCalendarConnectedRange(from, to);
+  const [sourceFilter, setSourceFilter] = useState("all");
 
-  const [open, setOpen] = useState<{ id: string; occurrence: string | null } | null>(null);
+  const [open, setOpen] = useState<OpenEvent | null>(null);
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<{ o: CalendarOccurrence; startsAt: string; endsAt: string } | null>(null);
+  const [connectedOpen, setConnectedOpen] = useState(false);
   const update = useUpdateCalendarEvent();
+  const updateConnected = useUpdateCalendarConnectedEvent();
+  useOpenParam(ready && !settings.isPending, setOpen);
 
   const step = (dir: -1 | 1) => {
     if (view === "day") setDate(calendarAddDays(date, dir));
@@ -152,9 +194,24 @@ export function CalendarScreen() {
     if (o.recurring) setPendingMove({ o, startsAt, endsAt });
     else void commitMove(o, startsAt, endsAt, null);
   };
+
+  // A connected event moves on its platform (one occurrence, or the whole series).
+  const commitConnectedMove = async (o: CalendarConnectedOccurrence, startsAt: string, endsAt: string, scope: CalendarScope | null) => {
+    const product = sourceProductLabel(o.source.provider, o.source.product);
+    try {
+      await updateConnected.mutateAsync({
+        ref: calendarConnectedRef(o),
+        body: { starts_at: startsAt, ends_at: endsAt, all_day: false, timezone: o.timezone || zone, ...(scope === "all" ? { scope: "all" as const } : {}) },
+      });
+      toast.success(o.attendee_count > 0 ? `Moved in ${product}. It tells the guests.` : `Moved in ${product}`);
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't move the event."));
+    }
+  };
   useNewEventLink(ready && !settings.isPending, zone, setDialog);
 
   const commitMove = async (o: CalendarOccurrence, startsAt: string, endsAt: string, scope: CalendarScope | null) => {
+    if (isCalendarConnected(o)) return commitConnectedMove(o, startsAt, endsAt, scope);
     try {
       await update.mutateAsync({
         id: o.event_id,
@@ -170,12 +227,34 @@ export function CalendarScreen() {
     setOpen(null);
     setDialog({ mode: "edit", event: e });
   };
+  const onEditConnected = (e: CalendarConnectedEventDetail) => {
+    setOpen(null);
+    setDialog({ mode: "edit-connected", event: e });
+  };
 
-  const items = range.data?.items ?? [];
+  // The app's own events and the visible connected calendars' (hidden ones drop at once).
+  const hidden = useMemo(() => {
+    const out = new Set<string>();
+    for (const src of sources.data?.sources ?? []) for (const c of src.calendars) if (c.hidden) out.add(`${src.id}|${c.id}`);
+    return out;
+  }, [sources.data]);
+  const connectedItems = useMemo(
+    () => (connected.data?.items ?? []).filter((o) => !hidden.has(`${o.connection_id}|${o.calendar_id}`)),
+    [connected.data, hidden],
+  );
+  const allItems = useMemo(() => [...(range.data?.items ?? []), ...connectedItems], [range.data, connectedItems]);
+  const filterOptions = useMemo(
+    () => sourceFilterOptions({ appLabel: "Calendar", sources: (sources.data?.sources ?? []).filter((x) => x.type === "app" || x.status === "active") }),
+    [sources.data],
+  );
+  const items =
+    sourceFilter === "all" ? allItems : sourceFilter === "app" ? (range.data?.items ?? []) : connectedItems.filter((o) => o.connection_id === sourceFilter);
+  const connectedErrors = connected.data?.errors ?? [];
   const busy = range.data?.busy ?? [];
   const workingHours = settings.data?.working_hours ?? [];
 
   const headerMenu = [
+    ...(!wide ? [{ id: "connected", label: "Connected calendars", icon: CalendarCheck, onSelect: () => setConnectedOpen(true) }] : []),
     { id: "links", label: "Booking links", icon: Link2, onSelect: () => router.push("/calendar/links") },
     { id: "bookings", label: "Bookings", icon: ListChecks, onSelect: () => router.push("/calendar/bookings") },
     { id: "settings", label: "Calendar settings", icon: CalendarCog, onSelect: () => router.push("/settings/calendars") },
@@ -191,7 +270,7 @@ export function CalendarScreen() {
       zone={zone}
       weekStart={weekStart}
       items={items}
-      onOpen={(o) => setOpen({ id: o.event_id, occurrence: o.occurrence_start })}
+      onOpen={(o) => setOpen(openOf(o))}
       onDay={(d) => {
         setDate(d);
         setView("day");
@@ -199,7 +278,14 @@ export function CalendarScreen() {
       onCreate={(d) => newAt(calendarFromWall(d, 9 * 60, zone), calendarFromWall(d, 9 * 60 + 30, zone))}
     />
   ) : view === "agenda" ? (
-    <AgendaView date={date} days={AGENDA_DAYS} zone={zone} items={items} onOpen={(o) => setOpen({ id: o.event_id, occurrence: o.occurrence_start })} />
+    <AgendaView
+      date={date}
+      days={AGENDA_DAYS}
+      zone={zone}
+      items={items}
+      onOpen={(o) => setOpen(openOf(o))}
+      header={<SourceFilter options={filterOptions} value={sourceFilter} onChange={setSourceFilter} label="Show events from" />}
+    />
   ) : (
     <TimeGrid
       days={days}
@@ -209,7 +295,7 @@ export function CalendarScreen() {
       workingHours={workingHours}
       onCreate={(s, e) => newAt(s, e)}
       onCreateAllDay={(d) => setDialog({ mode: "new", startsAt: calendarDayStart(d, zone), endsAt: calendarDayStart(calendarAddDays(d, 1), zone), allDay: true })}
-      onOpen={(o) => setOpen({ id: o.event_id, occurrence: o.occurrence_start })}
+      onOpen={(o) => setOpen(openOf(o))}
       onMove={move}
     />
   );
@@ -232,6 +318,7 @@ export function CalendarScreen() {
             onPick={(d) => setDate(d)}
             marked={(d) => items.some((o) => o.start_date === d || o.starts_at.startsWith(d))}
           />
+          <ConnectedCalendars sources={sources.data} loading={sources.isPending} />
           {(subs.data?.items.length ?? 0) > 0 ? (
             <section className="flex flex-col gap-2" aria-label="Other calendars">
               <h2 className="type-label font-semibold text-fg-muted">Other calendars</h2>
@@ -315,18 +402,40 @@ export function CalendarScreen() {
           ) : null}
         </header>
         {range.data?.truncated ? <p className="border-b border-border px-3 py-2 type-caption text-fg-muted">Showing the first 2000 events in this range.</p> : null}
+        {connectedErrors.length > 0 ? (
+          <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-warning-soft px-3 py-2 type-caption text-warning-strong">
+            <span className="min-w-0 flex-1">
+              {(() => {
+                const src = sources.data?.sources.find((x) => x.id === connectedErrors[0]!.source_id);
+                const name = src ? `${sourceProductLabel(src.provider ?? "", src.product)} · ${src.account}` : "A connected calendar";
+                return `${name}: ${connectedErrors[0]!.message}`;
+              })()}
+            </span>
+            {connectedErrors[0]!.fix_url ? (
+              <Link href={connectedErrors[0]!.fix_url} className="font-semibold underline underline-offset-2">
+                Reconnect
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
         <div className={cn("flex min-h-0 flex-1 flex-col", range.isFetching && range.isPlaceholderData && "opacity-70 transition-opacity motion-reduce:transition-none")}>{body}</div>
       </section>
 
       <Sheet open={!!open} onOpenChange={(o) => !o && setOpen(null)} title="Event" size="md">
-        {open ? <EventDetailPanel id={open.id} occurrence={open.occurrence} onEdit={onEdit} onDeleted={() => setOpen(null)} /> : null}
+        {open?.kind === "app" ? <EventDetailPanel id={open.id} occurrence={open.occurrence} onEdit={onEdit} onDeleted={() => setOpen(null)} /> : null}
+        {open?.kind === "connected" ? <ConnectedEventPanel eventRef={open.ref} onEdit={onEditConnected} onDeleted={() => setOpen(null)} /> : null}
+      </Sheet>
+      <Sheet open={connectedOpen} onOpenChange={setConnectedOpen} title="Connected calendars" size="sm">
+        <ConnectedCalendars sources={sources.data} loading={sources.isPending} />
       </Sheet>
       {dialog ? <EventDialog target={dialog} zone={zone} onClose={() => setDialog(null)} /> : null}
       <ScopeDialog
+        key={pendingMove ? `${pendingMove.o.event_id}${isCalendarConnected(pendingMove.o)}` : "none"}
         open={!!pendingMove}
         onOpenChange={(o) => !o && setPendingMove(null)}
         title="Move recurring event"
         confirmLabel="Move"
+        allowFollowing={!pendingMove || !isCalendarConnected(pendingMove.o)}
         onConfirm={async (scope) => {
           if (pendingMove) await commitMove(pendingMove.o, pendingMove.startsAt, pendingMove.endsAt, scope);
           setPendingMove(null);

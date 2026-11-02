@@ -15,6 +15,15 @@ import type {
   ConnectorDisconnected,
   ConnectorList,
   ConnectorToolList,
+  ConnectorPlatformChange,
+  ConnectorPlatformConnectInput,
+  ConnectorPlatformDisconnected,
+  ConnectorPlatformFinished,
+  ConnectorPlatformList,
+  ConnectorPlatformSetup,
+  ConnectorPlatformTokenInput,
+  ConnectorPolicyInput,
+  ConnectorPolicyView,
 } from "./types";
 
 /** Query keys; `all()` invalidates everything connectors cache. */
@@ -25,7 +34,17 @@ export const connectorsKeys = {
   tools: (id: string) => ["connectors", "tools", id] as const,
   admin: () => ["connectors", "admin"] as const,
   adminList: () => ["connectors", "admin", "list"] as const,
+  adminPlatforms: () => ["connectors", "admin", "platforms"] as const,
+  platforms: (orgId?: string | null) => ["connectors", "platforms", orgId ?? ""] as const,
+  platformsAll: () => ["connectors", "platforms"] as const,
+  policy: (orgId: string) => ["connectors", "policy", orgId] as const,
 };
+
+/** Features that show connected sources cache them under their own keys; a change here refreshes them too. */
+function invalidateSources(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: connectorsKeys.platformsAll() });
+  void qc.invalidateQueries({ predicate: (q) => q.queryKey.some((k) => k === "sources") });
+}
 
 /** The catalog with your connection to each, and whether you may add your own servers. */
 export function useConnectors(options?: QueryOverrides<ConnectorList>): UseQueryResult<ConnectorList, ApiError> {
@@ -213,4 +232,135 @@ export function useCheckConnectorServer(): UseMutationResult<ConnectorCheckResul
   return useMutation<ConnectorCheckResult, ApiError, { server_url: string; auth_type: string; oauth_client_id?: string }>({
     mutationFn: (body) => ep.admin.check(body),
   });
+}
+
+// ---- connected platforms --------------------------------------------------------------
+
+/** Every platform with its capabilities, the workspace's policy (orgId) and your accounts. */
+export function useConnectorPlatforms(orgId?: string | null, options?: QueryOverrides<ConnectorPlatformList>): UseQueryResult<ConnectorPlatformList, ApiError> {
+  const ep = useEndpoints(connectorsEndpoints);
+  return useApiQuery(connectorsKeys.platforms(orgId), ({ signal }) => ep.platforms(orgId, { signal }), options);
+}
+
+/** Connect an account, or reconnect / grant more on one (`connection_id`). Open `authorize_url` when it comes back. */
+export function useConnectConnectorPlatform(): UseMutationResult<ConnectorPlatformChange, ApiError, ConnectorPlatformConnectInput & { provider: string }> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPlatformChange, ApiError, ConnectorPlatformConnectInput & { provider: string }>({
+    mutationFn: ({ provider, ...body }) => ep.connectPlatform(provider, body),
+    onSuccess: (res) => {
+      if (res.connection) invalidateSources(qc);
+    },
+  });
+}
+
+/** Connect with a personal or private token (checked against the platform first). */
+export function useConnectorPlatformToken(): UseMutationResult<ConnectorPlatformChange, ApiError, ConnectorPlatformTokenInput & { provider: string }> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPlatformChange, ApiError, ConnectorPlatformTokenInput & { provider: string }>({
+    mutationFn: ({ provider, ...body }) => ep.platformToken(provider, body),
+    onSettled: () => invalidateSources(qc),
+  });
+}
+
+/** Finish a platform sign-in with the `platform_finish` secret from the return URL. */
+export function useFinishConnectorPlatform(): UseMutationResult<ConnectorPlatformFinished, ApiError, { secret: string; orgId?: string | null }> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPlatformFinished, ApiError, { secret: string; orgId?: string | null }>({
+    mutationFn: ({ secret, orgId }) => ep.finishPlatform(secret, orgId),
+    onSettled: () => invalidateSources(qc),
+  });
+}
+
+/** Turn a capability on or off for one account. Turning on may answer with `authorize_url` (consent for the new scopes). */
+export function useSetConnectorPlatformCapability(): UseMutationResult<
+  ConnectorPlatformChange,
+  ApiError,
+  { connectionId: string; capability: string; enabled: boolean; client?: "web" | "mobile"; returnTo?: string; orgId?: string | null }
+> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  type Vars = { connectionId: string; capability: string; enabled: boolean; client?: "web" | "mobile"; returnTo?: string; orgId?: string | null };
+  return useMutation<ConnectorPlatformChange, ApiError, Vars, { prev: [readonly unknown[], ConnectorPlatformList | undefined][] }>({
+    mutationFn: ({ connectionId, capability, enabled, client, returnTo, orgId }) =>
+      ep.setPlatformCapability(connectionId, capability, {
+        enabled,
+        ...(client ? { client } : {}),
+        ...(returnTo ? { return_to: returnTo } : {}),
+        ...(orgId ? { org_id: orgId } : {}),
+      }),
+    onMutate: async ({ connectionId, capability, enabled }) => {
+      await qc.cancelQueries({ queryKey: connectorsKeys.platformsAll() });
+      const prev = qc.getQueriesData<ConnectorPlatformList>({ queryKey: connectorsKeys.platformsAll() });
+      if (!enabled) {
+        // Turning off never needs consent: show it at once.
+        qc.setQueriesData<ConnectorPlatformList>({ queryKey: connectorsKeys.platformsAll() }, (d) =>
+          d
+            ? {
+                ...d,
+                items: d.items.map((p) => ({
+                  ...p,
+                  connections: p.connections.map((c) =>
+                    c.id === connectionId ? { ...c, capabilities: c.capabilities.map((x) => (x.key === capability && x.state !== "blocked" ? { ...x, state: "off" as const } : x)) } : c,
+                  ),
+                })),
+              }
+            : d,
+        );
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.prev ?? []) qc.setQueryData(key, data);
+    },
+    onSuccess: (res) => {
+      if (res.connection) invalidateSources(qc);
+    },
+  });
+}
+
+/** Disconnect one account: our tokens go at once; the platform is asked to revoke them. */
+export function useDisconnectConnectorPlatform(): UseMutationResult<ConnectorPlatformDisconnected, ApiError, string> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPlatformDisconnected, ApiError, string>({
+    mutationFn: (id) => ep.disconnectPlatform(id),
+    onSettled: () => invalidateSources(qc),
+  });
+}
+
+/** A workspace's connection policy (every member may read it; owners and admins change it). */
+export function useConnectorPolicy(orgId: string | null | undefined, options?: QueryOverrides<ConnectorPolicyView>): UseQueryResult<ConnectorPolicyView, ApiError> {
+  const ep = useEndpoints(connectorsEndpoints);
+  return useApiQuery(connectorsKeys.policy(orgId ?? ""), ({ signal }) => ep.policy(orgId ?? "", { signal }), options, !!orgId);
+}
+
+/** Change a workspace's decision for one platform (`*` = the default). Audited. */
+export function useSetConnectorPolicy(): UseMutationResult<ConnectorPolicyView, ApiError, { orgId: string; provider: string; body: ConnectorPolicyInput }> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPolicyView, ApiError, { orgId: string; provider: string; body: ConnectorPolicyInput }>({
+    mutationFn: ({ orgId, provider, body }) => ep.setPolicy(orgId, provider, body),
+    onSuccess: (v, { orgId }) => qc.setQueryData(connectorsKeys.policy(orgId), v),
+    onSettled: () => invalidateSources(qc),
+  });
+}
+
+/** Put a platform back on the workspace default. Audited. */
+export function useResetConnectorPolicy(): UseMutationResult<ConnectorPolicyView, ApiError, { orgId: string; provider: string }> {
+  const ep = useEndpoints(connectorsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ConnectorPolicyView, ApiError, { orgId: string; provider: string }>({
+    mutationFn: ({ orgId, provider }) => ep.resetPolicy(orgId, provider),
+    onSuccess: (v, { orgId }) => qc.setQueryData(connectorsKeys.policy(orgId), v),
+    onSettled: () => invalidateSources(qc),
+  });
+}
+
+/** Staff: each platform's setup on this server. */
+export function useAdminConnectorPlatforms(options?: QueryOverrides<{ items: ConnectorPlatformSetup[]; next_cursor: string | null }>): UseQueryResult<{ items: ConnectorPlatformSetup[]; next_cursor: string | null }, ApiError> {
+  const ep = useEndpoints(connectorsEndpoints);
+  return useApiQuery(connectorsKeys.adminPlatforms(), ({ signal }) => ep.admin.platforms({ signal }), options);
 }

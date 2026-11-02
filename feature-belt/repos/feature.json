@@ -1,8 +1,8 @@
 {
   "name": "repos",
   "title": "Repositories",
-  "version": "1.0.3",
-  "summary": "Git repositories in the drive: clone, pull and push over HTTPS with personal git credentials, browse and edit code in the app, branches with protection, and pull requests with line comments, reviews and merges; agents work through branch \u2192 commit \u2192 pull request.",
+  "version": "1.1.0",
+  "summary": "Git repositories in the drive: clone, pull and push over HTTPS with personal git credentials, browse and edit code in the app, branches with protection, and pull requests with line comments, reviews and merges; connected GitHub and GitLab repositories open in the same screens; agents work through branch \u2192 commit \u2192 pull request.",
   "requires": [
     "files",
     "access",
@@ -159,6 +159,7 @@
     }
   },
   "stitch": [
-    "Mount REPOS_DIR on a persistent volume and run one instance for /git and repository writes (repositories live on that disk); install git 2.38+ in the image."
+    "Mount REPOS_DIR on a persistent volume and run one instance for /git and repository writes (repositories live on that disk); install git 2.38+ in the image.",
+    "Connected repositories need the connectors feature (app.Connections) with GitHub and/or GitLab OAuth apps registered for this deployment; repos declares repos.github.read/write and repos.gitlab.read/write. Without it the Connected section and tools don't appear."
   ]
 }

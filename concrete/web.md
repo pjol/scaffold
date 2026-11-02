@@ -83,6 +83,17 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 - Copy follows writing.md: no subtitles (context in `info`), sentence case, numerals, verbs on buttons, errors say what to do. Use `APP_NAME`, never the literal.
 - Tokens only; check 375 px and 1440 px, light and dark, keyboard focus, reduced motion.
 
+## Connected sources
+
+Content from a person's connected platform account (shared `SourceRef` on rows, `FeatureSources` from `GET /v1/<feature>/sources`) uses the ui-web source kit; the app's own content carries no marker. Props are structural (shared types pass straight in):
+
+- `ProviderIcon {provider, product?, size?=16, title?, className?}`: the platform's mark (Simple Icons, CC0) in the current colour, a neutral monogram where no CC0 mark reads at that size (Microsoft, Salesforce, Zoom). Never add a logo file under another licence.
+- `SourceBadge {source, label?, showAccount?, iconOnly?, size?: "sm"|"md"}`: icon + product name; renders nothing for app rows, so put it on every row, card, record header and search hit. Accessible label "From Google Drive · sam@acme.com".
+- `SourceFilter {options, value, onChange, label?, size?}` with `sourceFilterOptions({appLabel, sources, counts?, groupBy?: "connection"|"provider"})` → ids `all`, `app`, a connection id or `provider:<id>`; one sideways-scrolling row, hidden when nothing is connected.
+- `ConnectPrompt {offers, returnTo?, title?, info?, linkAs?, onDismiss?}`: a quiet dashed card offering `ConnectionOffer`s (`withReturnTo` appends `return_to`); nothing when there are no offers. Use it in empty states and at the foot of lists, never as a banner.
+- `ConnectedSection {items, activeId?, onSelect?, linkAs?, addHref?, action?, loading?, title?="Connected"}` with `connectedSectionItems(sources, hrefFor?)`: the sidebar section after the app's own, one row per account ("Google Drive · sam@acme.com") with Reconnect (`fix_url`) or a lock (blocked).
+- Fixes go to `/settings/connections?capability=<key>&return_to=<path>` (`connectionFixPath`); show connection errors by code (`isConnectionErrorCode`). Where an app action can't apply to connected content, offer the platform's ("Manage sharing in Google Drive") in the ⋮ menu.
+
 ## Images
 
 `next/image` optimises only `images.remotePatterns`: Clerk (`img.clerk.com`, `images.clerk.dev`) and the public bucket (`NEXT_PUBLIC_S3_PUBLIC_URL`, the backend's `S3_PUBLIC_URL`). `src/lib/images.ts` mirrors that list and renders anything else `unoptimized` (development uploads from the API), so an unexpected host never breaks a page. Avatars go through `AppAvatar`; pass `eager` for above-the-fold ones. `qualities: [75]`.

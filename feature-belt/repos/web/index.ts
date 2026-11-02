@@ -16,3 +16,5 @@ export { RepoSettingsScreen, GitCredentialsScreen } from "./SettingsScreens";
 export { DiffView, type DiffViewProps } from "./DiffView";
 export { RepoMarkdown } from "./Markdown";
 export { reposNav, reposCredentialsSettings, reposHomeTile } from "./nav";
+export { RepoLinkScreen } from "./LinkScreen";
+export { ChecksList } from "./PullScreen";

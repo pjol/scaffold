@@ -6,7 +6,7 @@ export const searchEndpoints = (http: HttpClient) => ({
   search: (params: SearchParams, o?: CallOptions) =>
     http.get<SearchResponse>("/v1/search", {
       ...o,
-      query: { q: params.q, kinds: params.kinds?.length ? params.kinds.join(",") : undefined, limit: params.limit, org_id: params.orgId || undefined },
+      query: { q: params.q, kinds: params.kinds?.length ? params.kinds.join(",") : undefined, limit: params.limit, org_id: params.orgId || undefined, source: params.source || undefined },
     }),
 });
 

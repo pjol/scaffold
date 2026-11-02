@@ -32,16 +32,25 @@ func (s *Service) enqueueRevocation(ctx context.Context, q db.Querier, userID *u
 // enqueueRevocationID is enqueueRevocation returning the queued row (uuid.Nil
 // when nothing was queued).
 func (s *Service) enqueueRevocationID(ctx context.Context, q db.Querier, userID *uuid.UUID, endpoint string, client oauthClient, token, hint string) (uuid.UUID, error) {
+	return s.enqueueStyledRevocation(ctx, q, userID, endpoint, "rfc7009", client, token, hint)
+}
+
+// enqueueStyledRevocation queues one token with how to send it (style:
+// rfc7009 | github_grant | json_basic | path_delete; see revokeStyled).
+func (s *Service) enqueueStyledRevocation(ctx context.Context, q db.Querier, userID *uuid.UUID, endpoint, style string, client oauthClient, token, hint string) (uuid.UUID, error) {
 	if endpoint == "" || token == "" {
 		return uuid.Nil, nil
+	}
+	if style == "" {
+		style = "rfc7009"
 	}
 	id := uuid.New()
 	_, err := q.Exec(ctx, `
 		INSERT INTO connector_revocations (id, user_id, revocation_endpoint, client_id, client_secret_enc, token_auth_method,
-		  token_enc, token_type_hint)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		  token_enc, token_type_hint, style)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		id, userID, endpoint, client.ID, s.seal.seal(client.Secret, aadRevocation(id, "client_secret")), client.AuthMethod,
-		s.seal.seal(token, aadRevocation(id, "token")), hint)
+		s.seal.seal(token, aadRevocation(id, "token")), hint, style)
 	return id, err
 }
 
@@ -157,15 +166,15 @@ func (s *Service) revokeDue(ctx context.Context, userID *uuid.UUID) (int, error)
 func (s *Service) revokeOne(ctx context.Context, userID *uuid.UUID, only []uuid.UUID) (tried, ok bool, err error) {
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		var id uuid.UUID
-		var endpoint, clientID, method, hint string
+		var endpoint, clientID, method, hint, style string
 		var secretEnc, tokenEnc []byte
 		var attempts int
 		e := tx.QueryRow(ctx, `
-			SELECT id, revocation_endpoint, client_id, client_secret_enc, token_auth_method, token_enc, token_type_hint, attempts
+			SELECT id, revocation_endpoint, client_id, client_secret_enc, token_auth_method, token_enc, token_type_hint, attempts, style
 			FROM connector_revocations
 			WHERE next_attempt_at <= now() AND ($1::uuid IS NULL OR user_id = $1) AND ($2::uuid[] IS NULL OR id = ANY($2))
 			ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED`, userID, only,
-		).Scan(&id, &endpoint, &clientID, &secretEnc, &method, &tokenEnc, &hint, &attempts)
+		).Scan(&id, &endpoint, &clientID, &secretEnc, &method, &tokenEnc, &hint, &attempts, &style)
 		if isNoRows(e) {
 			return nil
 		}
@@ -181,7 +190,7 @@ func (s *Service) revokeOne(ctx context.Context, userID *uuid.UUID, only []uuid.
 			return e
 		}
 		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		rerr := s.revokeToken(rctx, endpoint, oauthClient{ID: clientID, Secret: secret, AuthMethod: method}, token, hint)
+		rerr := s.revokeStyled(rctx, style, endpoint, oauthClient{ID: clientID, Secret: secret, AuthMethod: method}, token, hint)
 		cancel()
 		if rerr == nil || attempts+1 >= maxRevokeAttempts {
 			if rerr != nil {

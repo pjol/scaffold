@@ -1,7 +1,8 @@
 import type { AccessLevel } from "../access/types";
+import type { FeatureSource, FeatureSources, SourceProvider, SourceRef } from "../sources";
 
-/** Where an item lives: a person's My drive, or an org-owned shared folder tree. */
-export type FilesDrive = "my" | "shared";
+/** Where an item lives: a person's My drive, an org-owned shared folder tree, or a connected platform. */
+export type FilesDrive = "my" | "shared" | "connected";
 
 /** Sections of an org's drive. */
 export type FilesSection = "my" | "shared" | "shared_with_me" | "recent" | "starred" | "trash";
@@ -61,6 +62,136 @@ export interface FilesItem {
   link: string;
   /** Images, when the list asked for thumbnails (valid 15 minutes). */
   thumb_url: string | null;
+  /** Shortcuts (type "link"): what the shortcut points at on a connected platform. */
+  shortcut?: FilesShortcutInfo | null;
+  /** Rows from a connected platform carry their source; the app's own have none. */
+  source?: SourceRef | null;
+  /** "Google Docs", "Word document": the platform's kind, when it names one. */
+  kind_label?: string;
+}
+
+/** What a shortcut item points at. */
+export interface FilesShortcutInfo {
+  provider: SourceProvider;
+  /** drive | onedrive | sharepoint */
+  product: string;
+  mime_type: string;
+  folder: boolean;
+}
+
+/** A connected source in Files: the shared FeatureSource plus whether changes are allowed. */
+export interface FilesConnectedSource extends FeatureSource {
+  /** Products this account opens here: drive · onedrive, sharepoint. */
+  products?: string[];
+  /** The connection may change files (its write capability is granted). */
+  can_write: boolean;
+  /** Grants changes, when can_write is false. */
+  write_url?: string;
+}
+
+/** `GET /v1/files/sources`. */
+export interface FilesSources extends FeatureSources {
+  sources: FilesConnectedSource[];
+}
+
+/** A file or folder on a connected platform, in the FilesItem shape (rows, previews, details) plus where it lives. */
+export interface FilesConnectedItem extends FilesItem {
+  source: Extract<SourceRef, { type: "connected" }>;
+  connection_id: string;
+  /** The platform's id for it in this connection (Graph: "<drive>~<item>"). */
+  ref: string;
+  parent_ref: string | null;
+  /** The drive it's in; moves stay inside it. */
+  drive_ref: string;
+  /** A platform document (Google Docs…): read-only preview here, edited on the platform. */
+  native: boolean;
+  /** Opens it on the platform. */
+  web_url: string;
+  /** The account may change it on the platform. */
+  can_edit: boolean;
+  /** The connection allows changes from here. */
+  can_write: boolean;
+}
+
+export interface FilesConnectedCrumb {
+  ref: string;
+  name: string;
+  link: string;
+}
+
+/** `GET /v1/files/connected/{connID}/items/{ref}`. */
+export interface FilesConnectedDetail {
+  item: FilesConnectedItem;
+  /** Top first, the drive itself included. */
+  path: FilesConnectedCrumb[];
+  source: FilesConnectedSource;
+}
+
+export type FilesConnectedDriveKind = "my_drive" | "shared_with_me" | "shared_drive" | "onedrive" | "library";
+
+/** A place to browse in one connection. */
+export interface FilesConnectedDrive {
+  ref: string;
+  name: string;
+  kind: FilesConnectedDriveKind;
+  /** SharePoint site of a library. */
+  site?: string;
+  link: string;
+}
+
+/** The platform's sharing summary, read-only. */
+export interface FilesConnectedSharing {
+  /** False when the platform doesn't show this account the sharing. */
+  available: boolean;
+  owner?: string;
+  link?: "anyone" | "organization" | "domain" | "";
+  link_role?: string;
+  domain?: string;
+  people: { name: string; role: "owner" | "edit" | "comment" | "view"; kind: string }[];
+  manage_url?: string;
+}
+
+export interface FilesConnectedText {
+  text: string;
+  truncated: boolean;
+  size: number;
+  version_id: string;
+}
+
+/** A resumable session on the platform: PUT chunks (Content-Range) to upload_url directly. */
+export interface FilesConnectedUploadTicket {
+  upload_url: string;
+  /** Bytes per chunk (Drive: × 256 KiB, Graph: × 320 KiB). */
+  chunk_size: number;
+  headers: Record<string, string>;
+  /** The new item's ref is ref_prefix + the id in the last answer. */
+  ref_prefix: string;
+  expires_at: string;
+  connection_id: string;
+  provider: SourceProvider;
+  /** Empty files are made at once. */
+  item?: FilesConnectedItem;
+}
+
+/** What a shortcut opens for you, checked live with your own connection. */
+export interface FilesShortcutTarget {
+  status: "ok" | "not_connected" | "no_access" | "needs_reauth" | "blocked" | "unavailable";
+  provider: SourceProvider;
+  product: string;
+  product_label: string;
+  name: string;
+  mime_type: string;
+  folder: boolean;
+  kind_label?: string;
+  connection_id?: string;
+  account?: string;
+  ref?: string;
+  /** App path when status is ok. */
+  link?: string;
+  connect_url?: string;
+  /** no_access: ask for access on the platform. */
+  web_url?: string;
+  message: string;
 }
 
 export interface FilesCrumb {
@@ -266,6 +397,19 @@ export interface FilesAdminPublicItem {
 
 /** Access resource kind of every drive item. */
 export const FILES_KIND = "files.item";
+
+/** Agent-scope kind of an item on a connected platform ("<connection id>:<platform id>"). */
+export const FILES_EXTERNAL_KIND = "files.external";
+
+/** Capabilities Files declares (Settings → Connections). */
+export const FILES_CAPABILITIES = {
+  googleDrive: "files.google.drive",
+  googleDriveWrite: "files.google.drive.write",
+  oneDrive: "files.microsoft.onedrive",
+  oneDriveWrite: "files.microsoft.onedrive.write",
+  sharePoint: "files.microsoft.sharepoint",
+  sharePointWrite: "files.microsoft.sharepoint.write",
+} as const;
 
 /** Org permission that lets members create top-level shared folders. */
 export const FILES_PERMISSION_CREATE_SHARED = "files.create_shared_folders";

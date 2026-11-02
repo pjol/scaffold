@@ -204,6 +204,12 @@ func (s *Service) deliver(ctx context.Context, kind string, payload []byte) erro
 			return nil
 		}
 		return c.Cancel(ctx, p.ID)
+	case "connected_event":
+		var op connectedOp
+		if err := json.Unmarshal(payload, &op); err != nil || op.ConnectionID == "" || op.EventID == "" {
+			return nil
+		}
+		return s.deliverConnected(ctx, op)
 	}
 	return nil
 }

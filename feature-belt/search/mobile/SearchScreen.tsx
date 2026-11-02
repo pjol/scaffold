@@ -4,18 +4,21 @@ import {
   pushRecentSearch,
   SEARCH_MIN_QUERY_CHARS,
   searchResultContext,
+  searchSourceOptions,
+  sourceLabel,
   unansweredSearchProviders,
   useDebouncedValue,
   useSearch,
   useSearchScope,
   type SearchResult,
 } from "@scaffoldapp/shared";
-import { Banner, Button, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Screen, SkeletonRow, Text, ToggleChip, usePressScale, useTheme } from "@scaffoldapp/ui-native";
+import { Banner, Button, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Screen, SkeletonRow, SourceBadge, SourceFilter, Text, ToggleChip, usePressScale, useTheme } from "@scaffoldapp/ui-native";
 import { router, type Href } from "expo-router";
 import { Clock, Search, SearchX, X } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated from "react-native-reanimated";
+import { appName } from "@/lib/version";
 import { userStorage } from "@/lib/storage";
 import { searchIcon } from "./icons";
 
@@ -47,7 +50,9 @@ export function SearchScreen() {
   const scope = useSearchScope();
   const [everywhere, setEverywhere] = useState(false);
   const orgId = scope && !everywhere ? scope.id : undefined;
-  const res = useSearch({ q, limit: 40, orgId }, { enabled: searchable });
+  const [source, setSource] = useState("all");
+  const res = useSearch({ q, limit: 40, orgId, ...(source !== "all" ? { source } : {}) }, { enabled: searchable });
+  const sourceOptions = searchSourceOptions(res.data?.sources, appName());
   const groups = res.data && searchable ? groupSearchResults(res.data.items) : [];
   const unanswered = res.data ? unansweredSearchProviders(res.data.providers) : [];
 
@@ -88,6 +93,7 @@ export function SearchScreen() {
             </ToggleChip>
           </View>
         ) : null}
+        {searchable ? <SourceFilter options={sourceOptions} value={source} onChange={setSource} style={{ marginHorizontal: -s[4] }} /> : null}
       </View>
 
       {text.trim().length < SEARCH_MIN_QUERY_CHARS ? (
@@ -134,7 +140,11 @@ export function SearchScreen() {
               icon={SearchX}
               title={`No results for “${q}”`}
               action={
-                scope && !everywhere ? (
+                source !== "all" ? (
+                  <Button variant="secondary" onPress={() => setSource("all")}>
+                    Search every source
+                  </Button>
+                ) : scope && !everywhere ? (
                   <Button variant="secondary" onPress={() => setEverywhere(true)}>
                     {`Search ${scope.allLabel.charAt(0).toLowerCase() + scope.allLabel.slice(1)}`}
                   </Button>
@@ -163,7 +173,7 @@ function ResultRow({ item, where, onPress }: { item: SearchResult; where: string
   const Icon = searchIcon(item.icon, item.kind);
   const sub = [where, item.snippet].filter(Boolean).join(" · ");
   return (
-    <Pressable onPress={onPress} onPressIn={press.onPressIn} onPressOut={press.onPressOut} accessibilityRole="link" accessibilityLabel={[item.title, where, item.snippet].filter(Boolean).join(". ")}>
+    <Pressable onPress={onPress} onPressIn={press.onPressIn} onPressOut={press.onPressOut} accessibilityRole="link" accessibilityLabel={[item.title, where, item.snippet, item.source?.type === "connected" ? sourceLabel(item.source, "") : ""].filter(Boolean).join(". ")}>
       <Animated.View style={[{ flexDirection: "row", alignItems: "center", gap: s[3], minHeight: theme.tap.lg, paddingVertical: s[2], paddingHorizontal: s[4] }, press.style]}>
         <Icon size={20} color={theme.colors.textMuted} />
         <View style={{ flex: 1, gap: s[1] }}>
@@ -175,6 +185,7 @@ function ResultRow({ item, where, onPress }: { item: SearchResult; where: string
               {sub}
             </Text>
           ) : null}
+          <SourceBadge source={item.source} />
         </View>
         <Text role="caption" tone="subtle">
           {ago(item.at)}

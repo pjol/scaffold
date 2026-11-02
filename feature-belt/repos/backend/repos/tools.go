@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -32,7 +33,7 @@ const (
 	toolWorkflow     = "Workflow for changing code: (1) read with repos_read_tree, repos_read_file and repos_search_code; (2) repos_commit_files to a new or existing feature branch (never the default or a protected branch), optionally opening a pull request in the same call; (3) or repos_open_pull_request afterwards. People review and merge pull requests themselves."
 )
 
-var repoIDProp = `"repo_id":{"type":"string","format":"uuid","description":"The repository (from repos_list)."}`
+var repoIDProp = `"repo_id":{"type":"string","description":"The repository's id from repos_list: a UUID for this app's own, or a connected GitHub/GitLab id (github~…, gitlab~…)."}`
 
 func schema(props, required string) json.RawMessage {
 	req := ""
@@ -78,20 +79,41 @@ func (s *Service) toolRepo(ctx context.Context, caller *auth.Identity, id uuid.U
 	return s.repoFor(ctx, caller.UserID, id, min)
 }
 
-// Tools lists the repos tools.
+// Tools lists the repos tools: the read tools also take connected
+// repositories (withConnected), and each connected platform adds its own
+// write tools (externalTools).
 func (s *Service) Tools() []app.Tool {
+	connected := map[string]func(context.Context, *auth.Identity, RepoSource, *remoteRepo, json.RawMessage) (any, error){
+		"repos_read_tree": s.xToolTree, "repos_read_file": s.xToolFile, "repos_search_code": s.xToolSearch, "repos_log": s.xToolLog,
+		"repos_diff": s.xToolDiff, "repos_list_pull_requests": s.xToolPulls, "repos_read_pull_request": s.xToolPull,
+	}
+	tools := s.appTools()
+	for i, t := range tools {
+		if x, ok := connected[t.Name]; ok {
+			tools[i] = s.withConnected(t, x)
+		}
+	}
+	if s.connections() == nil {
+		return tools
+	}
+	return append(append(tools, s.externalTools(ProviderGitHub)...), s.externalTools(ProviderGitLab)...)
+}
+
+func (s *Service) appTools() []app.Tool {
 	return []app.Tool{
 		{
-			Name:        "repos_list",
-			Description: "List git repositories the user can open, most recently changed first, with their default branch and open pull requests. Filter by name with query. " + toolWorkflow,
-			InputSchema: schema(`"query":{"type":"string"},"org_id":{"type":"string","format":"uuid"},"limit":{"type":"integer","minimum":1,"maximum":50}`, ""),
+			Name: "repos_list",
+			Description: "List git repositories the user can open, most recently changed first, with their default branch: this app's own and, from connected GitHub and GitLab accounts, theirs (rows carry source). " +
+				"source narrows it: \"app\", \"connected\", \"github\", \"gitlab\" or a connection id. Filter by name with query. " + toolWorkflow,
+			InputSchema: schema(`"query":{"type":"string"},"org_id":{"type":"string","format":"uuid"},"source":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":50}`, ""),
 			ReadOnly:    true,
 			Target:      func(json.RawMessage) (string, string) { return RepoKind, "" },
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					Query string     `json:"query"`
-					OrgID *uuid.UUID `json:"org_id"`
-					Limit int        `json:"limit"`
+					Query  string     `json:"query"`
+					OrgID  *uuid.UUID `json:"org_id"`
+					Source string     `json:"source"`
+					Limit  int        `json:"limit"`
 				}
 				if err := decodeTool(input, &in); err != nil {
 					return nil, err
@@ -99,17 +121,40 @@ func (s *Service) Tools() []app.Tool {
 				if in.Limit <= 0 || in.Limit > 50 {
 					in.Limit = 25
 				}
-				list, err := s.visibleRepos(ctx, caller.UserID, in.OrgID, in.Query, nil, in.Limit)
-				if err != nil {
-					return nil, err
-				}
 				type row struct {
-					RepoSummary
-					Link string `json:"link"`
+					ID            string     `json:"id"`
+					Name          string     `json:"name"`
+					FullName      string     `json:"full_name,omitempty"`
+					Description   string     `json:"description"`
+					DefaultBranch string     `json:"default_branch"`
+					OpenPulls     int        `json:"open_pulls,omitempty"`
+					MyLevel       string     `json:"my_level"`
+					PushedAt      *time.Time `json:"pushed_at"`
+					Link          string     `json:"link"`
+					Source        any        `json:"source,omitempty"`
 				}
-				out := make([]row, 0, len(list))
-				for _, r := range list {
-					out = append(out, row{RepoSummary: r, Link: "/repos/" + r.ID.String()})
+				out := []row{}
+				if in.Source == "" || in.Source == "app" {
+					if s.git != nil && s.gitProblem == "" {
+						list, err := s.visibleRepos(ctx, caller.UserID, in.OrgID, in.Query, nil, in.Limit)
+						if err != nil {
+							return nil, err
+						}
+						for _, r := range list {
+							out = append(out, row{ID: r.ID.String(), Name: r.Name, Description: r.Description, DefaultBranch: r.DefaultBranch, OpenPulls: r.OpenPulls,
+								MyLevel: r.MyLevel, PushedAt: r.PushedAt, Link: "/repos/" + r.ID.String()})
+						}
+					}
+				}
+				if in.Source != "app" {
+					list, err := s.connectedRepoRows(ctx, caller, in.Source, in.Query, in.Limit)
+					if err != nil {
+						return nil, err
+					}
+					for _, r := range list {
+						out = append(out, row{ID: r.ID, Name: r.Name, FullName: r.FullName, Description: r.Description, DefaultBranch: r.DefaultBranch,
+							MyLevel: r.MyLevel, PushedAt: r.PushedAt, Link: "/repos/" + r.ID, Source: r.Source})
+					}
 				}
 				return map[string]any{"repositories": out}, nil
 			},

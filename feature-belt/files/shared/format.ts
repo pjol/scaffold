@@ -1,4 +1,4 @@
-import type { FilesItem, FilesPreview, FilesSection } from "./types";
+import type { FilesConnectedItem, FilesItem, FilesPreview, FilesSection } from "./types";
 
 /** Drive sections in display order, with their labels. */
 export const FILES_SECTIONS: readonly { id: FilesSection; label: string }[] = [
@@ -44,7 +44,8 @@ const PREVIEW_LABEL: Record<string, string> = {
 };
 
 /** The kind of an item in a word ("Folder", "PDF", "Repository"). */
-export function filesKindLabel(item: Pick<FilesItem, "preview" | "type_info" | "name">): string {
+export function filesKindLabel(item: Pick<FilesItem, "preview" | "type_info" | "name"> & { kind_label?: string | undefined }): string {
+  if (item.kind_label) return item.kind_label;
   if (item.type_info) return item.type_info.title;
   if (item.preview === "office") {
     const ext = /\.([a-z0-9]+)$/i.exec(item.name)?.[1]?.toLowerCase();
@@ -120,4 +121,14 @@ export function filesSplitPath(relativePath: string): { folders: string[]; name:
   const parts = relativePath.split("/").filter((p) => p !== "" && p !== "." && p !== "..");
   const name = parts.pop() ?? "";
   return { folders: parts, name };
+}
+
+/** True for an item from a connected platform (Google Drive, OneDrive, SharePoint). */
+export function filesIsConnected(item: Pick<FilesItem, "source"> | null | undefined): item is FilesConnectedItem {
+  return !!item && item.source?.type === "connected";
+}
+
+/** The app path of a connected item or folder: /files/c/<connection>/<ref>. */
+export function filesConnectedPath(connId: string, ref?: string | null): string {
+  return ref ? `/files/c/${encodeURIComponent(connId)}/${encodeURIComponent(ref)}` : `/files/c/${encodeURIComponent(connId)}`;
 }

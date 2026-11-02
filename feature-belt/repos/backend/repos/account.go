@@ -28,6 +28,7 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`UPDATE repos_pulls SET closed_by = NULL WHERE closed_by = $1`,
 		`UPDATE repos_pull_events SET actor_id = NULL WHERE actor_id = $1`,
 		`UPDATE repos_repos SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE repos_links SET created_by = NULL WHERE created_by = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -79,12 +80,19 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		Line      *int      `json:"line"`
 		CreatedAt time.Time `json:"created_at"`
 	}
+	type link struct {
+		Provider  string    `json:"provider"`
+		WebBase   string    `json:"web_base"`
+		Path      string    `json:"path"`
+		CreatedAt time.Time `json:"created_at"`
+	}
 	out := struct {
 		Credentials  []credential `json:"git_credentials"`
 		Repositories []repo       `json:"repositories_created"`
 		Pulls        []pull       `json:"pull_requests"`
 		Reviews      []review     `json:"reviews"`
 		Comments     []comment    `json:"comments"`
+		Links        []link       `json:"connected_links"`
 	}{}
 	collect := func(sql string, dst any, scan func(pgx.Rows) error) error {
 		rows, err := s.d.Pool.Query(ctx, sql, userID)
@@ -142,6 +150,15 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 			var x comment
 			err := r.Scan(&x.RepoID, &x.Number, &x.Body, &x.Path, &x.Line, &x.CreatedAt)
 			out.Comments = append(out.Comments, x)
+			return err
+		}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT provider, web_base, path, created_at FROM repos_links WHERE created_by = $1 ORDER BY created_at`, nil,
+		func(r pgx.Rows) error {
+			var x link
+			err := r.Scan(&x.Provider, &x.WebBase, &x.Path, &x.CreatedAt)
+			out.Links = append(out.Links, x)
 			return err
 		}); err != nil {
 		return nil, err

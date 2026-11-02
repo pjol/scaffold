@@ -5,6 +5,11 @@ import type {
   DocsBlock,
   DocsComment,
   DocsCommentRequest,
+  DocsConnectedComment,
+  DocsConnectedItem,
+  DocsConnectedList,
+  DocsConnectedPageDetail,
+  DocsConnectedSources,
   DocsCreatePageRequest,
   DocsCreateRowRequest,
   DocsFile,
@@ -18,6 +23,8 @@ import type {
   DocsProperty,
   DocsPublicPage,
   DocsRefs,
+  DocsResolvedLink,
+  DocsRow,
   DocsRowPage,
   DocsRowsParams,
   DocsRowValuesRequest,
@@ -26,6 +33,7 @@ import type {
   DocsSnapshot,
   DocsSyncResult,
   DocsUpdatePageRequest,
+  DocsValue,
   DocsView,
   DocsViewer,
   DocsViewRequest,
@@ -47,6 +55,7 @@ export function docsEndpoints(http: HttpClient) {
   const D = "/v1/docs";
   const org = (id: string) => `${D}/orgs/${seg(id)}`;
   const page = (id: string) => `${D}/pages/${seg(id)}`;
+  const conn = (id: string) => `${D}/connected/${seg(id)}`;
   return {
     // ---- workspace
     sidebar: (orgId: string, o?: CallOptions) => http.get<DocsSidebar>(`${org(orgId)}/sidebar`, o),
@@ -113,6 +122,38 @@ export function docsEndpoints(http: HttpClient) {
     createView: (dbId: string, body: DocsViewRequest & { type: DocsView["type"] }, o?: CallOptions) => http.post<DocsView>(`${D}/databases/${seg(dbId)}/views`, body, o),
     updateView: (viewId: string, body: DocsViewRequest, o?: CallOptions) => http.patch<DocsView>(`${D}/views/${seg(viewId)}`, body, o),
     deleteView: (viewId: string, o?: CallOptions) => http.delete<void>(`${D}/views/${seg(viewId)}`, o),
+
+    // ---- connected platforms (Notion, Google Docs), live with the caller's own accounts
+    /** The app's own pages, each connected account, and what could still be connected (`FeatureSources`). */
+    sources: (orgId?: string | null, o?: CallOptions) => http.get<DocsConnectedSources>(`${D}/sources`, { ...o, query: { org_id: orgId || undefined } }),
+    /** A level of a connection's tree: the roots (Notion: pages shared with the app; Google: `section` recent or shared), or a page's subpages. */
+    connectedTree: (connId: string, p: { parent?: string; section?: "recent" | "shared"; cursor?: string; orgId?: string | null } = {}, o?: CallOptions) =>
+      http.get<DocsConnectedList>(`${conn(connId)}/tree`, { ...o, query: { parent: p.parent || undefined, section: p.section, cursor: p.cursor, org_id: p.orgId || undefined } }),
+    connectedSearch: (connId: string, q: string, p: { cursor?: string; orgId?: string | null } = {}, o?: CallOptions) =>
+      http.get<DocsConnectedList>(`${conn(connId)}/search`, { ...o, query: { q, cursor: p.cursor, org_id: p.orgId || undefined } }),
+    connectedPage: (connId: string, ref: string, orgId?: string | null, o?: CallOptions) =>
+      http.get<DocsConnectedPageDetail>(`${conn(connId)}/pages/${seg(ref)}`, { ...o, query: { org_id: orgId || undefined } }),
+    connectedOps: (connId: string, ref: string, body: { session_id: string; client_id: string; ops: DocsOp[] }, orgId?: string | null, o?: CallOptions) =>
+      http.post<DocsOpsResult>(`${conn(connId)}/pages/${seg(ref)}/ops`, body, { ...o, query: { org_id: orgId || undefined } }),
+    connectedSync: (connId: string, ref: string, sessionId: string, orgId?: string | null, o?: CallOptions) =>
+      http.get<DocsSyncResult>(`${conn(connId)}/pages/${seg(ref)}/sync`, { ...o, query: { session_id: sessionId, org_id: orgId || undefined } }),
+    connectedRename: (connId: string, ref: string, title: string, o?: CallOptions) => http.patch<{ title: string }>(`${conn(connId)}/pages/${seg(ref)}`, { title }, o),
+    connectedCreatePage: (connId: string, body: { parent_ref?: string; title: string }, o?: CallOptions) => http.post<DocsConnectedItem>(`${conn(connId)}/pages`, body, o),
+    connectedRows: (connId: string, dbRef: string, params: DocsRowsParams = {}, o?: CallOptions) =>
+      http.get<DocsRowPage>(`${conn(connId)}/databases/${seg(dbRef)}/rows`, { ...o, query: rowsQuery(params) }),
+    connectedCreateRow: (connId: string, dbRef: string, body: { title?: string; values?: Record<string, DocsValue> }, o?: CallOptions) =>
+      http.post<DocsRow>(`${conn(connId)}/databases/${seg(dbRef)}/rows`, body, o),
+    connectedSetRow: (connId: string, rowRef: string, body: { title?: string; values?: Record<string, DocsValue> }, o?: CallOptions) =>
+      http.patch<DocsRow>(`${conn(connId)}/rows/${seg(rowRef)}`, body, o),
+    connectedComments: (connId: string, ref: string, o?: CallOptions) => http.get<{ items: DocsConnectedComment[] }>(`${conn(connId)}/pages/${seg(ref)}/comments`, o),
+    connectedAddComment: (connId: string, ref: string, body: { body: DocsCommentRequest["body"]; thread_id?: string }, o?: CallOptions) =>
+      http.post<DocsConnectedComment>(`${conn(connId)}/pages/${seg(ref)}/comments`, body, o),
+    /** Copy into Docs: a new page in the org with the connected page's content. */
+    connectedCopy: (connId: string, ref: string, body: { org_id: string; parent_id?: string | null }, o?: CallOptions) =>
+      http.post<DocsPage>(`${conn(connId)}/pages/${seg(ref)}/copy`, body, o),
+    /** A connected-page block, as the caller sees it with their own connection. */
+    resolveConnected: (p: { provider: string; ref: string; account_id?: string; org_id?: string | null }, o?: CallOptions) =>
+      http.get<DocsResolvedLink>(`${D}/connected/resolve`, { ...o, query: { provider: p.provider, ref: p.ref, account_id: p.account_id || undefined, org_id: p.org_id || undefined } }),
 
     // ---- public (no account)
     publicPage: (token: string, pageId?: string, o?: CallOptions) =>

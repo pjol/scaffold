@@ -32,6 +32,7 @@ import (
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/jobs"
+	"scaffoldapp/backend/internal/orgs"
 )
 
 // appName is what authorization servers show on their consent screen.
@@ -68,6 +69,12 @@ type Service struct {
 
 	tools     *toolCache
 	refreshMu sync.Map // connection id → *sync.Mutex (refresh one at a time per instance)
+
+	// Connected platforms (app.Connections).
+	providers     map[string]*provider
+	providerOrder []string
+	platformBase  http.RoundTripper // guarded transport, no body cap (platformTransport caps by mode)
+	warned        sync.Map
 }
 
 // New reads CONNECTORS_* settings.
@@ -117,10 +124,12 @@ func New(d *app.Deps) *Service {
 	}
 	s.seal = seal
 
+	s.providers, s.providerOrder = loadProviders(dev)
 	s.guard = newGuard(s.allowPrivate, dev)
 	s.metaClient = s.guard.client(clientOptions{timeout: 10 * time.Second, maxBody: 1 << 20, maxRedirects: 3})
 	s.tokenClient = s.guard.client(clientOptions{timeout: 15 * time.Second, maxBody: 256 << 10})
 	s.mcpClient = s.guard.client(clientOptions{timeout: 60 * time.Second, maxBody: 4 << 20})
+	s.platformBase = s.guard.client(clientOptions{timeout: platformTimeout}).Transport
 	return s
 }
 
@@ -138,6 +147,17 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RequireActive, auth.RateLimit(20, 10*time.Minute)).Post("/connectors/{id}/connect", httpx.Handler(s.connect))
 	r.With(auth.RequireActive, auth.RateLimit(20, 10*time.Minute)).Post("/connectors/oauth/finish", httpx.Handler(s.finish))
 
+	// Connected platforms.
+	r.Get("/connectors/platforms", httpx.Handler(s.listPlatforms))
+	r.With(auth.RequireActive, auth.RateLimit(20, 10*time.Minute)).Post("/connectors/platforms/{provider}/connect", httpx.Handler(s.connectPlatform))
+	r.With(auth.RequireActive, auth.RateLimit(10, 10*time.Minute)).Post("/connectors/platforms/{provider}/token", httpx.Handler(s.connectPlatformToken))
+	r.With(auth.RequireActive, auth.RateLimit(20, 10*time.Minute)).Post("/connectors/platforms/finish", httpx.Handler(s.finishPlatform))
+	r.With(auth.RequireActive, auth.RateLimit(60, 10*time.Minute)).Put("/connectors/platform-connections/{id}/capabilities/{key}", httpx.Handler(s.setCapability))
+	r.Delete("/connectors/platform-connections/{id}", httpx.Handler(s.disconnectPlatform))
+	r.With(orgs.Require(orgs.RoleMember)).Get("/connectors/orgs/{orgID}/policy", httpx.Handler(s.getPolicy))
+	r.With(auth.RequireActive, orgs.Require(orgs.RoleAdmin), auth.RateLimit(120, time.Hour)).Put("/connectors/orgs/{orgID}/policy/{provider}", httpx.Handler(s.putPolicy))
+	r.With(auth.RequireActive, orgs.Require(orgs.RoleAdmin), auth.RateLimit(120, time.Hour)).Delete("/connectors/orgs/{orgID}/policy/{provider}", httpx.Handler(s.deletePolicy))
+
 	r.Get("/connectors/connections/{id}", httpx.Handler(s.getConnection))
 	r.With(auth.RequireActive).Patch("/connectors/connections/{id}", httpx.Handler(s.updateConnection))
 	r.With(auth.RequireActive).Put("/connectors/connections/{id}/tools/{tool}", httpx.Handler(s.setToolEnabled))
@@ -147,6 +167,7 @@ func (s *Service) MountUser(r chi.Router) {
 
 func (s *Service) MountAdmin(r chi.Router) {
 	r.Get("/connectors", httpx.Handler(s.adminList))
+	r.Get("/connectors/platforms", httpx.Handler(s.adminPlatforms))
 	r.Get("/connectors/{id}", httpx.Handler(s.adminGet))
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireAdminRole("admin"))
@@ -162,9 +183,16 @@ func (s *Service) Start(ctx context.Context) {
 	if s.devKey {
 		slog.Warn("connectors: CONNECTORS_ENCRYPTION_KEY unset; tokens are sealed with the public development key")
 	}
+	var ready []string
+	for _, id := range s.providerOrder {
+		if s.providers[id].oauthReady() {
+			ready = append(ready, id)
+		}
+	}
 	slog.Info("connectors: ready", "custom_servers", s.allowCustom, "private_networks", s.allowPrivate,
-		"metadata_document", s.canUseMetadataDocument())
+		"metadata_document", s.canUseMetadataDocument(), "platform_sign_in", ready)
 	go jobs.Every(ctx, s.d.Pool, "connectors.sweep_flows", 5*time.Minute, s.sweepFlows)
+	go jobs.Every(ctx, s.d.Pool, "connectors.sweep_platform_flows", 5*time.Minute, s.sweepPlatformFlows)
 	go jobs.Every(ctx, s.d.Pool, "connectors.revocations", time.Minute, s.processRevocations)
 	if len(s.seal.previousKeyIDs()) > 0 {
 		go jobs.Every(ctx, s.d.Pool, "connectors.reseal", time.Minute, s.resealPrevious)

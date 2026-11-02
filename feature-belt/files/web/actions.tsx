@@ -44,6 +44,7 @@ import { useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ResourceMenuAction } from "@/features/registry";
 import { ShareDialog } from "@/features/access";
+import { useFilesSaveToRows } from "./connected";
 import { filesTypeIcon } from "./icons";
 import { useFilesUploads } from "./uploads";
 
@@ -242,6 +243,7 @@ export function FilesActionsProvider({ orgId, children }: { orgId: string | null
 export function useFilesItemMenu(item: FilesItem | null | undefined, opts: { showOpen?: boolean; showDetails?: boolean } = {}): ResourceMenuAction[] {
   const a = useFilesActions();
   const drive = useFilesDrive(a.orgId);
+  const saveTo = useFilesSaveToRows(item);
   if (!item) return [];
   const edit = filesCanEdit(item);
   const rows: ResourceMenuAction[] = [];
@@ -251,12 +253,13 @@ export function useFilesItemMenu(item: FilesItem | null | undefined, opts: { sho
     if (filesCanManage(item)) add("delete", "Delete forever", X, () => a.remove([item]), true);
     return rows;
   }
-  if (opts.showOpen) add("open", item.type === "folder" ? "Open" : item.type === "file" ? "Open preview" : `Open ${item.type_info?.title.toLowerCase() ?? ""}`.trim(), item.type === "folder" ? FolderOpen : ExternalLink, () => a.open(item));
+  if (opts.showOpen) add("open", item.type === "folder" ? "Open" : item.type === "file" ? "Open preview" : item.shortcut ? "Open" : `Open ${item.type_info?.title.toLowerCase() ?? ""}`.trim(), item.type === "folder" ? FolderOpen : ExternalLink, () => a.open(item));
   if (item.type === "file" || item.type === "folder") add("download", item.type === "folder" ? "Download as zip" : "Download", Download, () => a.download([item]));
   if (item.type === "file" && edit) add("version", "Upload new version", Upload, () => a.newVersion(item));
   if (edit) add("rename", "Rename", Pencil, () => a.rename(item));
   if (edit) add("move", "Move", FolderInput, () => a.move([item]));
   if (item.type === "file" || item.type === "folder") add("copy", "Make a copy", Copy, () => a.copy(item));
+  rows.push(...saveTo);
   add("star", item.starred ? "Remove star" : "Star", item.starred ? StarOff : Star, () => a.star(item, !item.starred));
   if (opts.showDetails !== false) add("details", "Details and activity", Info, () => a.details(item));
   if (item.type === "folder" && edit) {
@@ -410,7 +413,25 @@ function NewFolderDialog({ orgId, target, onClose, onCreated }: { orgId: string;
 type PickerPlace = { kind: "root" } | { kind: "my" } | { kind: "shared" } | { kind: "folder"; folder: FilesItem; trail: FilesItem[] };
 
 /** Choose a destination folder: My drive, or any folder you can edit (shared folders included). */
-function FolderPickerDialog({ orgId, mode, items, onClose, onPick }: { orgId: string; mode: "move" | "copy"; items: FilesItem[]; onClose: () => void; onPick: (parentId: string | null) => Promise<unknown> }) {
+export function FolderPickerDialog({
+  orgId,
+  mode,
+  items,
+  title: titleOverride,
+  actionVerb,
+  onClose,
+  onPick,
+}: {
+  orgId: string;
+  mode: "move" | "copy";
+  items: FilesItem[];
+  /** Replaces "Move “x” to" / "Copy “x” to". */
+  title?: string;
+  /** Replaces "Move" / "Copy" on the button. */
+  actionVerb?: string;
+  onClose: () => void;
+  onPick: (parentId: string | null) => Promise<unknown>;
+}) {
   const [place, setPlace] = useState<PickerPlace>({ kind: "root" });
   const [busy, setBusy] = useState(false);
   const exclude = useMemo(() => new Set(items.map((i) => i.id)), [items]);
@@ -419,7 +440,8 @@ function FolderPickerDialog({ orgId, mode, items, onClose, onPick }: { orgId: st
   const children = useFilesChildren(place.kind === "folder" ? place.folder.id : null, { sort: "name" });
   const list = place.kind === "my" ? my : place.kind === "shared" ? shared : children;
   const folders = (list.data?.items ?? []).filter((i) => i.type === "folder");
-  const title = mode === "copy" ? `Copy “${items[0]?.name ?? ""}” to` : items.length === 1 ? `Move “${items[0]?.name ?? ""}” to` : `Move ${plural(items.length, "item")} to`;
+  const title = titleOverride ?? (mode === "copy" ? `Copy “${items[0]?.name ?? ""}” to` : items.length === 1 ? `Move “${items[0]?.name ?? ""}” to` : `Move ${plural(items.length, "item")} to`);
+  const verb = actionVerb ?? (mode === "copy" ? "Copy" : "Move");
   const here: { id: string | null; label: string; allowed: boolean } =
     place.kind === "my"
       ? { id: null, label: "My drive", allowed: true }
@@ -456,7 +478,7 @@ function FolderPickerDialog({ orgId, mode, items, onClose, onPick }: { orgId: st
             Cancel
           </Button>
           <Button onClick={() => void pick()} loading={busy} disabled={!here.allowed}>
-            {here.allowed ? `${mode === "copy" ? "Copy" : "Move"} to ${here.label}` : mode === "copy" ? "Copy here" : "Move here"}
+            {here.allowed ? `${verb} to ${here.label}` : `${verb} here`}
           </Button>
         </>
       }

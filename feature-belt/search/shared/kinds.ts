@@ -1,3 +1,4 @@
+import { sourceProductLabel } from "../sources";
 import type { SearchGroup, SearchResult } from "./types";
 
 /**
@@ -109,4 +110,27 @@ export function searchResultContext(item: SearchResult, scopedOrgId?: string | n
   if (!ctx || !scopedOrgId || !item.org_id || item.org_id.toLowerCase() !== scopedOrgId.toLowerCase()) return ctx;
   const at = ctx.indexOf(" · ");
   return at < 0 ? "" : ctx.slice(at + 3);
+}
+
+/**
+ * Source filter chips for search: All · <app> · one per connected platform that has hits,
+ * with counts. Ids are what `source` takes ("all" means no filter). Shaped for the
+ * ui kit's SourceFilter.
+ */
+export function searchSourceOptions(
+  sources: readonly { id: string; provider?: string; count: number }[] | undefined,
+  appLabel: string,
+): { id: string; label: string; provider?: string; count?: number }[] {
+  const list = sources ?? [];
+  const total = list.reduce((n, s) => n + s.count, 0);
+  const app = list.find((s) => s.id === "app");
+  const out: { id: string; label: string; provider?: string; count?: number }[] = [
+    { id: "all", label: "All", count: total },
+    { id: "app", label: appLabel, count: app?.count ?? 0 },
+  ];
+  for (const s of list) {
+    if (s.id === "app" || !s.provider) continue;
+    out.push({ id: s.id, label: sourceProductLabel(s.provider), provider: s.provider, count: s.count });
+  }
+  return out;
 }

@@ -6,9 +6,10 @@ import { Plug, Plus } from "lucide-react";
 import { useState } from "react";
 import { Table, TableSkeleton, TD, TH, THead, TR } from "@/components/admin/Table";
 import { LoadMore } from "@/components/shell/LoadMore";
-import { PageHeader } from "@/components/shell/PageHeader";
+import { PageHeader, Section } from "@/components/shell/PageHeader";
 import { ConnectorFormDialog } from "./ConnectorFormDialog";
 import { ConnectorIcon } from "./ConnectorIcon";
+import { PlatformSetupSection } from "./PlatformSetupCard";
 
 const POLICY_LABEL: Record<AdminConnector["write_policy"], string> = { disabled: "Never", off: "Off by default", on: "On by default" };
 
@@ -27,7 +28,12 @@ export function AdminConnectorsScreen() {
     <div className="flex flex-col gap-section">
       <PageHeader
         title="Connectors"
-        info="Services people can connect with their own account. The assistant then reaches what each person can reach there."
+        info="Platforms people connect once for every feature, and MCP servers whose tools the assistant can use. Each person reaches only what their own account can reach."
+      />
+      <PlatformSetupSection />
+      <Section
+        title="Assistant tools"
+        info="MCP servers people can connect with their own account; the assistant uses their tools as that person."
         action={
           canEdit ? (
             <Button size="sm" leftIcon={<Plus />} onClick={() => setEditing("new")}>
@@ -35,7 +41,7 @@ export function AdminConnectorsScreen() {
             </Button>
           ) : undefined
         }
-      />
+      >
       <Card padding="none">
         {list.isPending ? (
           <TableSkeleton rows={4} cols={5} />
@@ -112,6 +118,7 @@ export function AdminConnectorsScreen() {
           </>
         )}
       </Card>
+      </Section>
       <ConnectorFormDialog connector={editing === "new" ? null : editing} open={editing !== null} onOpenChange={(o) => !o && setEditing(null)} />
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 
-import { crmMainTotal, crmMoney, crmMoneyTotals, useCrmDashboard, useCrmPipelines, useCrmTasks, type CrmDashboard } from "@scaffoldapp/shared";
-import { Button, Card, EmptyState, ErrorState, InfoTip, Select, Skeleton, SkeletonGroup, cn } from "@scaffoldapp/ui-web";
+import { CRM_SOURCE_APP, crmMainTotal, crmMoney, crmMoneyTotals, useCrmDashboard, useCrmPipelines, useCrmTasks, type CrmDashboard } from "@scaffoldapp/shared";
+import { Button, Card, EmptyState, ErrorState, InfoTip, Select, Skeleton, SkeletonGroup, SourceBadge, cn } from "@scaffoldapp/ui-web";
 import { CheckSquare, Handshake } from "lucide-react";
 import Link from "next/link";
 import { Section } from "@/components/shell/PageHeader";
@@ -9,6 +9,7 @@ import { Table, TD, TH, THead, TR } from "@/components/admin/Table";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { PersonChip } from "./parts";
+import { CrmConnectedCard, CrmLoadError, CrmSourceBar, CrmSourceNotices, useCrmSource, type CrmSourceState } from "./Sources";
 import { TaskRow } from "./TasksScreen";
 
 /** /crm: open pipeline by stage, won and lost this month, activity this week, your tasks. */
@@ -22,15 +23,40 @@ export function CrmDashboardScreen() {
 
 function Dashboard() {
   const { orgId, settings } = useCrm();
-  const pipelines = useCrmPipelines(orgId);
+  const src = useCrmSource("dashboard");
+  const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
+  const pipelines = useCrmPipelines(orgId, sourceId);
   const [pipelineId, setPipelineId] = useUrlState("pipeline", "");
-  const dash = useCrmDashboard(orgId, pipelineId || undefined);
-  const main = settings.currency;
+  const dash = useCrmDashboard(orgId, pipelineId || undefined, sourceId);
+  const main = dash.data?.currency ?? settings.currency;
+  const sourceState: CrmSourceState = {
+    ...src,
+    setValue: (v) => {
+      src.setValue(v);
+      setPipelineId("");
+    },
+  };
+  const q = sourceId !== CRM_SOURCE_APP ? `?source=${encodeURIComponent(sourceId)}` : "";
 
-  if (dash.isError) return <ErrorState title="Couldn't load the dashboard" info={dash.error.message} onRetry={() => void dash.refetch()} retrying={dash.isRefetching} />;
+  const header = (
+    <>
+      <CrmSourceBar state={sourceState} scope="dashboard" />
+      <CrmSourceNotices state={src} />
+      <CrmConnectedCard activeId={src.connection?.id} onSelect={(id) => sourceState.setValue(id)} />
+    </>
+  );
+  if (dash.isError)
+    return (
+      <div className="flex flex-col gap-section">
+        {header}
+        <CrmLoadError state={src} error={dash.error} title="Couldn't load the dashboard" onRetry={() => void dash.refetch()} retrying={dash.isRefetching} />
+      </div>
+    );
   const d = dash.data;
   return (
     <div className="flex flex-col gap-section">
+      {header}
+      {d?.source ? <SourceBadge source={d.source} showAccount className="self-start" /> : null}
       {pipelines.data && pipelines.data.length > 1 ? (
         <Select
           aria-label="Pipeline"
@@ -77,11 +103,11 @@ function Dashboard() {
         </Stat>
       </div>
       <div className="grid gap-section lg:grid-cols-5">
-        <Section title="Open pipeline by stage" className="lg:col-span-3" action={<Button asChild variant="ghost" size="sm"><Link href="/crm/deals/board">Board</Link></Button>}>
+        <Section title="Open pipeline by stage" className="min-w-0 lg:col-span-3" action={<Button asChild variant="ghost" size="sm"><Link href={`/crm/deals/board${q}`}>Board</Link></Button>}>
           <Card padding="compact">{d ? <StageBars d={d} main={main} /> : <BarsSkeleton />}</Card>
         </Section>
-        <Section title="Due soon" className="lg:col-span-2" action={<Button asChild variant="ghost" size="sm"><Link href="/crm/tasks">All tasks</Link></Button>}>
-          <DueSoon />
+        <Section title="Due soon" className="min-w-0 lg:col-span-2" action={<Button asChild variant="ghost" size="sm"><Link href={`/crm/tasks${q}`}>All tasks</Link></Button>}>
+          <DueSoon source={sourceId} />
         </Section>
       </div>
       <Section title="Activity this week" info="Notes, calls, emails and meetings logged since Monday, and tasks completed, on records you can see.">
@@ -203,10 +229,10 @@ function BarsSkeleton() {
   );
 }
 
-function DueSoon() {
+function DueSoon({ source }: { source: string }) {
   const { orgId } = useCrm();
-  const overdue = useCrmTasks(orgId, "overdue");
-  const today = useCrmTasks(orgId, "today");
+  const overdue = useCrmTasks(orgId, "overdue", "me", undefined, source);
+  const today = useCrmTasks(orgId, "today", "me", undefined, source);
   const items = [...(overdue.data?.items ?? []), ...(today.data?.items ?? [])].slice(0, 6);
   if (overdue.isPending || today.isPending)
     return (

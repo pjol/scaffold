@@ -23,17 +23,21 @@ import (
 // Settings is GET /v1/crm/orgs/{orgID}/settings: the org's CRM settings and
 // what the caller may do.
 type Settings struct {
-	OrgID        uuid.UUID       `json:"org_id"`
-	RecordAccess string          `json:"record_access"`
-	Currency     string          `json:"currency"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	Can          map[string]bool `json:"can"` // manage_settings, export, import, delete
+	OrgID        uuid.UUID `json:"org_id"`
+	RecordAccess string    `json:"record_access"`
+	Currency     string    `json:"currency"`
+	// SourceMode: the app's own CRM (app), connected CRMs (connected) or
+	// both side by side; SourceProviders: the platforms people may connect.
+	SourceMode      string          `json:"source_mode"`
+	SourceProviders []string        `json:"source_providers"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	Can             map[string]bool `json:"can"` // manage_settings, export, import, delete
 }
 
 func (s *Service) loadSettings(ctx context.Context, q db.Querier, orgID, userID uuid.UUID) (*Settings, error) {
 	st := &Settings{OrgID: orgID, Can: map[string]bool{}}
-	if err := q.QueryRow(ctx, `SELECT record_access, currency, updated_at FROM crm_settings WHERE org_id = $1`, orgID).
-		Scan(&st.RecordAccess, &st.Currency, &st.UpdatedAt); err != nil {
+	if err := q.QueryRow(ctx, `SELECT record_access, currency, source_mode, source_providers, updated_at FROM crm_settings WHERE org_id = $1`, orgID).
+		Scan(&st.RecordAccess, &st.Currency, &st.SourceMode, &st.SourceProviders, &st.UpdatedAt); err != nil {
 		return nil, err
 	}
 	for key, perm := range map[string]string{"manage_settings": PermManageSettings, "export": PermExport, "import": PermImport, "delete": PermDelete} {
@@ -52,11 +56,13 @@ func (s *Service) getSettings(w http.ResponseWriter, r *http.Request) error {
 }
 
 type settingsReq struct {
-	RecordAccess *string `json:"record_access"`
-	Currency     *string `json:"currency"`
+	RecordAccess    *string   `json:"record_access"`
+	Currency        *string   `json:"currency"`
+	SourceMode      *string   `json:"source_mode"`
+	SourceProviders *[]string `json:"source_providers"`
 }
 
-// putSettings: PUT /v1/crm/orgs/{orgID}/settings {record_access?, currency?}
+// putSettings: PUT /v1/crm/orgs/{orgID}/settings {record_access?, currency?, source_mode?, source_providers?}
 // (crm.manage_settings, audited). Changing record access rewrites the grants
 // on the workspace and team resources in one transaction.
 func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) error {
@@ -76,13 +82,42 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 		req.Currency = &c
 	}
+	if req.SourceMode != nil && !slices.Contains([]string{SourceModeApp, SourceModeConnected, SourceModeBoth}, *req.SourceMode) {
+		return httpx.BadRequest("source_mode is app, connected or both.")
+	}
+	if req.SourceProviders != nil {
+		clean := []string{}
+		for _, p := range *req.SourceProviders {
+			if _, ok := providerByID(p); !ok {
+				return httpx.BadRequest("source_providers lists hubspot and/or salesforce.")
+			}
+			if !slices.Contains(clean, p) {
+				clean = append(clean, p)
+			}
+		}
+		req.SourceProviders = &clean
+	}
 	var shrank bool
 	err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		var mode, cur string
-		if err := tx.QueryRow(ctx, `SELECT record_access, currency FROM crm_settings WHERE org_id = $1 FOR UPDATE`, orgID).Scan(&mode, &cur); err != nil {
+		var mode, cur, srcMode string
+		var srcProviders []string
+		if err := tx.QueryRow(ctx, `SELECT record_access, currency, source_mode, source_providers FROM crm_settings WHERE org_id = $1 FOR UPDATE`, orgID).
+			Scan(&mode, &cur, &srcMode, &srcProviders); err != nil {
 			return err
 		}
-		data := map[string]any{"before": map[string]any{"record_access": mode, "currency": cur}}
+		data := map[string]any{"before": map[string]any{"record_access": mode, "currency": cur, "source_mode": srcMode, "source_providers": srcProviders}}
+		if req.SourceMode != nil && *req.SourceMode != srcMode {
+			if _, err := tx.Exec(ctx, `UPDATE crm_settings SET source_mode = $2, updated_by = $3, updated_at = now() WHERE org_id = $1`, orgID, *req.SourceMode, me(r)); err != nil {
+				return err
+			}
+			data["source_mode"] = *req.SourceMode
+		}
+		if req.SourceProviders != nil && !slices.Equal(*req.SourceProviders, srcProviders) {
+			if _, err := tx.Exec(ctx, `UPDATE crm_settings SET source_providers = $2, updated_by = $3, updated_at = now() WHERE org_id = $1`, orgID, *req.SourceProviders, me(r)); err != nil {
+				return err
+			}
+			data["source_providers"] = *req.SourceProviders
+		}
 		if req.Currency != nil && *req.Currency != cur {
 			if _, err := tx.Exec(ctx, `UPDATE crm_settings SET currency = $2, updated_by = $3, updated_at = now() WHERE org_id = $1`, orgID, *req.Currency, me(r)); err != nil {
 				return err

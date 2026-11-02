@@ -1,5 +1,5 @@
-import { CRM_TYPE_LABEL, useCrmSearch, useCrmTaskSummary, type CrmObjectType } from "@scaffoldapp/shared";
-import { Badge, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, SkeletonRow, Text, useTheme } from "@scaffoldapp/ui-native";
+import { CRM_SOURCE_ALL, CRM_TYPE_LABEL, useCrmSearch, useCrmTaskSummary, type CrmObjectType, type CrmSources } from "@scaffoldapp/shared";
+import { Badge, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, SkeletonRow, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
 import { Building2, CheckSquare, Handshake, KanbanSquare, Search, SearchX, UserRound } from "lucide-react-native";
 import { useState } from "react";
@@ -10,15 +10,16 @@ type Scope = "all" | CrmObjectType;
 
 /** CRM home on mobile: search every record you can see, then tasks, the board and the lists. */
 export function CrmHomeScreen() {
-  return <CrmGate>{({ orgId, orgName }) => <Home orgId={orgId} orgName={orgName} />}</CrmGate>;
+  return <CrmGate>{({ orgId, orgName, sources }) => <Home orgId={orgId} orgName={orgName} sources={sources} />}</CrmGate>;
 }
 
-function Home({ orgId, orgName }: { orgId: string; orgName: string }) {
+function Home({ orgId, orgName, sources }: { orgId: string; orgName: string; sources: CrmSources | undefined }) {
   const theme = useTheme();
   const [q, setQ] = useState("");
   const [scope, setScope] = useState<Scope>("all");
   const tasks = useCrmTaskSummary(orgId);
-  const search = useCrmSearch(orgId, q, scope === "all" ? undefined : [scope], { limit: 20, enabled: q.trim().length > 0 });
+  // Search covers the person's connected HubSpot or Salesforce too when the workspace uses one.
+  const search = useCrmSearch(orgId, q, scope === "all" ? undefined : [scope], { limit: 20, enabled: q.trim().length > 0, ...(sources ? { source: CRM_SOURCE_ALL } : {}) });
   const due = tasks.data ? tasks.data.overdue + tasks.data.today : 0;
   return (
     <Screen edges={["bottom"]} gap={theme.space[6]} keyboard>
@@ -59,9 +60,12 @@ function Home({ orgId, orgName }: { orgId: string; orgName: string }) {
                   title={h.title}
                   leading={<Icon size={20} color={theme.colors.textMuted} />}
                   trailing={
-                    <Text role="caption" tone="muted" numberOfLines={1} style={{ maxWidth: 140 }}>
-                      {h.detail || CRM_TYPE_LABEL[h.type].One}
-                    </Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                      <SourceBadge source={h.source} iconOnly />
+                      <Text role="caption" tone="muted" numberOfLines={1} style={{ maxWidth: 140 }}>
+                        {h.detail || CRM_TYPE_LABEL[h.type].One}
+                      </Text>
+                    </View>
                   }
                   onPress={() => router.push(recordPath(h.type, h.id))}
                 />

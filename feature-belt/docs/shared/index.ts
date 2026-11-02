@@ -7,3 +7,4 @@ export * from "./markdown";
 export * from "./format";
 export * from "./session";
 export * from "./hooks";
+export * from "./connected";

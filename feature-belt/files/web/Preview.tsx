@@ -6,6 +6,8 @@ import {
   filesIsTextPreview,
   filesKindLabel,
   filesParseCsv,
+  useFilesConnectedPreviewUrl,
+  useFilesConnectedText,
   useFilesPreviewUrl,
   useFilesPublicPreviewUrl,
   useFilesPublicText,
@@ -20,8 +22,11 @@ import { useMemo, useState } from "react";
 import { filesIconTone, filesItemIcon } from "./icons";
 import { FilesMarkdown } from "./Markdown";
 
-/** Where the preview reads from: the signed-in API (optionally an old version) or a public link. */
-export type FilesPreviewSource = { kind: "app"; version?: string | null } | { kind: "public"; token: string };
+/** Where the preview reads from: the signed-in API (optionally an old version), a public link, or a connected platform (streamed through the API with your connection). */
+export type FilesPreviewSource =
+  | { kind: "app"; version?: string | null }
+  | { kind: "public"; token: string }
+  | { kind: "connected"; connectionId: string; ref: string; orgId?: string | null };
 
 type PreviewItem = Pick<FilesItem | FilesPublicItem, "id" | "name" | "preview" | "size" | "mime_type" | "type" | "type_info">;
 
@@ -36,14 +41,17 @@ export function FilesPreview({ item, source, onDownload, link }: { item: Preview
   const media = item.preview === "image" || item.preview === "pdf" || item.preview === "video" || item.preview === "audio";
   const text = filesIsTextPreview(item.preview);
   const app = source.kind === "app";
-  const version = app ? (source.version ?? null) : null;
-  const token = app ? null : source.token;
+  const conn = source.kind === "connected" ? source : null;
+  const version = source.kind === "app" ? (source.version ?? null) : null;
+  const token = source.kind === "public" ? source.token : null;
   const appUrl = useFilesPreviewUrl(app ? item.id : null, version, media);
-  const pubUrl = useFilesPublicPreviewUrl(token, app ? null : item.id, media);
+  const pubUrl = useFilesPublicPreviewUrl(token, token ? item.id : null, media);
+  const connUrl = useFilesConnectedPreviewUrl(conn?.connectionId, conn?.ref, conn?.orgId, media && !!conn);
   const appText = useFilesText(app && text ? item.id : null, version);
-  const pubText = useFilesPublicText(token, !app && text ? item.id : null, text);
-  const url = app ? appUrl : pubUrl;
-  const content = app ? appText : pubText;
+  const pubText = useFilesPublicText(token, token && text ? item.id : null, text);
+  const connText = useFilesConnectedText(conn?.connectionId, conn?.ref, conn?.orgId, text && !!conn);
+  const url = app ? appUrl : conn ? connUrl : pubUrl;
+  const content = app ? appText : conn ? connText : pubText;
 
   if (item.type !== "file") {
     return (

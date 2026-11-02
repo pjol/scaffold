@@ -1,6 +1,9 @@
 import {
   calendarAddDays,
+  calendarConferenceOptions,
   calendarDateKey,
+  calendarFindCalendar,
+  calendarWritableCalendars,
   calendarDaysBetween,
   calendarDraftGuests,
   calendarDraftTimes,
@@ -11,20 +14,25 @@ import {
   describeCalendarRecurrence,
   errorMessage,
   orgsNoun,
+  sourceProductLabel,
   useCalendarEvent,
+  useCalendarSources,
+  useCreateCalendarConnectedEvent,
   useCalendarPeople,
   useCalendarPeopleByIds,
   useCalendarSettings,
   useCreateCalendarEvent,
   useDebouncedValue,
   useUpdateCalendarEvent,
+  type CalendarCalendarRef,
+  type CalendarConnectedEventInput,
   type CalendarEventDetail,
   type CalendarEventInput,
   type CalendarNewEventDraft,
   type CalendarPerson,
   type CalendarScope,
 } from "@scaffoldapp/shared";
-import { Avatar, Button, Chip, EmptyState, ErrorState, Field, IconButton, Input, ListGroup, ListRow, Screen, Sheet, Skeleton, Switch, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Avatar, Button, Chip, EmptyState, ErrorState, Field, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, Sheet, Skeleton, Switch, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
 import { router } from "expo-router";
 import { CalendarX, Check, Mail, Plus, Search, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
@@ -59,7 +67,17 @@ interface Form {
   guests: Guest[];
   conference: "keep" | "add" | "remove";
   reminders: number[];
+  /** "app", or a connected calendar as "<connection>|<calendar>". */
+  calendar: string;
+  /** Meeting provider for "add": "<option id>|<connection>". */
+  provider: string;
 }
+
+const calKey = (r: CalendarCalendarRef) => `${r.connection_id}|${r.calendar_id}`;
+const calRef = (k: string): CalendarCalendarRef | null => {
+  const i = k.indexOf("|");
+  return i > 0 ? { connection_id: k.slice(0, i), calendar_id: k.slice(i + 1) } : null;
+};
 
 function repeatOf(e: CalendarEventDetail | null, startDate: string): Repeat {
   const r = e?.recurrence;
@@ -98,6 +116,8 @@ function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, 
       guests: e.attendees.map((a): Guest => (a.user_id ? { kind: "user", person: { id: a.user_id, display_name: a.name, avatar_url: a.avatar_url } } : { kind: "email", email: a.email })),
       conference: "keep",
       reminders: e.reminders,
+      calendar: "app",
+      provider: "",
     };
   }
   const { draft } = prefill;
@@ -116,6 +136,8 @@ function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, 
     guests: [...prefill.people.map((person): Guest => ({ kind: "user", person })), ...calendarDraftGuests(draft).emails.map((email): Guest => ({ kind: "email", email }))],
     conference: draft.video && prefill.videoAvailable ? "add" : "keep",
     reminders,
+    calendar: "app",
+    provider: "",
   };
 }
 
@@ -163,8 +185,22 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
   const c = theme.colors;
   const [f, setF] = useState<Form>(() => initial(event, zone, prefill, defaults));
   const [error, setError] = useState<{ title?: string; time?: string }>({});
-  const [sheet, setSheet] = useState<"repeat" | "guests" | "scope" | null>(null);
+  const [sheet, setSheet] = useState<"repeat" | "guests" | "scope" | "calendar" | "provider" | null>(null);
   const create = useCreateCalendarEvent();
+  const createConnected = useCreateCalendarConnectedEvent();
+  // New events can go to a connected calendar (Google, Outlook), whose platform invites guests.
+  const sources = useCalendarSources();
+  const writable = calendarWritableCalendars(sources.data);
+  const target = calRef(f.calendar);
+  const targetCal = calendarFindCalendar(sources.data, target);
+  const providers = calendarConferenceOptions(sources.data, target);
+  const provider = providers.find((o) => `${o.id}|${o.connection_id ?? ""}` === f.provider) ?? providers[0];
+  const calendarLabel = (key: string) => {
+    const found = calendarFindCalendar(sources.data, calRef(key));
+    if (!found) return "This app's calendar";
+    const name = found.calendar.primary && found.calendar.name === found.source.account ? sourceProductLabel(found.source.provider ?? "", found.source.product) : found.calendar.name;
+    return `${name} · ${found.source.account}`;
+  };
   const update = useUpdateCalendarEvent();
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }));
   const custom = f.repeat === "custom";
@@ -191,6 +227,10 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
     if (f.allDay) Object.assign(b, { start_date: f.startDate, end_date: f.endDate });
     else Object.assign(b, { starts_at: s1, ends_at: e1 });
     if (f.conference !== "keep") b.conference = f.conference;
+    if (f.conference === "add" && provider) {
+      b.conference_provider = provider.id;
+      if (provider.connection_id && !provider.native) b.conference_connection_id = provider.connection_id;
+    }
     if (scope !== "this") {
       b.attendees = f.guests.map((g) => (g.kind === "user" ? { user_id: g.person.id } : { email: g.email }));
       if (!custom) {
@@ -219,6 +259,30 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
   const save = async (scope: CalendarScope | null) => {
     const b = body(scope);
     if (!b) return;
+    if (target && !event) {
+      const product = targetCal ? sourceProductLabel(targetCal.source.provider ?? "", targetCal.source.product) : "the calendar";
+      const cb: CalendarConnectedEventInput = {
+        title: b.title!,
+        description: b.description ?? "",
+        location: b.location ?? "",
+        all_day: b.all_day!,
+        timezone: b.timezone!,
+        ...(b.start_date ? { start_date: b.start_date, end_date: b.end_date! } : { starts_at: b.starts_at!, ends_at: b.ends_at! }),
+        ...(b.recurrence ? { recurrence: b.recurrence } : {}),
+        attendees: b.attendees ?? [],
+        ...(b.conference ? { conference: b.conference } : {}),
+        ...(b.conference_provider ? { conference_provider: b.conference_provider } : {}),
+        ...(b.conference_connection_id ? { conference_connection_id: b.conference_connection_id } : {}),
+      };
+      try {
+        await createConnected.mutateAsync({ calendar: target, body: cb });
+        toast.success(`Added to ${product}`);
+        router.back();
+      } catch (e) {
+        toast.error(errorMessage(e, "Couldn't save the event. Try again."));
+      }
+      return;
+    }
     try {
       if (event) await update.mutateAsync({ id: event.event_id, body: b });
       else await create.mutateAsync(b);
@@ -237,7 +301,7 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
       footer={
         <Button
           fullWidth
-          loading={create.isPending || update.isPending}
+          loading={create.isPending || update.isPending || createConnected.isPending}
           onPress={() => {
             if (!body(null)) return;
             if (event?.recurrence) setSheet("scope");
@@ -275,6 +339,20 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
           </Text>
         ) : null}
       </View>
+      {!event && writable.length > 0 ? (
+        <ListGroup>
+          <ListRow
+            title="Calendar"
+            trailing={
+              <Text role="label" tone="muted" numberOfLines={1} style={{ maxWidth: 200 }}>
+                {calendarLabel(f.calendar)}
+              </Text>
+            }
+            leading={targetCal ? <ProviderIcon provider={targetCal.source.provider ?? ""} product={targetCal.source.product ?? null} size={20} /> : undefined}
+            onPress={() => setSheet("calendar")}
+          />
+        </ListGroup>
+      ) : null}
       <ListGroup>
         <ListRow title={repeatLabel[f.repeat]} info={custom ? "Change custom repeats on the web." : undefined} onPress={custom ? undefined : () => setSheet("repeat")} />
         <ListRow title={f.guests.length === 0 ? "Add guests" : `${f.guests.length} ${f.guests.length === 1 ? "guest" : "guests"}`} onPress={() => setSheet("guests")} />
@@ -282,17 +360,33 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
       <Field label="Location">
         <Input value={f.location} onChangeText={(v) => set("location", v)} maxLength={500} placeholder="Room, address or link" />
       </Field>
-      {videoAvailable || event?.conference_url ? (
-        <Switch
-          value={f.conference === "add" || (!!event?.conference_url && f.conference !== "remove")}
-          onValueChange={(v) => set("conference", v ? (event?.conference_url ? "keep" : "add") : event?.conference_url ? "remove" : "keep")}
-          label="Video call"
-          info="A meeting link is added to the event and the invitations."
-        />
+      {videoAvailable || providers.length > 0 || event?.conference_url ? (
+        <View style={{ gap: s[2] }}>
+          <Switch
+            value={f.conference === "add" || (!!event?.conference_url && f.conference !== "remove")}
+            onValueChange={(v) => set("conference", v ? (event?.conference_url ? "keep" : "add") : event?.conference_url ? "remove" : "keep")}
+            label="Video call"
+            info="A meeting link is added to the event and the invitations. Google Meet, Teams and Zoom open in their own apps."
+          />
+          {f.conference === "add" && providers.length > 1 && provider ? (
+            <ListGroup>
+              <ListRow
+                title="Video call with"
+                trailing={
+                  <Text role="label" tone="muted" numberOfLines={1} style={{ maxWidth: 200 }}>
+                    {provider.account && !provider.native ? `${provider.label} · ${provider.account}` : provider.label}
+                  </Text>
+                }
+                onPress={() => setSheet("provider")}
+              />
+            </ListGroup>
+          ) : null}
+        </View>
       ) : null}
       <Field label="Description">
         <TextArea value={f.description} onChangeText={(v) => set("description", v)} maxLength={8000} />
       </Field>
+      {target ? null : (
       <Field label="Reminders">
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[2] }}>
           {REMINDERS.map((m) => {
@@ -305,6 +399,43 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
           })}
         </View>
       </Field>
+      )}
+
+      <Sheet open={sheet === "calendar"} onClose={() => setSheet(null)} title="Calendar">
+        <ListGroup>
+          {["app", ...writable.map((w) => calKey({ connection_id: w.source.id, calendar_id: w.calendar.id }))].map((k) => (
+            <ListRow
+              key={k}
+              title={calendarLabel(k)}
+              chevron={false}
+              trailing={f.calendar === k ? <Check size={20} color={c.primary} accessibilityLabel="Selected" /> : undefined}
+              onPress={() => {
+                setF((x) => ({ ...x, calendar: k, provider: "" }));
+                setSheet(null);
+              }}
+            />
+          ))}
+        </ListGroup>
+      </Sheet>
+      <Sheet open={sheet === "provider"} onClose={() => setSheet(null)} title="Video call with">
+        <ListGroup>
+          {providers.map((o) => {
+            const k = `${o.id}|${o.connection_id ?? ""}`;
+            return (
+              <ListRow
+                key={k}
+                title={o.account && !o.native ? `${o.label} · ${o.account}` : o.label}
+                chevron={false}
+                trailing={provider && `${provider.id}|${provider.connection_id ?? ""}` === k ? <Check size={20} color={c.primary} accessibilityLabel="Selected" /> : undefined}
+                onPress={() => {
+                  set("provider", k);
+                  setSheet(null);
+                }}
+              />
+            );
+          })}
+        </ListGroup>
+      </Sheet>
 
       <Sheet open={sheet === "repeat"} onClose={() => setSheet(null)} title="Repeat">
         <ListGroup>

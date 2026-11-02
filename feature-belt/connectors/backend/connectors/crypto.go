@@ -150,3 +150,11 @@ func aadClient(id fmt.Stringer) string {
 func aadRevocation(id fmt.Stringer, field string) string {
 	return "revocation:" + id.String() + ":" + field
 }
+
+func aadPlatform(id fmt.Stringer, field string) string {
+	return "platform:" + id.String() + ":" + field
+}
+
+func aadPlatformFlow(id fmt.Stringer, field string) string {
+	return "platform_flow:" + id.String() + ":" + field
+}

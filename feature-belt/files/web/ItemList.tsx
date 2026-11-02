@@ -1,12 +1,13 @@
 "use client";
 
-import { filesFormatSize, filesKindLabel, type FilesItem, type FilesSort } from "@scaffoldapp/shared";
-import { Checkbox, Tooltip, cn } from "@scaffoldapp/ui-web";
+import { filesFormatSize, filesIsConnected, filesKindLabel, sourceProductLabel, type FilesItem, type FilesSort } from "@scaffoldapp/shared";
+import { Checkbox, ProviderIcon, SourceBadge, Tooltip, cn } from "@scaffoldapp/ui-web";
 import { ArrowDown, ArrowUp, Globe, Star, Users } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { formatDate, formatRelative } from "@/lib/format";
 import { useFilesItemMenu } from "./actions";
+import { useFilesConnectedItemMenu } from "./connected";
 import { filesIconTone, filesItemIcon } from "./icons";
 
 /** The drag payload for items moved inside the drive. */
@@ -238,6 +239,14 @@ interface RowProps {
 function Markers({ item }: { item: FilesItem }) {
   return (
     <>
+      <SourceBadge source={item.source} iconOnly className="shrink-0" />
+      {item.shortcut ? (
+        <Tooltip content={`Shortcut to ${sourceProductLabel(item.shortcut.provider, item.shortcut.product)}`}>
+          <span className="inline-flex shrink-0 text-fg-muted" aria-label={`Shortcut to ${sourceProductLabel(item.shortcut.provider, item.shortcut.product)}`}>
+            <ProviderIcon provider={item.shortcut.provider} product={item.shortcut.product} size={14} />
+          </span>
+        </Tooltip>
+      ) : null}
       {item.starred ? <Star className="size-3.5 shrink-0 fill-current text-warning-strong" aria-label="Starred" /> : null}
       {item.public_link ? (
         <Tooltip content={item.public_disabled ? "Public link turned off by staff" : "Anyone with the link can view"}>
@@ -253,8 +262,28 @@ function Markers({ item }: { item: FilesItem }) {
 }
 
 function ItemMenu({ item }: { item: FilesItem }) {
+  return filesIsConnected(item) ? <ConnectedRowMenu item={item} /> : <AppRowMenu item={item} />;
+}
+
+function AppRowMenu({ item }: { item: FilesItem }) {
   const actions = useFilesItemMenu(item, { showOpen: true });
   return <ResourceMenu feature="files" kind="files.item" id={item.id} title={item.name} orgId={item.org_id} actions={actions} label={`More actions for ${item.name}`} />;
+}
+
+/** Connected rows get the platform's actions (Open in…, Manage sharing in…) and no app Share…. */
+function ConnectedRowMenu({ item }: { item: FilesItem }) {
+  const actions = useFilesConnectedItemMenu(filesIsConnected(item) ? item : null, { showOpen: true });
+  // kind without an id: no other feature adds rows (no app Share…; agent access lives on the account's own menus).
+  return <ResourceMenu feature="files" kind="files.external" actions={actions} label={`More actions for ${item.name}`} />;
+}
+
+/** A thumbnail that falls back to the kind's icon when the link fails or expires. */
+function Thumb({ item, className, iconClass }: { item: FilesItem; className: string; iconClass: string }) {
+  const [failed, setFailed] = useState(false);
+  const Icon = filesItemIcon(item);
+  if (!item.thumb_url || failed) return <Icon className={cn(iconClass, filesIconTone(item))} aria-hidden />;
+  // eslint-disable-next-line @next/next/no-img-element -- short-lived provider or presigned URLs
+  return <img src={item.thumb_url} alt="" className={className} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
 function personName(p: FilesItem["updated_by"]): string {
@@ -263,7 +292,6 @@ function personName(p: FilesItem["updated_by"]): string {
 }
 
 function ListRowItem({ item, index, focused, selected, dropping, dateColumn, snippet, onOpen, onToggle, onClick, onFocus, onDragStart, onDragOver, onDragLeave, onDrop }: RowProps & { dateColumn: "updated" | "trashed"; snippet?: string | undefined }) {
-  const Icon = filesItemIcon(item);
   const date = dateColumn === "trashed" ? (item.trashed_at ?? item.updated_at) : item.updated_at;
   return (
     <div
@@ -295,12 +323,7 @@ function ListRowItem({ item, index, focused, selected, dropping, dateColumn, sni
       </span>
       <span role="gridcell" className="flex min-w-0 flex-1 items-center gap-3">
         <span className="flex size-8 shrink-0 items-center justify-center">
-          {item.thumb_url ? (
-            // eslint-disable-next-line @next/next/no-img-element -- presigned, short-lived URLs
-            <img src={item.thumb_url} alt="" className="size-8 rounded-sm object-cover" loading="lazy" />
-          ) : (
-            <Icon className={cn("size-6", filesIconTone(item))} aria-hidden />
-          )}
+          <Thumb item={item} className="size-8 rounded-sm object-cover" iconClass="size-6" />
         </span>
         <span className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
@@ -327,7 +350,7 @@ function ListRowItem({ item, index, focused, selected, dropping, dateColumn, sni
         {formatRelative(date)}
       </span>
       <span role="gridcell" className="hidden w-20 shrink-0 text-right type-label tabular-nums text-fg-muted lg:block">
-        {item.type === "file" ? filesFormatSize(item.size) : "—"}
+        {item.type === "file" && (item.size > 0 || !filesIsConnected(item)) ? filesFormatSize(item.size) : "—"}
       </span>
       <span role="gridcell" className="flex w-8 shrink-0 justify-end">
         <ItemMenu item={item} />
@@ -337,7 +360,6 @@ function ListRowItem({ item, index, focused, selected, dropping, dateColumn, sni
 }
 
 function GridCard({ item, index, focused, selected, dropping, onOpen, onToggle, onClick, onFocus, onDragStart, onDragOver, onDragLeave, onDrop }: RowProps) {
-  const Icon = filesItemIcon(item);
   return (
     <div
       role="row"
@@ -359,12 +381,7 @@ function GridCard({ item, index, focused, selected, dropping, onOpen, onToggle, 
       )}
     >
       <span role="gridcell" className="flex aspect-4/3 items-center justify-center bg-sunken">
-        {item.thumb_url ? (
-          // eslint-disable-next-line @next/next/no-img-element -- presigned, short-lived URLs
-          <img src={item.thumb_url} alt="" className="size-full object-cover" loading="lazy" />
-        ) : (
-          <Icon className={cn("size-10", filesIconTone(item))} aria-hidden />
-        )}
+        <Thumb item={item} className="size-full object-cover" iconClass="size-10" />
       </span>
       <span className="absolute top-2 left-2">
         <Checkbox

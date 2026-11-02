@@ -31,6 +31,9 @@ type Picking =
   | null;
 
 function toolsInfo(f: AgentsFeatureScope): string {
+  if (f.platform) {
+    return `Caps what AI agents read and change in this account through every feature; each feature's own level applies too.${f.connected ? "" : " Not connected now; the setting is kept."}`;
+  }
   let s = `${f.read_tools} ${f.read_tools === 1 ? "tool reads" : "tools read"}`;
   if (f.write_tools) s += `, ${f.write_tools} ${f.write_tools === 1 ? "tool makes" : "tools make"} changes`;
   s += ".";
@@ -134,13 +137,13 @@ export function AgentsSettingsScreen() {
           </ListGroup>
 
           {settings.surfaces.includes("connectors") ? (
-            <ListGroup title="Connected services" info="Outside services you connected that the assistant can use for you. Each has its own level.">
+            <ListGroup title="Connections" info="Accounts and services you connected in Connections. Each has its own level: an account's level caps what agents do there through every feature.">
               {services.isPending ? (
                 <SkeletonRow />
               ) : services.isError ? (
                 <ErrorState compact title="Couldn't load your services" onRetry={() => void services.refetch()} retrying={services.isFetching} />
               ) : services.data.items.length === 0 ? (
-                <EmptyState compact icon={Plug} title="No services connected" />
+                <EmptyState compact icon={Plug} title="Nothing connected" />
               ) : (
                 services.data.items.map((f) => featureRow(f, settings.default_level))
               )}

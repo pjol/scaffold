@@ -119,6 +119,7 @@ const (
 	schemaSearch = `{"type":"object","properties":{
 		"query":{"type":"string","description":"Words in the name, or in the text of small text files."},
 		"org_id":{"type":"string","format":"uuid","description":"Limit to one organization."},
+		"source":{"type":"string","description":"all (default): the drive and the user's connected drives; app: only this app's drive; connected: only connected drives (Google Drive, OneDrive, SharePoint); or one connection_id from files_connected_list."},
 		"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["query"],"additionalProperties":false}`
 	schemaList = `{"type":"object","properties":{
 		"folder_id":{"type":"string","format":"uuid","description":"List this folder. Leave out to list a section."},
@@ -176,19 +177,29 @@ type moveIn struct {
 	FolderID *uuid.UUID `json:"folder_id"`
 }
 
-// Tools implements app.ToolProvider.
+// Tools implements app.ToolProvider: the drive's own tools, then the
+// connected-drive tools (connected_tools.go) when a Connections module is
+// installed (mcp and assistant ask after every module is constructed).
 func (s *Service) Tools() []app.Tool {
+	if s.connections() == nil {
+		return s.appTools()
+	}
+	return append(append(s.appTools(), s.connectedReadTools()...), s.connectedWriteTools()...)
+}
+
+func (s *Service) appTools() []app.Tool {
 	return []app.Tool{
 		{
 			Name:        "files_search",
-			Description: "Search the user's drives for files and folders by name, or by the text inside small text files. Returns only items the user can open.",
+			Description: "Search the user's drives for files and folders by name, or by the text inside small text files, and (source) their connected Google Drive, OneDrive and SharePoint. Returns only items the user can open; connected items carry source and connection_id.",
 			InputSchema: orgWorded(schemaSearch),
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					Query string     `json:"query"`
-					OrgID *uuid.UUID `json:"org_id"`
-					Limit int        `json:"limit"`
+					Query  string     `json:"query"`
+					OrgID  *uuid.UUID `json:"org_id"`
+					Source string     `json:"source"`
+					Limit  int        `json:"limit"`
 				}
 				if err := decode(input, &in); err != nil {
 					return nil, err
@@ -196,17 +207,28 @@ func (s *Service) Tools() []app.Tool {
 				if in.Limit <= 0 || in.Limit > 50 {
 					in.Limit = 20
 				}
-				page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), in.OrgID, in.Query, "", in.Limit)
-				if err != nil {
-					return nil, err
+				res := map[string]any{}
+				if in.Source == "" || in.Source == "all" || in.Source == "app" {
+					page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), in.OrgID, in.Query, "", in.Limit)
+					if err != nil {
+						return nil, err
+					}
+					out := make([]toolItem, 0, len(page.Items))
+					for _, h := range page.Items {
+						t := toTool(h.Item)
+						t.Snippet = h.Snippet
+						out = append(out, t)
+					}
+					res["items"] = out
 				}
-				out := make([]toolItem, 0, len(page.Items))
-				for _, h := range page.Items {
-					t := toTool(h.Item)
-					t.Snippet = h.Snippet
-					out = append(out, t)
+				if in.Source != "app" && s.connections() != nil {
+					connected, missing := s.connectedToolSearch(ctx, caller, in.Query, in.Source, in.Limit)
+					res["connected_items"] = orEmpty(connected)
+					if len(missing) > 0 {
+						res["connected_not_searched"] = missing
+					}
 				}
-				return map[string]any{"items": out}, nil
+				return res, nil
 			},
 		},
 		{
@@ -547,6 +569,8 @@ func (s *Service) pathText(ctx context.Context, me uuid.UUID, folderID *uuid.UUI
 // /files/orgs/{orgID}/search, over every org the caller is in (one org when
 // the search is scoped: app.SearchOrg). Context is the org, then the folder
 // the item is in when the caller can open it, else its drive section.
+// Connected drives add their own search's hits (each account time-boxed;
+// Context "Google Drive · sam@acme.com", Source set).
 func (s *Service) Search(ctx context.Context, caller *auth.Identity, query string, limit int) ([]app.SearchResult, error) {
 	var scope *uuid.UUID
 	if id, ok := app.SearchOrg(ctx); ok {
@@ -578,6 +602,9 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 		}
 		out = append(out, app.SearchResult{Kind: Kind, ID: it.ID.String(), Title: it.Name, Snippet: h.Snippet,
 			Link: it.Link, Icon: icon, Score: h.Score, At: it.UpdatedAt, OrgID: it.OrgID.String(), Context: places[it.ID]})
+	}
+	if s.connections() != nil {
+		out = append(out, s.connectedSearchResults(ctx, caller, query, limit)...)
 	}
 	return out, nil
 }

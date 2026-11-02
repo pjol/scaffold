@@ -1,4 +1,4 @@
-import { ApiError, errorMessage, filesEndpoints, filesUpload, type FilesItem, type HttpClient } from "@scaffoldapp/shared";
+import { ApiError, errorMessage, filesEndpoints, filesUpload, type FilesConnectedItem, type FilesItem, type HttpClient } from "@scaffoldapp/shared";
 import { toast } from "@scaffoldapp/ui-native";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -67,6 +67,34 @@ export async function filesSaveOrShare(http: HttpClient, item: FilesItem, versio
       return;
     }
     await Sharing.shareAsync(file.uri, { mimeType: item.mime_type || "application/octet-stream", dialogTitle: item.name });
+  } catch (e) {
+    toast.error(e instanceof ApiError ? errorMessage(e, "Couldn't download the file.") : "Couldn't download the file. Check your connection and try again.");
+  }
+}
+
+/** Opens a connected file's preview link (streamed through the API with your connection) in the in-app browser. */
+export async function filesOpenConnectedInBrowser(http: HttpClient, item: FilesConnectedItem, orgId?: string | null): Promise<void> {
+  try {
+    const u = await filesEndpoints(http).connectedUrl(item.connection_id, item.ref, "inline", orgId);
+    await WebBrowser.openBrowserAsync(u.url);
+  } catch (e) {
+    toast.error(errorMessage(e, "Couldn't open the file."));
+  }
+}
+
+/** Downloads a connected file (documents as Office files) and opens the share sheet. */
+export async function filesSaveOrShareConnected(http: HttpClient, item: FilesConnectedItem, orgId?: string | null): Promise<void> {
+  try {
+    const u = await filesEndpoints(http).connectedUrl(item.connection_id, item.ref, "attachment", orgId);
+    const safe = u.filename.replace(/[\\/:*?"<>|]+/g, "_") || "file";
+    const dest = new File(Paths.cache, safe);
+    if (dest.exists) dest.delete();
+    const file = await File.downloadFileAsync(u.url, dest);
+    if (!(await Sharing.isAvailableAsync())) {
+      toast.error("Sharing isn't available on this device.");
+      return;
+    }
+    await Sharing.shareAsync(file.uri, { mimeType: u.content_type || "application/octet-stream", dialogTitle: u.filename });
   } catch (e) {
     toast.error(e instanceof ApiError ? errorMessage(e, "Couldn't download the file.") : "Couldn't download the file. Check your connection and try again.");
   }

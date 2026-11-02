@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CRM_SOURCE_APP,
   crmMoney,
   crmMoneyTotals,
   errorMessage,
@@ -15,7 +16,7 @@ import {
   type CrmFilter,
   type CrmStage,
 } from "@scaffoldapp/shared";
-import { Button, Card, EmptyState, ErrorState, IconButton, Input, Menu, MenuItem, MenuLabel, Select, Skeleton, SkeletonGroup, cn, toast } from "@scaffoldapp/ui-web";
+import { Button, Card, EmptyState, IconButton, Input, Menu, MenuItem, MenuLabel, Select, Skeleton, SkeletonGroup, SourceBadge, cn, toast } from "@scaffoldapp/ui-web";
 import { ArrowRightLeft, Handshake, List, Plus } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState, type DragEvent } from "react";
@@ -24,6 +25,7 @@ import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { CreateRecordDialog } from "./CreateRecordDialog";
 import { dayLabel, recordHref } from "./parts";
+import { CrmLoadError, CrmSourceBar, CrmSourceNotices, useCrmSource, type CrmSourceState } from "./Sources";
 
 /** /crm/deals/board: a pipeline's stages as columns; drag a card (or use its menu) to move it. */
 export function CrmBoardScreen() {
@@ -42,9 +44,15 @@ export function CrmBoardScreen() {
       }
     >
       <Board />
-      <CreateRecordDialog type="deal" open={creating} onOpenChange={setCreating} />
+      <BoardCreate open={creating} onOpenChange={setCreating} />
     </CrmFrame>
   );
+}
+
+/** New deal in the board's source: the app's pipeline or the connected account's. */
+function BoardCreate({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+  const src = useCrmSource("board");
+  return <CreateRecordDialog type="deal" open={open} onOpenChange={onOpenChange} source={src.connection ? (src.connection.writable ? src.value : null) : CRM_SOURCE_APP} />;
 }
 
 type OwnerFilter = "all" | "me";
@@ -76,15 +84,25 @@ function closeRange(c: CloseFilter): CrmFilter[] {
 
 function Board() {
   const { orgId, settings } = useCrm();
-  const pipelines = useCrmPipelines(orgId);
+  const src = useCrmSource("board");
+  const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
+  const pipelines = useCrmPipelines(orgId, sourceId);
   const [pipelineId, setPipelineId] = useUrlState("pipeline", "");
+  // Pipelines differ per source: switching starts on the source's first one.
+  const sourceState: CrmSourceState = {
+    ...src,
+    setValue: (v) => {
+      src.setValue(v);
+      setPipelineId("");
+    },
+  };
   const [owner, setOwner] = useUrlState<OwnerFilter>("owner", "all");
   const [close, setClose] = useUrlState<CloseFilter>("close", "any");
   const [q, setQ] = useState("");
   const filters = useMemo<CrmFilter[]>(() => [...(owner === "me" ? [{ key: "owner", op: "is_any" as const, value: ["me"] }] : []), ...closeRange(close)], [owner, close]);
-  const params = useMemo(() => ({ filters, ...(q.trim() ? { q: q.trim() } : {}) }), [filters, q]);
+  const params = useMemo(() => ({ filters, ...(q.trim() ? { q: q.trim() } : {}), ...(sourceId !== CRM_SOURCE_APP ? { source: sourceId } : {}) }), [filters, q, sourceId]);
   const board = useCrmBoard(orgId, pipelineId || undefined, params);
-  useTopic(board.data ? topic("crm", board.data.pipeline.id) : null);
+  useTopic(board.data && sourceId === CRM_SOURCE_APP ? topic("crm", board.data.pipeline.id) : null);
   const move = useCrmMoveStage(orgId);
   const [dragging, setDragging] = useState<CrmDeal | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -106,6 +124,8 @@ function Board() {
 
   return (
     <section className="flex flex-col gap-4" aria-label="Deals board">
+      <CrmSourceBar state={sourceState} scope="board" />
+      <CrmSourceNotices state={src} />
       <div className="flex flex-col gap-3 md:flex-row md:items-center">
         {pipelines.data && pipelines.data.length > 1 ? (
           <Select
@@ -140,8 +160,12 @@ function Board() {
           ]}
         />
         {board.data ? (
-          <p className="type-label text-fg-muted md:ml-auto">
-            Open: <b className="font-semibold text-fg">{crmMoneyTotals(board.data.open_totals, settings.currency)}</b> · weighted {crmMoneyTotals(board.data.open_totals, settings.currency, "weighted")}
+          <p className="flex flex-wrap items-center gap-x-2 type-label text-fg-muted md:ml-auto">
+            <SourceBadge source={board.data.source} />
+            <span>
+              Open: <b className="font-semibold text-fg">{crmMoneyTotals(board.data.open_totals, settings.currency)}</b> · weighted {crmMoneyTotals(board.data.open_totals, settings.currency, "weighted")}
+              {board.data.partial ? " (first 1,000 deals)" : ""}
+            </span>
           </p>
         ) : null}
       </div>
@@ -152,7 +176,7 @@ function Board() {
           ))}
         </SkeletonGroup>
       ) : board.isError ? (
-        <ErrorState title="Couldn't load the board" info={board.error.message} onRetry={() => void board.refetch()} retrying={board.isRefetching} />
+        <CrmLoadError state={src} error={board.error} title="Couldn't load the board" onRetry={() => void board.refetch()} retrying={board.isRefetching} />
       ) : board.data.columns.every((c) => c.count === 0) && (filters.length || q) ? (
         <Card padding="compact">
           <EmptyState icon={<Handshake />} title="No deals match" />
@@ -184,6 +208,7 @@ function Board() {
                 <ColumnHeader col={col} currency={settings.currency} />
                 <ColumnCards
                   orgId={orgId}
+                  source={sourceId}
                   col={col}
                   filters={filters}
                   q={q}
@@ -221,6 +246,7 @@ function ColumnHeader({ col, currency }: { col: CrmBoardColumn; currency: string
 
 function ColumnCards({
   orgId,
+  source,
   col,
   filters,
   q,
@@ -230,6 +256,7 @@ function ColumnCards({
   onMove,
 }: {
   orgId: string;
+  source: string;
   col: CrmBoardColumn;
   filters: CrmFilter[];
   q: string;
@@ -242,7 +269,14 @@ function ColumnCards({
   const rest = useCrmRecords(
     orgId,
     "deal",
-    { filters: [...filters, { key: "stage", op: "is_any", value: [col.stage.id] }], ...(q.trim() ? { q: q.trim() } : {}), sort: "close_date", dir: "asc", limit: 50 },
+    {
+      filters: [...filters, { key: "stage", op: "is_any", value: [col.stage.id] }],
+      ...(q.trim() ? { q: q.trim() } : {}),
+      sort: "close_date",
+      dir: "asc",
+      limit: 50,
+      ...(source !== CRM_SOURCE_APP ? { source } : {}),
+    },
     { enabled: more },
   );
   const deals = more && rest.data ? rest.data.items : col.deals;

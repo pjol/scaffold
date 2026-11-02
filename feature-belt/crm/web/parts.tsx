@@ -2,10 +2,12 @@
 
 import {
   CRM_PATH,
+  CRM_SOURCE_APP,
   CRM_TYPE_LABEL,
   crmMoney,
   errorMessage,
   useAccessDirectory,
+  useCrmOwners,
   useCrmSearch,
   type CrmObjectType,
   type CrmSearchHit,
@@ -13,7 +15,7 @@ import {
   type CrmTag,
   type CrmUserRef,
 } from "@scaffoldapp/shared";
-import { Badge, Input, Spinner, cn, type BadgeTone } from "@scaffoldapp/ui-web";
+import { Badge, Input, Skeleton, SkeletonGroup, SourceBadge, Spinner, cn, type BadgeTone } from "@scaffoldapp/ui-web";
 import { Building2, Handshake, Search, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -95,6 +97,7 @@ export function RecordPicker({
   label,
   placeholder,
   autoFocus,
+  source,
 }: {
   orgId: string;
   types: CrmObjectType[];
@@ -103,13 +106,15 @@ export function RecordPicker({
   label: string;
   placeholder?: string;
   autoFocus?: boolean;
+  /** Search a connected account (connection id) instead of the app's records. */
+  source?: string | undefined;
 }) {
   const listId = useId();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const search = useCrmSearch(orgId, q, types, { limit: 8, enabled: open });
+  const search = useCrmSearch(orgId, q, types, { limit: 8, enabled: open, ...(source ? { source } : {}) });
   const items = useMemo(() => (search.data ?? []).filter((h) => !exclude?.has(h.id)), [search.data, exclude]);
   const pick = (h: CrmSearchHit) => {
     onPick(h);
@@ -176,6 +181,7 @@ export function RecordPicker({
                 >
                   <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
                   <span className="min-w-0 flex-1 truncate type-label text-fg">{h.title}</span>
+                  <SourceBadge source={h.source} iconOnly />
                   {h.detail ? <span className="hidden shrink-0 truncate type-caption text-fg-muted sm:inline">{h.detail}</span> : null}
                   {types.length > 1 ? <span className="shrink-0 type-caption text-fg-subtle">{CRM_TYPE_LABEL[h.type].One}</span> : null}
                 </li>
@@ -189,14 +195,31 @@ export function RecordPicker({
 }
 
 /** Pick a member of the org (combobox over the access directory). */
-export function MemberPicker({ orgId, onPick, label, autoFocus }: { orgId: string; onPick: (u: CrmUserRef) => void; label: string; autoFocus?: boolean }) {
+/**
+ * People to pick: the org's members, or for a connected record (`source` = connection id) the
+ * platform's owners (HubSpot owners, Salesforce users).
+ */
+export function MemberPicker({ orgId, onPick, label, autoFocus, source }: { orgId: string; onPick: (u: CrmUserRef) => void; label: string; autoFocus?: boolean; source?: string | undefined }) {
   const [q, setQ] = useState("");
-  const dir = useAccessDirectory(orgId, q, { types: "user", limit: 8 });
+  const external = !!source && source !== CRM_SOURCE_APP;
+  const dir = useAccessDirectory(external ? null : orgId, q, { types: "user", limit: 8 });
+  const owners = useCrmOwners(orgId, external ? source : null);
+  const needle = q.trim().toLowerCase();
+  const people = external
+    ? (owners.data ?? []).filter((o) => !needle || o.name.toLowerCase().includes(needle) || (o.email ?? "").toLowerCase().includes(needle)).slice(0, 20)
+    : (dir.data ?? []);
   return (
     <div className="flex flex-col gap-2">
-      <Input aria-label={label} placeholder="Search people" leadingIcon={<Search aria-hidden />} value={q} autoFocus={autoFocus} onChange={(e) => setQ(e.target.value)} />
+      <Input aria-label={label} placeholder={external ? "Search owners" : "Search people"} leadingIcon={<Search aria-hidden />} value={q} autoFocus={autoFocus} onChange={(e) => setQ(e.target.value)} />
+      {external && owners.isPending ? (
+        <SkeletonGroup label="Loading owners" className="flex flex-col gap-2 px-3">
+          <Skeleton shape="text" className="h-4 w-40" />
+          <Skeleton shape="text" className="h-4 w-32" />
+        </SkeletonGroup>
+      ) : null}
+      {external && owners.isError ? <p className="px-3 type-label text-danger-strong">{owners.error.message}</p> : null}
       <ul className="flex max-h-64 flex-col overflow-y-auto" aria-label={label}>
-        {(dir.data ?? []).map((p) => (
+        {people.map((p) => (
           <li key={p.id}>
             <button
               type="button"
@@ -209,7 +232,7 @@ export function MemberPicker({ orgId, onPick, label, autoFocus }: { orgId: strin
             </button>
           </li>
         ))}
-        {dir.data && dir.data.length === 0 ? <li className="px-3 py-2 type-label text-fg-muted">No one matches “{q}”</li> : null}
+        {(external ? owners.data : dir.data) && people.length === 0 ? <li className="px-3 py-2 type-label text-fg-muted">No one matches “{q}”</li> : null}
       </ul>
     </div>
   );

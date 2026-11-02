@@ -1,7 +1,7 @@
 {
   "name": "files",
   "title": "Files",
-  "version": "1.1.3",
+  "version": "1.2.0",
   "summary": "An org drive: folders and files with versions, previews, sharing with people, teams and public links, trash, a storage quota, and item types other features add (repositories).",
   "requires": ["access", "moderation"],
   "surfaces": ["backend", "web", "mobile"],
@@ -79,6 +79,7 @@
     "Production storage: keep the files/ prefix private in the bucket policy, and allow PUT from the web origin in the bucket's CORS rules (uploads go straight to S3). Downloads are presigned GETs with a forced Content-Type and Content-Disposition, so nothing else needs to be public.",
     "Put Files where it belongs in navigation: it ships as a web nav entry and Home tile and a mobile Home entry; promote it to a mobile tab if the drive is central (add <Tabs.Screen name=\"files\"> in mobile/app/(tabs)).",
     "Link to drive items from other features with files.ItemLink(id) (/files/<id>); features with their own item types call files.RegisterItemType in their New (FEATURE.md → Extending).",
-    "Public links open on the web at /f/<token> (wired into web/proxy.ts). Configure universal links for PUBLIC_WEB_URL/f/* only if you add a native public screen."
+    "Public links open on the web at /f/<token> (wired into web/proxy.ts). Configure universal links for PUBLIC_WEB_URL/f/* only if you add a native public screen.",
+    "Connected drives need the connectors feature (2.0+) with Google and Microsoft OAuth apps registered for this deployment; files declares the capabilities and scopes (FEATURE.md → Connected platforms). Google Drive's drive.readonly and drive scopes are restricted scopes: plan Google's verification (and security assessment) before launch. Mention connected drives in the privacy policy: content is read live and only shortcut references are stored."
   ]
 }

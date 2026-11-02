@@ -13,6 +13,8 @@ import type {
   CallsLobbyEntry,
   CallsMeeting,
   CallsMeetingDetail,
+  CallsMeetingProviders,
+  CallsPlatformMeetings,
   CallsPublicMeeting,
   CallsRing,
   CallsStartCallRequest,
@@ -36,6 +38,11 @@ export function callsEndpoints(http: HttpClient) {
     /** One call (a session) with everyone's time in it. */
     call: (id: string, o?: CallOptions) => http.get<CallsCallDetail>(`${C}/history/${seg(id)}`, o),
     /** Scheduled meetings you host or are invited to, soonest first. */
+    /** Meeting providers open to the caller: the app's own call, connected Zoom and Teams accounts. */
+    providers: (orgId?: string | null, o?: CallOptions) => http.get<CallsMeetingProviders>(`${C}/providers`, { ...o, query: { org_id: orgId ?? undefined } }),
+    /** Meetings with platform links on the caller's calendars: the next 14 days, or the last 14 ("recent"). */
+    platformMeetings: (when: "upcoming" | "recent", orgId?: string | null, o?: CallOptions) =>
+      http.get<CallsPlatformMeetings>(`${C}/external`, { ...o, query: { when, org_id: orgId ?? undefined }, timeoutMs: 30_000 }),
     upcoming: (params: PageParams = {}, o?: CallOptions) => http.get<Page<CallsMeeting>>(`${C}/upcoming`, { ...o, query: { limit: params.limit, cursor: params.cursor } }),
     /** Unscheduled meeting links you made, newest first. */
     links: (params: PageParams = {}, o?: CallOptions) => http.get<Page<CallsMeeting>>(`${C}/links`, { ...o, query: { limit: params.limit, cursor: params.cursor } }),

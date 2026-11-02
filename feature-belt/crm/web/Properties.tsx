@@ -12,6 +12,7 @@ import {
   useCrmProperties,
   useCrmTags,
   useCrmUpdateRecord,
+  crmSourceIdOf,
   type CrmObjectType,
   type CrmProperty,
   type CrmRecord,
@@ -36,7 +37,8 @@ const ORDER: Record<CrmObjectType, string[]> = {
 /** Properties on the left of a record page: every field, edited in place when you can edit. */
 export function PropertiesPanel({ record }: { record: CrmRecord }) {
   const { orgId } = useCrm();
-  const props = useCrmProperties(orgId, record.type);
+  // A connected record's fields come from its platform's schema.
+  const props = useCrmProperties(orgId, record.type, crmSourceIdOf(record));
   const editable = accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit");
   if (props.isPending)
     return (
@@ -212,7 +214,7 @@ function PropertyEditor({ record, prop, onSave, onCancel }: { record: CrmRecord;
   };
   switch (prop.type) {
     case "user":
-      return <UserEditor orgId={orgId} label={prop.label} onSave={onSave} onCancel={onCancel} />;
+      return <UserEditor orgId={orgId} source={crmSourceIdOf(record)} label={prop.label} onSave={onSave} onCancel={onCancel} />;
     case "team":
       return <TeamEditor orgId={orgId} value={record.team?.id ?? ""} onSave={onSave} onCancel={onCancel} />;
     case "tags":
@@ -329,11 +331,11 @@ function TextEditor({
   );
 }
 
-function UserEditor({ orgId, label, onSave, onCancel }: { orgId: string; label: string; onSave: (v: unknown) => void; onCancel: () => void }) {
+function UserEditor({ orgId, source, label, onSave, onCancel }: { orgId: string; source: string; label: string; onSave: (v: unknown) => void; onCancel: () => void }) {
   return (
     <Dialog open onOpenChange={(o) => !o && onCancel()} title={label} size="sm">
       <div className="flex flex-col gap-4">
-        <MemberPicker orgId={orgId} label={`Choose ${label.toLowerCase()}`} autoFocus onPick={(u) => onSave(u.id)} />
+        <MemberPicker orgId={orgId} source={source} label={`Choose ${label.toLowerCase()}`} autoFocus onPick={(u) => onSave(u.id)} />
         <Button variant="ghost" onClick={() => onSave(null)}>
           Clear
         </Button>
@@ -361,7 +363,7 @@ function TeamEditor({ orgId, value, onSave, onCancel }: { orgId: string; value: 
 }
 
 function StageEditor({ orgId, record, onSave, onCancel }: { orgId: string; record: CrmRecord; onSave: (v: unknown) => void; onCancel: () => void }) {
-  const pipelines = useCrmPipelines(orgId);
+  const pipelines = useCrmPipelines(orgId, crmSourceIdOf(record));
   if (record.type !== "deal") return null;
   return (
     <div className="flex items-center gap-2">

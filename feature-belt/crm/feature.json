@@ -1,8 +1,8 @@
 {
   "name": "crm",
   "title": "CRM",
-  "version": "1.1.1",
-  "summary": "Companies, contacts and deals per org with pipelines, a deals board, custom properties, tags, a timeline of activities and tasks with mentions and reminders, saved views, duplicates and merge, CSV import and export, and a dashboard; every record is shared through access.",
+  "version": "1.2.0",
+  "summary": "Companies, contacts and deals per org with pipelines, a deals board, custom properties, tags, a timeline of activities and tasks with mentions and reminders, saved views, duplicates and merge, CSV import and export, and a dashboard; every record is shared through access; teams on HubSpot or Salesforce work their CRM here live through their own connection.",
   "requires": [
     "access",
     "orgs",
@@ -87,6 +87,7 @@
     "Link to records from other features with the app paths /crm/companies/<id>, /crm/contacts/<id> and /crm/deals/<id>; notifications and search results already use them.",
     "Adjust the default pipeline (Qualified, Meeting booked, Proposal sent, Negotiation, Won, Lost) and the seeded custom properties to the product's sales motion; bootstrap creates the default pipeline once per org.",
     "Review the copy of record access modes (CRM_RECORD_ACCESS in shared/format.ts) and the lifecycle stages if the team doesn't use HubSpot's terms.",
-    "If the agents feature is installed, its per-resource scopes apply to CRM records through access (crm.team and crm.workspace are their parents); nothing to wire. Without it, agents get the user's own level capped at edit."
+    "If the agents feature is installed, its per-resource scopes apply to CRM records through access (crm.team and crm.workspace are their parents); nothing to wire. Without it, agents get the user's own level capped at edit.",
+    "Pick each workspace's CRM in CRM settings → Connected CRMs (app, connected or both; default app) and which platforms people may connect. Connecting accounts needs the connectors feature (2.0) with HubSpot/Salesforce OAuth apps registered for this deployment; without it the CRM works as before and offers no connected sources."
   ]
 }

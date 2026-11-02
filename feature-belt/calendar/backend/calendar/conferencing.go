@@ -34,12 +34,59 @@ type ConferenceRequest struct {
 	Audience       string      // AudienceInternal | AudienceExternal
 	OrgID          *uuid.UUID  // internal booking links: the link's org
 	ParticipantIDs []uuid.UUID // platform users invited (attendees, a signed-in booker)
+	// Provider is the ConferenceOption.ID the person picked ("" or
+	// ProviderApp = the app's own rooms); ConnectionID the host's connected
+	// account for it (Zoom, Teams). Providers the wired Conferencing doesn't
+	// offer are refused before Create is called.
+	Provider     string
+	ConnectionID string
+	// GuestEmails are external attendees' addresses, for providers that
+	// invite or admit by email. The app's own rooms ignore it.
+	GuestEmails []string
 }
 
 // Conference is a room the provider made.
 type Conference struct {
 	ID      string // the provider's id; passed back to Update and Cancel
 	JoinURL string // absolute URL people open to join
+	// Provider is the option that made it ("" = ProviderApp).
+	Provider string
+}
+
+// Meeting providers. ProviderApp is the wired Conferencing's own rooms (the
+// default); the others are platforms. Google Meet links come from Google
+// Calendar itself (an event written to a connected Google calendar); Teams
+// from Outlook (an event written to a connected Outlook calendar) or from
+// the wired Conferencing (a Graph online meeting); Zoom only from the wired
+// Conferencing.
+const (
+	ProviderApp        = "app"
+	ProviderGoogleMeet = "google_meet"
+	ProviderTeams      = "teams"
+	ProviderZoom       = "zoom"
+)
+
+// ConferenceOption is one meeting provider a person can pick for "Video
+// call", for one target calendar.
+type ConferenceOption struct {
+	ID           string `json:"id"`                      // ProviderApp, ProviderZoom, …
+	Label        string `json:"label"`                   // "Forum call", "Zoom"
+	Platform     string `json:"platform,omitempty"`      // connections registry id (google, microsoft, zoom); "" for the app's own
+	ConnectionID string `json:"connection_id,omitempty"` // the account it uses
+	Account      string `json:"account,omitempty"`
+	Status       string `json:"status,omitempty"` // active | needs_reauth | blocked
+	FixURL       string `json:"fix_url,omitempty"`
+	// Native options are made by the target calendar's platform (Meet on a
+	// Google event, Teams on an Outlook event), not by Conferencing.
+	Native bool `json:"native,omitempty"`
+}
+
+// ConferenceOptions is implemented by a Conferencing that offers more than
+// its own rooms (Zoom, Teams through the calls feature): the options open to
+// userID in orgID (uuid.Nil = no workspace), its own rooms first. Without
+// it the only option is ProviderApp.
+type ConferenceOptions interface {
+	ConferenceOptions(ctx context.Context, userID, orgID uuid.UUID) ([]ConferenceOption, error)
 }
 
 // Conferencing creates meeting rooms for events ("Add video call") and for
@@ -79,3 +126,31 @@ func conferencingProvider() Conferencing {
 
 // VideoAvailable reports whether a conferencing provider is wired.
 func VideoAvailable() bool { return conferencingProvider() != nil }
+
+// seamOptions are the wired Conferencing's options for userID (its own rooms
+// first). An error from the provider leaves only its own rooms.
+func seamOptions(ctx context.Context, userID, orgID uuid.UUID) []ConferenceOption {
+	c := conferencingProvider()
+	if c == nil {
+		return nil
+	}
+	if p, ok := c.(ConferenceOptions); ok {
+		if list, err := p.ConferenceOptions(ctx, userID, orgID); err == nil && len(list) > 0 {
+			return list
+		}
+	}
+	return []ConferenceOption{{ID: ProviderApp, Label: "Video call"}}
+}
+
+// seamOption finds one of the wired Conferencing's options.
+func seamOption(ctx context.Context, userID, orgID uuid.UUID, id, connectionID string) (ConferenceOption, bool) {
+	if id == "" {
+		id = ProviderApp
+	}
+	for _, o := range seamOptions(ctx, userID, orgID) {
+		if o.ID == id && (connectionID == "" || o.ConnectionID == "" || o.ConnectionID == connectionID) {
+			return o, true
+		}
+	}
+	return ConferenceOption{}, false
+}

@@ -10,3 +10,4 @@ export { FilesPreview, type FilesPreviewSource } from "./Preview";
 export { FilesMarkdown } from "./Markdown";
 export { filesItemIcon, filesIconTone, filesTypeIcon } from "./icons";
 export { FilesLayout, StorageMeter } from "./FilesLayout";
+export { FilesConnectedAccountScreen, FilesConnectedItemScreen } from "./ConnectedScreens";

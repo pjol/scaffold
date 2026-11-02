@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -81,6 +83,17 @@ type Response struct {
 	// Partial is true when a provider failed or timed out: items may be
 	// missing hits from those modules.
 	Partial bool `json:"partial"`
+	// Sources counts hits by where they come from, before the source
+	// filter: "app" (the app's own) and "provider:<id>" per connected
+	// platform, for filter chips.
+	Sources []SourceCount `json:"sources"`
+}
+
+// SourceCount is one source facet.
+type SourceCount struct {
+	ID       string `json:"id"`                 // app | provider:<id>
+	Provider string `json:"provider,omitempty"` // google, github, …
+	Count    int    `json:"count"`
 }
 
 // Query is a validated search request.
@@ -91,6 +104,41 @@ type Query struct {
 	// OrgID scopes the search to one org: providers see it as app.SearchOrg
 	// and hits whose OrgID names another org are dropped. uuid.Nil = all.
 	OrgID uuid.UUID
+	// Source keeps hits from one source: "app" (the app's own), "connected"
+	// (any connected platform), "provider:<id>" or a connection id. "" = all.
+	Source string
+}
+
+var providerRE = regexp.MustCompile(`^[a-z][a-z0-9]{1,29}$`)
+
+// parseSource validates the optional source filter.
+func parseSource(raw string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case v == "" || v == "app" || v == "connected":
+		return v, nil
+	case strings.HasPrefix(v, "provider:") && providerRE.MatchString(strings.TrimPrefix(v, "provider:")):
+		return v, nil
+	}
+	if _, err := uuid.Parse(v); err == nil {
+		return v, nil
+	}
+	return "", httpx.BadRequest("source is app, connected, provider:<id> or a connection id.")
+}
+
+// sourceMatches reports whether a hit passes the source filter.
+func sourceMatches(filter string, h app.SearchResult) bool {
+	switch {
+	case filter == "":
+		return true
+	case filter == "app":
+		return h.Source == nil
+	case filter == "connected":
+		return h.Source != nil
+	case strings.HasPrefix(filter, "provider:"):
+		return h.Source != nil && h.Source.Provider == strings.TrimPrefix(filter, "provider:")
+	}
+	return h.Source != nil && strings.EqualFold(h.Source.ConnectionID, filter)
 }
 
 var errTooShort = httpx.NewError(http.StatusBadRequest, "query_too_short",
@@ -171,7 +219,11 @@ func (s *Service) search(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	httpx.OK(w, s.Run(r.Context(), id, Query{Text: q, Kinds: kinds, Limit: limit, OrgID: org}))
+	source, err := parseSource(r.URL.Query().Get("source"))
+	if err != nil {
+		return err
+	}
+	httpx.OK(w, s.Run(r.Context(), id, Query{Text: q, Kinds: kinds, Limit: limit, OrgID: org, Source: source}))
 	return nil
 }
 
@@ -243,7 +295,16 @@ func (s *Service) Run(ctx context.Context, caller *auth.Identity, q Query) Respo
 	}
 	wg.Wait()
 
-	out := Response{Query: q.Text, Items: merge(hits, q.Limit), Providers: statuses}
+	all := merge(hits, 0)
+	out := Response{Query: q.Text, Items: []app.SearchResult{}, Providers: statuses, Sources: sourceFacets(all)}
+	for _, h := range all {
+		if sourceMatches(q.Source, h) {
+			out.Items = append(out.Items, h)
+			if len(out.Items) == q.Limit {
+				break
+			}
+		}
+	}
 	for _, st := range statuses {
 		out.Partial = out.Partial || st.Status != "ok"
 	}
@@ -329,6 +390,23 @@ func sanitize(module string, in []app.SearchResult, q Query) []app.SearchResult 
 		h.Snippet = clip(strings.Join(strings.Fields(h.Snippet), " "), maxSnippet)
 		h.Context = clip(strings.Join(strings.Fields(h.Context), " "), maxTitle)
 		h.Score = min(max(h.Score, 0), 1)
+		if h.Source != nil {
+			// Connected content must say where it came from correctly: a hit
+			// with a malformed source is dropped rather than shown as the app's own.
+			src := *h.Source
+			if src.Type == "" {
+				src.Type = "connected"
+			}
+			if src.Type != "connected" || !providerRE.MatchString(src.Provider) || src.ConnectionID == "" {
+				slog.Debug("search: hit dropped (source)", "provider", module, "kind", h.Kind)
+				continue
+			}
+			src.Account, src.Product = clip(strings.TrimSpace(src.Account), maxTitle), clip(strings.TrimSpace(src.Product), 40)
+			if u, err := url.Parse(src.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+				src.URL = ""
+			}
+			h.Source = &src
+		}
 		out = append(out, h)
 		if len(out) == q.Limit {
 			break
@@ -344,8 +422,30 @@ func clip(s string, n int) string {
 	return s
 }
 
+// sourceFacets counts hits per source: the app's own first, then each
+// connected platform in order of first appearance.
+func sourceFacets(hits []app.SearchResult) []SourceCount {
+	out := []SourceCount{{ID: "app"}}
+	index := map[string]int{}
+	for _, h := range hits {
+		if h.Source == nil {
+			out[0].Count++
+			continue
+		}
+		id := "provider:" + h.Source.Provider
+		i, ok := index[id]
+		if !ok {
+			i = len(out)
+			index[id] = i
+			out = append(out, SourceCount{ID: id, Provider: h.Source.Provider})
+		}
+		out[i].Count++
+	}
+	return out
+}
+
 // merge orders every hit by score, then recency, then kind and id (stable
-// across calls), drops duplicates and keeps limit.
+// across calls), drops duplicates and keeps limit (0 = all).
 func merge(lists [][]app.SearchResult, limit int) []app.SearchResult {
 	all := []app.SearchResult{}
 	seen := map[string]bool{}
@@ -371,7 +471,7 @@ func merge(lists [][]app.SearchResult, limit int) []app.SearchResult {
 		}
 		return a.ID < b.ID
 	})
-	if len(all) > limit {
+	if limit > 0 && len(all) > limit {
 		all = all[:limit]
 	}
 	return all
@@ -393,23 +493,25 @@ func (s *Service) Tools() []app.Tool {
 		Name: "search_everything",
 		Description: fmt.Sprintf("Search everything the user can see in the app (messages, posts, documents, records and more, depending on what is installed) and get the best matches across features, newest first among equal matches. "+
 			"Use it first to find something by name or words in it, then call the owning feature's tools with the id. "+
-			"Query is at least %d characters. Narrow with kinds (a feature like \"chat\" or a kind like \"chat.message\") or org_id (results with that org_id, plus ones with none). Each item's context says where it lives (for example its org and folder). If partial is true, some features didn't answer and results may be incomplete.", MinQueryChars),
+			"Query is at least %d characters. Narrow with kinds (a feature like \"chat\" or a kind like \"chat.message\"), org_id (results with that org_id, plus ones with none) or source. Each item's context says where it lives (for example its org and folder); items with a source come live from the user's connected account on that platform (third-party content). If partial is true, some features didn't answer and results may be incomplete.", MinQueryChars),
 		InputSchema: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{`+
 			`"query":{"type":"string","minLength":%d,"maxLength":%d,"description":"Words to find."},`+
 			`"kinds":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"Features or kinds to search, e.g. [\"chat\", \"docs.page\"]. Omit for all."},`+
 			`"limit":{"type":"integer","minimum":1,"maximum":%d,"description":"Most results to return (default 20)."},`+
-			`"org_id":{"type":"string","format":"uuid","description":"Only results with this org_id (plus ones with none). Omit for all."}},`+
+			`"org_id":{"type":"string","format":"uuid","description":"Only results with this org_id (plus ones with none). Omit for all."},`+
+			`"source":{"type":"string","description":"Only results from one source: app (this app's own), connected (any connected platform), provider:<id> (e.g. provider:google) or a connection id. Omit for all."}},`+
 			`"required":["query"],"additionalProperties":false}`, MinQueryChars, maxQueryChars, maxLimit)),
 		ReadOnly: true,
 		Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 			var in struct {
-				Query string   `json:"query"`
-				Kinds []string `json:"kinds"`
-				Limit int      `json:"limit"`
-				OrgID string   `json:"org_id"`
+				Query  string   `json:"query"`
+				Kinds  []string `json:"kinds"`
+				Limit  int      `json:"limit"`
+				OrgID  string   `json:"org_id"`
+				Source string   `json:"source"`
 			}
 			if err := json.Unmarshal(input, &in); err != nil {
-				return nil, httpx.BadRequest("Send {query, kinds?, limit?, org_id?}.")
+				return nil, httpx.BadRequest("Send {query, kinds?, limit?, org_id?, source?}.")
 			}
 			q, err := NormalizeQuery(in.Query)
 			if err != nil {
@@ -423,7 +525,11 @@ func (s *Service) Tools() []app.Tool {
 			if err != nil {
 				return nil, err
 			}
-			res := s.Run(ctx, caller, Query{Text: q, Kinds: kinds, Limit: min(max(in.Limit, 0), maxLimit), OrgID: org})
+			source, err := parseSource(in.Source)
+			if err != nil {
+				return nil, err
+			}
+			res := s.Run(ctx, caller, Query{Text: q, Kinds: kinds, Limit: min(max(in.Limit, 0), maxLimit), OrgID: org, Source: source})
 			web := strings.TrimRight(s.d.Cfg.PublicWebURL, "/")
 			items := make([]toolHit, len(res.Items))
 			for i, h := range res.Items {

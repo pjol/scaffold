@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, reposRelativeTime, useReposPulls, type ReposPull, type ReposPullFilter } from "@scaffoldapp/shared";
+import { errorMessage, reposPullNoun, reposRelativeTime, useReposPulls, type ReposPull, type ReposPullFilter } from "@scaffoldapp/shared";
 import { Badge, Button, Card, EmptyState, ErrorState, Input, SegmentedControl, Skeleton, SkeletonGroup, Tab, Tabs, TabsList } from "@scaffoldapp/ui-web";
 import { Check, GitMerge, GitPullRequest, GitPullRequestClosed, MessageSquare, Plus, Search } from "lucide-react";
 import Link from "next/link";
@@ -40,10 +40,10 @@ export function PullsScreen() {
             { value: "review_requested", label: "To review" },
           ]}
         />
-        <Input aria-label="Search pull requests" placeholder="Search by title or #" leadingIcon={<Search aria-hidden />} value={q} onChange={(e) => setQ(e.target.value)} wrapperClassName="md:ml-auto md:w-64" />
+        <Input aria-label={`Search ${reposPullNoun(repo, true).toLowerCase()}`} placeholder="Search by title or #" leadingIcon={<Search aria-hidden />} value={q} onChange={(e) => setQ(e.target.value)} wrapperClassName="md:ml-auto md:w-64" />
         {repo.can_push ? (
           <Button asChild size="auto" leftIcon={<Plus />}>
-            <Link href={repoHref(repo.id, "compare", { base: repo.default_branch })}>New pull request</Link>
+            <Link href={repoHref(repo.id, "compare", { base: repo.default_branch })}>New {reposPullNoun(repo).toLowerCase()}</Link>
           </Button>
         ) : null}
       </div>
@@ -63,7 +63,7 @@ export function PullsScreen() {
           <EmptyState
             compact
             icon={<GitPullRequest />}
-            title={q ? "Nothing matches" : state === "open" ? "No open pull requests" : "No pull requests"}
+            title={q ? "Nothing matches" : state === "open" ? `No open ${reposPullNoun(repo, true).toLowerCase()}` : `No ${reposPullNoun(repo, true).toLowerCase()}`}
             action={
               repo.can_push && state === "open" && !q ? (
                 <Button asChild variant="outline">

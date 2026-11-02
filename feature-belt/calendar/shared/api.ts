@@ -8,6 +8,12 @@ import type {
   CalendarBookingLinkInput,
   CalendarBookingRequest,
   CalendarBookingWhen,
+  CalendarCalendarRef,
+  CalendarConnectedEventDetail,
+  CalendarConnectedEventInput,
+  CalendarConnectedRange,
+  CalendarConnectedRef,
+  CalendarSources,
   CalendarEventDetail,
   CalendarEventInput,
   CalendarFeedSecret,
@@ -113,6 +119,28 @@ export function calendarEndpoints(http: HttpClient) {
       icsUrl: (token: string) => `${http.baseUrl}${C}/manage/${seg(token)}.ics`,
     },
 
+    /** Sources: the app's own calendar, each connected account with its calendars, offers and meeting providers. */
+    sources: (orgId?: string | null, o?: CallOptions) => http.get<CalendarSources>(`${C}/sources`, { ...o, query: { org_id: orgId ?? undefined } }),
+    /** Events on the caller's visible connected calendars in [from, to) (≤ 62 days), with per-source errors. */
+    connectedRange: (from: string, to: string, orgId?: string | null, o?: CallOptions) =>
+      http.get<CalendarConnectedRange>(`${C}/connected/events`, { ...o, query: { from, to, org_id: orgId ?? undefined }, timeoutMs: 30_000 }),
+    connectedEvent: (ref: CalendarConnectedRef, orgId?: string | null, o?: CallOptions) =>
+      http.get<CalendarConnectedEventDetail>(connectedEventPath(C, ref), { ...o, query: { org_id: orgId ?? undefined } }),
+    createConnectedEvent: (cal: CalendarCalendarRef, body: CalendarConnectedEventInput, orgId?: string | null, o?: CallOptions) =>
+      http.post<CalendarConnectedEventDetail>(`${C}/connected/${seg(cal.connection_id)}/calendars/${seg(cal.calendar_id)}/events`, body, { ...o, query: { org_id: orgId ?? undefined }, timeoutMs: 30_000 }),
+    updateConnectedEvent: (ref: CalendarConnectedRef, body: CalendarConnectedEventInput, orgId?: string | null, o?: CallOptions) =>
+      http.patch<CalendarConnectedEventDetail>(connectedEventPath(C, ref), body, { ...o, query: { org_id: orgId ?? undefined }, timeoutMs: 30_000 }),
+    deleteConnectedEvent: (ref: CalendarConnectedRef, params: { scope?: "this" | "all"; send_updates?: boolean; orgId?: string | null } = {}, o?: CallOptions) =>
+      http.delete<void>(connectedEventPath(C, ref), {
+        ...o,
+        query: { scope: params.scope, send_updates: params.send_updates === false ? "false" : undefined, org_id: params.orgId ?? undefined },
+      }),
+    respondConnected: (ref: CalendarConnectedRef, response: Exclude<CalendarResponse, "needs_action">, orgId?: string | null, o?: CallOptions) =>
+      http.put<CalendarConnectedEventDetail>(`${connectedEventPath(C, ref)}/rsvp`, { response }, { ...o, query: { org_id: orgId ?? undefined } }),
+    /** Colour, visibility, or whether its busy time counts for availability. */
+    updateConnectedCalendar: (cal: CalendarCalendarRef, body: { color?: string; hidden?: boolean; busy?: boolean }, o?: CallOptions) =>
+      http.patch<void>(`${C}/connected/${seg(cal.connection_id)}/calendars/${seg(cal.calendar_id)}`, body, o),
+
     /** An external guest's RSVP link. */
     guest: {
       get: (token: string, o?: CallOptions) => http.get<CalendarGuestInvitation>(`${C}/rsvp/${seg(token)}`, { ...o, auth: false }),
@@ -120,6 +148,10 @@ export function calendarEndpoints(http: HttpClient) {
         http.post<CalendarGuestInvitation>(`${C}/rsvp/${seg(token)}`, { response }, { ...o, auth: false }),
     },
   };
+}
+
+function connectedEventPath(base: string, ref: CalendarConnectedRef): string {
+  return `${base}/connected/${seg(ref.connection_id)}/calendars/${seg(ref.calendar_id)}/events/${seg(ref.event_id)}`;
 }
 
 export type CalendarEndpoints = ReturnType<typeof calendarEndpoints>;

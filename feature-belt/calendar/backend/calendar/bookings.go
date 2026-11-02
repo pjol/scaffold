@@ -69,6 +69,14 @@ type Booker struct {
 func locationLabel(l BookingLink) string {
 	switch l.LocationType {
 	case LocationVideo:
+		switch l.ConferenceProvider {
+		case ProviderGoogleMeet:
+			return "Google Meet"
+		case ProviderTeams:
+			return "Microsoft Teams"
+		case ProviderZoom:
+			return "Zoom"
+		}
 		return "Video call"
 	case LocationPhone:
 		if l.LocationValue != "" {
@@ -351,12 +359,38 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 	}
 	var conf *Conference
 	eventID := uuid.New() // the host's event, made below; named now so the room can link to it
-	if l.LocationType == LocationVideo {
-		b.EventID = &eventID
+	b.EventID = &eventID
+	// A link that adds bookings to a connected calendar writes the copy
+	// first: a native meeting (Meet, Teams) comes from it. Without a native
+	// meeting the copy is a convenience, and the booking goes on without it.
+	bcopy, err := s.prepareBookingCopy(ctx, &l)
+	if err != nil {
+		return err
+	}
+	if l.LocationType == LocationVideo && !bcopy.native {
 		if conf, err = s.bookingConference(ctx, l, b, nil); err != nil {
 			return err
 		}
 		b.ConferenceURL, b.ConferenceID = &conf.JoinURL, &conf.ID
+	}
+	if bcopy.sess != nil {
+		if err := s.writeBookingCopy(ctx, l, &b, bcopy, bookingTitle(l.Title, host.DisplayName, name), bookingNotes(b, phone)); err != nil {
+			// Only a native meeting fails the copy: fall back to the app's
+			// own rooms when there are any.
+			if !VideoAvailable() {
+				return err
+			}
+			slog.WarnContext(ctx, "calendar: native meeting failed; using the app's own call", "err", err)
+			l.ConferenceProvider, l.ConferenceConnectionID = ProviderApp, nil
+			if conf, err = s.bookingConference(ctx, l, b, nil); err != nil {
+				return err
+			}
+			b.ConferenceURL, b.ConferenceID = &conf.JoinURL, &conf.ID
+		}
+	}
+	if l.LocationType == LocationVideo {
+		provider := trimProvider(l.ConferenceProvider)
+		b.ConferenceProvider = &provider
 	}
 	token, _ := s.tokenFor("manage", b.ID)
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
@@ -365,7 +399,7 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, jobs.LockKey("calendar.host:"+l.ownerID.String())); err != nil {
 			return err
 		}
-		ok, err := s.slotAvailable(ctx, tx, l, start, in.Duration, uuid.Nil)
+		ok, err := s.slotAvailable(withoutConnectedBusy(ctx), tx, l, start, in.Duration, uuid.Nil)
 		if err != nil {
 			return err
 		}
@@ -397,11 +431,12 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO calendar_bookings (id, link_id, host_id, event_id, title, booker_user_id, booker_name, booker_email,
 			  booker_timezone, starts_at, ends_at, block, location_type, location_value, conference_url, conference_id,
-			  answers, manage_token_hash)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, tstzrange($12, $13), $14, $15, $16, $17, $18, $19)`,
+			  answers, manage_token_hash, ext_connection_id, ext_calendar_id, ext_event_id, conference_provider)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, tstzrange($12, $13), $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
 			b.ID, b.LinkID, b.HostID, b.EventID, b.Title, b.BookerUserID, b.BookerName, b.BookerEmail, b.BookerTimezone,
 			b.StartsAt, b.EndsAt, b.StartsAt.Add(-time.Duration(l.BufferBefore)*time.Minute), b.EndsAt.Add(time.Duration(l.BufferAfter)*time.Minute),
-			b.LocationType, b.LocationValue, b.ConferenceURL, b.ConferenceID, answersJSON, hashToken(token)); err != nil {
+			b.LocationType, b.LocationValue, b.ConferenceURL, b.ConferenceID, answersJSON, hashToken(token),
+			b.ExtConnectionID, b.ExtCalendarID, b.ExtEventID, b.ConferenceProvider); err != nil {
 			return err
 		}
 		return s.tellBooking(ctx, tx, b, l, host, "new", token, "")
@@ -410,12 +445,16 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if conf != nil {
 			s.cancelConferenceNow(ctx, conf.ID)
 		}
+		s.dropBookingCopy(ctx, bcopy, b)
 		if isExclusionViolation(err) {
 			return errSlotTaken
 		}
 		return err
 	}
 	kickOutbox()
+	if b.ExtEventID != nil {
+		s.changed(ctx, "connected", l.ownerID)
+	}
 	s.changed(ctx, "events", l.ownerID, uuidOr(bookerID))
 	s.changed(ctx, "bookings", l.ownerID, uuidOr(bookerID))
 	pb := s.publicBooking(b, l, host)
@@ -475,7 +514,11 @@ func (s *Service) bookingConference(ctx context.Context, l BookingLink, b bookin
 	if c == nil {
 		return nil, httpx.NewError(http.StatusConflict, "video_unavailable", "Video calls aren't available for this link right now.")
 	}
-	req := ConferenceRequest{EventID: uuidOr(b.EventID), HostID: l.ownerID, Title: l.Title, StartsAt: b.StartsAt, EndsAt: b.EndsAt, Audience: AudienceExternal}
+	req := ConferenceRequest{EventID: uuidOr(b.EventID), HostID: l.ownerID, Title: l.Title, StartsAt: b.StartsAt, EndsAt: b.EndsAt, Audience: AudienceExternal,
+		Provider: trimProvider(l.ConferenceProvider), ConnectionID: ptrStr(l.ConferenceConnectionID)}
+	if b.BookerUserID == nil && b.BookerEmail != "" {
+		req.GuestEmails = []string{b.BookerEmail}
+	}
 	if l.Audience == "internal" {
 		req.Audience, req.OrgID = AudienceInternal, l.OrgID
 	}
@@ -492,7 +535,11 @@ func (s *Service) bookingConference(ctx context.Context, l BookingLink, b bookin
 		conf, err = c.Create(cctx, req)
 	}
 	if err != nil {
+		slog.WarnContext(ctx, "calendar: booking conference failed", "provider", req.Provider, "err", err)
 		return nil, httpx.NewError(http.StatusBadGateway, "video_failed", "Couldn't set up the video call. Try again.")
+	}
+	if conf.Provider == "" {
+		conf.Provider = req.Provider
 	}
 	return &conf, nil
 }
@@ -522,19 +569,27 @@ type bookingRow struct {
 	CancelReason   string
 	CreatedAt      time.Time
 	Sequence       int
+
+	// The platform copy on a connected calendar (links with AddTo).
+	ExtConnectionID    *string
+	ExtCalendarID      *string
+	ExtEventID         *string
+	ConferenceProvider *string
 }
 
 const bookingCols = `b.id, b.link_id, b.host_id, b.event_id, b.title, b.booker_user_id, b.booker_name, b.booker_email,
 	b.booker_timezone, b.starts_at, b.ends_at, b.location_type, b.location_value, b.conference_url, b.conference_id,
 	b.answers, b.status, b.cancelled_at, b.cancelled_by, b.cancel_reason, b.created_at,
-	COALESCE((SELECT sequence FROM calendar_events e WHERE e.id = b.event_id), b.reschedule_count)`
+	COALESCE((SELECT sequence FROM calendar_events e WHERE e.id = b.event_id), b.reschedule_count),
+	b.ext_connection_id, b.ext_calendar_id, b.ext_event_id, b.conference_provider`
 
 func scanBooking(row pgx.Row) (bookingRow, error) {
 	var b bookingRow
 	var answers []byte
 	err := row.Scan(&b.ID, &b.LinkID, &b.HostID, &b.EventID, &b.Title, &b.BookerUserID, &b.BookerName, &b.BookerEmail,
 		&b.BookerTimezone, &b.StartsAt, &b.EndsAt, &b.LocationType, &b.LocationValue, &b.ConferenceURL, &b.ConferenceID,
-		&answers, &b.Status, &b.CancelledAt, &b.CancelledBy, &b.CancelReason, &b.CreatedAt, &b.Sequence)
+		&answers, &b.Status, &b.CancelledAt, &b.CancelledBy, &b.CancelReason, &b.CreatedAt, &b.Sequence,
+		&b.ExtConnectionID, &b.ExtCalendarID, &b.ExtEventID, &b.ConferenceProvider)
 	if err == nil {
 		b.Answers = []Answer{}
 		_ = json.Unmarshal(answers, &b.Answers)
@@ -575,7 +630,7 @@ func (s *Service) publicBooking(b bookingRow, l BookingLink, host Person) Public
 	}
 	pb.LocationLabel = bookingLocation(b)
 	if b.LocationType == LocationVideo {
-		pb.LocationLabel = "Video call"
+		pb.LocationLabel = providerName(ptrStr(b.ConferenceProvider))
 	}
 	if l.ID != uuid.Nil && l.Active {
 		slug := l.Slug
@@ -748,7 +803,7 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 		if cur.Status != "confirmed" {
 			return httpx.Conflict("This booking was cancelled.")
 		}
-		ok, err := s.slotAvailable(ctx, tx, l, start, dur, b.ID)
+		ok, err := s.slotAvailable(withoutConnectedBusy(ctx), tx, l, start, dur, b.ID)
 		if err != nil {
 			return err
 		}
@@ -768,6 +823,9 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 				return err
 			}
 			moved.Sequence = cur.Sequence + 1
+		}
+		if err := enqueueCopyMove(ctx, tx, b, moved.StartsAt, moved.EndsAt, l.Timezone); err != nil {
+			return err
 		}
 		mt, stable := s.tokenFor("manage", b.ID)
 		if !stable {
@@ -851,6 +909,12 @@ func (s *Service) cancelBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, 
 	}
 	if err := enqueueConferenceCancel(ctx, tx, b.ConferenceID); err != nil {
 		return nil, err
+	}
+	if b.ExtEventID != nil && b.ExtConnectionID != nil && b.ExtCalendarID != nil {
+		if err := enqueueConnectedOp(ctx, tx, connectedOp{UserID: b.HostID, ConnectionID: *b.ExtConnectionID, CalendarID: *b.ExtCalendarID,
+			EventID: *b.ExtEventID, Op: "delete"}); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.tellBooking(ctx, tx, b, l, host, "cancelled", "", by); err != nil {
 		return nil, err

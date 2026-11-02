@@ -4,11 +4,17 @@ import {
   CRM_KIND,
   CRM_TYPE_LABEL,
   accessLevelAtLeast,
+  connectionFixPath,
+  crmIsConnectedId,
+  crmSourceIdOf,
+  isConnectionErrorCode,
   crmDuration,
   crmMoney,
   errorMessage,
+  useCrmCompanyLinks,
   useCrmDeleteRecord,
   useCrmLink,
+  useCrmLinkCompany,
   useCrmMerge,
   useCrmMoveStage,
   useCrmPipelines,
@@ -18,24 +24,49 @@ import {
   useTopic,
   topic,
   type CrmAssociations,
+  type CrmCompanyLink,
   type CrmDeal,
   type CrmObjectType,
   type CrmRecord,
   type CrmRecordRef,
   type CrmSearchHit,
 } from "@scaffoldapp/shared";
-import { Badge, Button, Card, ConfirmDialog, Dialog, EmptyState, ErrorState, IconButton, Skeleton, SkeletonGroup, Tab, Tabs, TabsList, cn, toast } from "@scaffoldapp/ui-web";
-import { Copy, GitMerge, Mail, Phone, Plus, SearchX, Star, Trash2, X } from "lucide-react";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  ErrorState,
+  IconButton,
+  ProviderIcon,
+  Select,
+  Skeleton,
+  SkeletonGroup,
+  SourceBadge,
+  Tab,
+  Tabs,
+  TabsList,
+  cn,
+  sourcePlatformName,
+  toast,
+} from "@scaffoldapp/ui-web";
+import { Copy, ExternalLink, GitMerge, Import, Link2, Mail, Phone, Plus, SearchX, Star, Trash2, Unlink, X } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
+import { APP_NAME } from "@/lib/app";
+import { formatDateTime } from "@/lib/format";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { CreateRecordDialog } from "./CreateRecordDialog";
 import { PropertiesPanel } from "./Properties";
 import { TimelinePanel } from "./Timeline";
+import { ImportDialog } from "./ListScreen";
 import { MoneyText, PersonChip, RecordPicker, StageBadge, TYPE_ICON, TagList, dayLabel, recordHref } from "./parts";
+import { openInLabel } from "./Sources";
 
 /** /crm/{companies|contacts|deals}/[id]: properties left, timeline centre, associations right (tabs on narrow screens). */
 export function CrmRecordScreen({ type, id }: { type: CrmObjectType; id: string }) {
@@ -50,7 +81,10 @@ type Pane = "activity" | "about" | "related";
 
 function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
   const rec = useCrmRecord(type, id);
-  useTopic(topic("crm", id));
+  const connected = crmIsConnectedId(id);
+  const pathname = usePathname() ?? "/crm";
+  // Connected records live on their platform: no app topic to follow.
+  useTopic(connected ? null : topic("crm", id));
   const [pane, setPane] = useUrlState<Pane>("pane", "activity");
 
   if (rec.isPending) {
@@ -66,13 +100,31 @@ function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
     );
   }
   if (rec.isError) {
+    if (isConnectionErrorCode(rec.error.code)) {
+      return (
+        <Card padding="compact">
+          <EmptyState
+            icon={<SearchX />}
+            title={`Couldn't open this ${CRM_TYPE_LABEL[type].one}`}
+            info={rec.error.message}
+            action={
+              rec.error.code === "connection_needs_auth" || rec.error.code === "connection_scope_missing" ? (
+                <Button asChild size="auto">
+                  <Link href={connectionFixPath(null, pathname)}>Reconnect</Link>
+                </Button>
+              ) : undefined
+            }
+          />
+        </Card>
+      );
+    }
     if (rec.error.status === 404) {
       return (
         <Card padding="compact">
           <EmptyState
             icon={<SearchX />}
             title={`${CRM_TYPE_LABEL[type].One} not found`}
-            info="It was deleted, merged into another record, or isn't shared with you."
+            info={connected ? "It was deleted on its platform, or your account there can't see it." : "It was deleted, merged into another record, or isn't shared with you."}
             action={
               <Button asChild size="auto">
                 <Link href={`/crm/${CRM_TYPE_LABEL[type].many}`}>{CRM_TYPE_LABEL[type].Many}</Link>
@@ -98,13 +150,14 @@ function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
       <div className="grid items-start gap-6 lg:grid-cols-12">
         <aside className={cn("flex flex-col gap-6 lg:col-span-4 xl:col-span-3", pane === "about" ? "flex" : "hidden lg:flex")} aria-label="About">
           <PropertiesPanel record={record} />
-          {record.type === "deal" ? <StageHistoryCard deal={record} /> : null}
+          {record.type === "deal" && !record.source ? <StageHistoryCard deal={record} /> : null}
         </aside>
         <section className={cn("flex min-w-0 flex-col gap-4 lg:col-span-8 lg:row-span-2 xl:col-span-6", pane === "activity" ? "flex" : "hidden lg:flex")} aria-label="Activity">
           <TimelinePanel record={record} suggestions={suggestionsFor(record, associations)} />
         </section>
         <aside className={cn("flex flex-col gap-6 lg:col-span-4 xl:col-span-3", pane === "related" ? "flex" : "hidden lg:flex")} aria-label="Related records">
           <AssociationsPanel record={record} associations={associations} />
+          {record.type === "company" && !record.source ? <LinkedRecordsCard companyId={record.id} editable={accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit")} /> : null}
         </aside>
       </div>
     </div>
@@ -119,10 +172,14 @@ function suggestionsFor(record: CrmRecord, a: CrmAssociations): CrmRecordRef[] {
 }
 
 function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; canDelete: boolean; associations: CrmAssociations }) {
-  const { orgId } = useCrm();
+  const { orgId, settings, sources } = useCrm();
   const router = useRouter();
   const [merging, setMerging] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const external = record.source?.type === "connected" ? record.source : null;
+  const openIn = openInLabel(record.source);
+  const canImport = !!external && settings.can.import && sources?.mode !== "connected";
   const del = useCrmDeleteRecord(record.type);
   const Icon = TYPE_ICON[record.type];
   const editable = accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit");
@@ -135,7 +192,10 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
           <Icon className="size-6" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h2 className="type-headline break-words text-fg">{record.title}</h2>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h2 className="type-headline break-words text-fg">{record.title}</h2>
+            <SourceBadge source={record.source} showAccount size="md" />
+          </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 type-label text-fg-muted">
             {record.type === "contact" ? (
               <>
@@ -172,11 +232,15 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
         </div>
         <ResourceMenu
           feature="crm"
-          kind={CRM_KIND[record.type]}
-          id={record.id}
+          // Connected records aren't the app's to share: their platform decides who sees them.
+          {...(external ? {} : { kind: CRM_KIND[record.type], id: record.id })}
           title={record.title}
           orgId={orgId}
           actions={[
+            ...(openIn && external?.url
+              ? [{ id: "crm-open-in", label: openIn, icon: ExternalLink, onSelect: () => void window.open(external.url, "_blank", "noopener,noreferrer") }]
+              : []),
+            ...(canImport ? [{ id: "crm-import-one", label: `Import into ${APP_NAME}`, icon: Import, onSelect: () => setImporting(true) }] : []),
             {
               id: "crm-copy-link",
               label: "Copy link",
@@ -210,6 +274,18 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
       </div>
       {record.type === "deal" ? <StageBar deal={record} editable={editable} /> : null}
       {merging ? <MergeDialog record={record} onClose={() => setMerging(false)} /> : null}
+      {importing && external ? (
+        <ImportDialog
+          type={record.type}
+          orgId={orgId}
+          source={external.connection_id}
+          ids={[record.id]}
+          onClose={() => setImporting(false)}
+          onDone={(created) => {
+            if (created) router.push(recordHref(record.type, created.id));
+          }}
+        />
+      ) : null}
       <ConfirmDialog
         open={deleting}
         onOpenChange={setDeleting}
@@ -236,7 +312,7 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
 /** The deal's pipeline as steps; click one to move the deal (edit needed). */
 function StageBar({ deal, editable }: { deal: CrmDeal; editable: boolean }) {
   const { orgId } = useCrm();
-  const pipelines = useCrmPipelines(orgId);
+  const pipelines = useCrmPipelines(orgId, crmSourceIdOf(deal));
   const move = useCrmMoveStage(orgId);
   const update = useCrmUpdateRecord("deal", deal.id);
   const pl = pipelines.data?.find((p) => p.id === deal.pipeline_id);
@@ -323,7 +399,9 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
   const { orgId } = useCrm();
   const link = useCrmLink();
   const update = useCrmUpdateRecord(record.type, record.id);
-  const editable = accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit");
+  // A connected record's links change on its platform; here they're read-only.
+  const external = !!record.source;
+  const editable = !external && accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit");
   const [adding, setAdding] = useState<CrmObjectType | null>(null);
   const [creating, setCreating] = useState<CrmObjectType | null>(null);
   const fail = (e: unknown) => toast.error(errorMessage(e, "Couldn't change the link."));
@@ -354,8 +432,8 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
       type: "contact",
       title: "Contacts",
       rows: a.contacts.map((c) => ({ id: c.id, name: c.name, detail: c.job_title || c.email || "" })),
-      canAdd: record.type === "deal" ? editable : true,
-      canCreate: record.type === "company",
+      canAdd: !external && (record.type === "deal" ? editable : true),
+      canCreate: !external && record.type === "company",
     });
   }
   if (record.type !== "deal") {
@@ -372,8 +450,8 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
           </span>
         ),
       })),
-      canAdd: record.type === "contact",
-      canCreate: true,
+      canAdd: !external && record.type === "contact",
+      canCreate: !external,
     });
   }
 
@@ -407,7 +485,7 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
               ) : null}
             </div>
             {s.rows.length === 0 ? (
-              <p className="type-label text-fg-subtle">None you can see</p>
+              <p className="type-label text-fg-subtle">{external ? "None your account can see" : "None you can see"}</p>
             ) : (
               <ul className="flex flex-col gap-1">
                 {s.rows.map((r) => (
@@ -423,7 +501,7 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
                     {editable && record.type === "contact" && s.type === "company" && !r.primary ? (
                       <IconButton label={`Make ${r.name} primary`} size="sm" icon={<Star />} onClick={() => link.mutate({ op: "primary_company", contactId: record.id, companyId: r.id }, { onError: fail })} />
                     ) : null}
-                    {(editable || (record.type === "company" && s.type === "contact")) && !(record.type === "company" && s.type === "deal") ? (
+                    {!external && (editable || (record.type === "company" && s.type === "contact")) && !(record.type === "company" && s.type === "deal") ? (
                       <IconButton label={`Unlink ${r.name}`} size="sm" icon={<X />} onClick={() => unlink(s.type, r.id)} />
                     ) : null}
                   </li>
@@ -515,5 +593,130 @@ function MergeDialog({ record, onClose }: { record: CrmRecord; onClose: () => vo
         </fieldset>
       )}
     </Dialog>
+  );
+}
+
+// ---- links to connected CRMs -----------------------------------------------------------
+
+/**
+ * A company linked to a HubSpot company or Salesforce account: the platform's deals and latest
+ * activity, read with the viewer's own connection (each colleague sees what their account can).
+ */
+function LinkedRecordsCard({ companyId, editable }: { companyId: string; editable: boolean }) {
+  const { orgId, sources } = useCrm();
+  const pathname = usePathname() ?? "/crm";
+  const links = useCrmCompanyLinks(companyId);
+  const change = useCrmLinkCompany(companyId);
+  const [picking, setPicking] = useState(false);
+  const conns = (sources?.sources ?? []).filter((s) => s.type === "connected" && (s.status ?? "active") === "active");
+  const [conn, setConn] = useState<string>("");
+  const chosen = conn || conns[0]?.id || "";
+  if (!sources || sources.mode === "app") return null;
+  const items = links.data ?? [];
+  if (items.length === 0 && (!editable || conns.length === 0)) return null;
+  const fail = (e: unknown) => toast.error(errorMessage(e, "Couldn't change the link."));
+  return (
+    <Card padding="compact" className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <h2 className="flex-1 type-title-sm text-fg">Linked records</h2>
+        {editable && conns.length > 0 ? (
+          <Button variant="ghost" size="sm" leftIcon={<Link2 />} onClick={() => setPicking(true)}>
+            Link
+          </Button>
+        ) : null}
+      </div>
+      {links.isPending ? (
+        <SkeletonGroup label="Loading linked records" className="flex flex-col gap-2">
+          <Skeleton shape="text" className="h-4 w-40" />
+          <Skeleton shape="text" className="h-4 w-56" />
+        </SkeletonGroup>
+      ) : links.isError ? (
+        <ErrorState compact title="Couldn't load linked records" onRetry={() => void links.refetch()} />
+      ) : items.length === 0 ? (
+        <p className="type-label text-fg-subtle">Link this company to its HubSpot or Salesforce record to see deals and activity from there.</p>
+      ) : (
+        <ul className="flex flex-col gap-4">
+          {items.map((l) => (
+            <LinkedRecord key={l.id} link={l} pathname={pathname} onUnlink={() => change.mutate({ op: "unlink", linkId: l.id }, { onError: fail })} />
+          ))}
+        </ul>
+      )}
+      <Dialog open={picking} onOpenChange={setPicking} title="Link a connected company" size="md">
+        <div className="flex flex-col gap-3">
+          {conns.length > 1 ? (
+            <Select aria-label="Account" value={chosen} onValueChange={setConn} options={conns.map((c) => ({ value: c.id, label: c.label }))} />
+          ) : null}
+          {chosen ? (
+            <RecordPicker
+              orgId={orgId}
+              types={["company"]}
+              source={chosen}
+              label="Find the company"
+              autoFocus
+              onPick={(hit) => {
+                setPicking(false);
+                change.mutate({ op: "link", recordId: hit.id }, { onSuccess: () => toast.success(`Linked to ${hit.title}`), onError: fail });
+              }}
+            />
+          ) : null}
+        </div>
+      </Dialog>
+    </Card>
+  );
+}
+
+function LinkedRecord({ link: l, pathname, onUnlink }: { link: CrmCompanyLink; pathname: string; onUnlink: () => void }) {
+  const platform = sourcePlatformName(l.provider);
+  return (
+    <li className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <ProviderIcon provider={l.provider} size={16} />
+        {l.status === "ok" && l.record ? (
+          <Link href={recordHref("company", l.record.id)} className="min-w-0 flex-1 truncate type-label font-semibold text-fg hover:underline">
+            {l.record.title}
+          </Link>
+        ) : (
+          <span className="min-w-0 flex-1 truncate type-label font-semibold text-fg">{platform}</span>
+        )}
+        {l.can_remove ? <IconButton label={`Unlink from ${platform}`} size="sm" icon={<Unlink />} onClick={onUnlink} /> : null}
+      </div>
+      {l.status === "no_connection" ? (
+        <Button asChild variant="secondary" size="sm" className="self-start">
+          <Link href={connectionFixPath(l.capability, pathname)}>Connect {platform} to see it</Link>
+        </Button>
+      ) : l.status !== "ok" ? (
+        <p className="type-caption text-fg-muted">{l.message}</p>
+      ) : (
+        <>
+          {l.deals.length > 0 ? (
+            <ul className="flex flex-col gap-1">
+              {l.deals.slice(0, 5).map((d) => (
+                <li key={d.id} className="flex items-center gap-2 type-caption">
+                  <Link href={recordHref("deal", d.id)} className="min-w-0 flex-1 truncate text-fg hover:underline">
+                    {d.name}
+                  </Link>
+                  {d.amount !== null ? <MoneyText minor={d.amount} currency={d.currency} className="text-fg-muted" /> : null}
+                  <StageBadge name={d.stage_name} outcome={d.stage_outcome} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="type-caption text-fg-subtle">No deals there your account can see</p>
+          )}
+          {l.timeline.length > 0 ? (
+            <ul className="flex flex-col gap-1 border-t border-border pt-2">
+              {l.timeline.map((a) => (
+                <li key={a.id} className="flex items-baseline gap-2 type-caption">
+                  <span className="min-w-0 flex-1 truncate text-fg">{a.subject || a.body || a.type}</span>
+                  <time className="shrink-0 text-fg-muted" dateTime={a.occurred_at}>
+                    {formatDateTime(a.occurred_at)}
+                  </time>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      )}
+    </li>
   );
 }

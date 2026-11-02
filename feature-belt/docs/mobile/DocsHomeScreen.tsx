@@ -1,5 +1,22 @@
-import { docsTitle, errorMessage, orgsNoun, orgsNounA, useActiveOrg, useDocsChildren, useDocsCreatePage, useDocsRecent, useDocsSidebar, type DocsPageSummary } from "@scaffoldapp/shared";
-import { Button, EmptyState, ErrorState, Field, IconButton, Input, Screen, SegmentedControl, Sheet, SkeletonRow, Text, toast, useTheme } from "@scaffoldapp/ui-native";
+import { docsTitle, errorMessage, orgsNoun, orgsNounA, useActiveOrg, useDocsChildren, useDocsCreatePage, useDocsRecent, useDocsSidebar, useDocsSources, type DocsPageSummary } from "@scaffoldapp/shared";
+import {
+  Button,
+  ConnectPrompt,
+  ConnectedSection,
+  EmptyState,
+  ErrorState,
+  Field,
+  IconButton,
+  Input,
+  Screen,
+  SegmentedControl,
+  Sheet,
+  SkeletonRow,
+  Text,
+  connectedSectionItems,
+  toast,
+  useTheme,
+} from "@scaffoldapp/ui-native";
 import { Stack, router } from "expo-router";
 import { Building2, ChevronDown, ChevronRight, FileText, Plus, Table2 } from "lucide-react-native";
 import { useState } from "react";
@@ -37,6 +54,36 @@ function TreeRow({ page, depth }: { page: DocsPageSummary; depth: number }) {
       </View>
       {open ? kids.isPending ? <SkeletonRow /> : (kids.data ?? []).map((k) => <TreeRow key={k.id} page={k} depth={depth + 1} />) : null}
     </View>
+  );
+}
+
+/** Connected Notion workspaces and Google accounts (or a quiet offer to connect one). */
+function Connected({ orgId }: { orgId: string }) {
+  const sources = useDocsSources(orgId);
+  const [dismissed, setDismissed] = useState(false);
+  const connected = (sources.data?.sources ?? []).filter((x) => x.type === "connected");
+  const offers = sources.data?.offers ?? [];
+  if (sources.isError) return null;
+  if (!sources.isPending && connected.length === 0) {
+    if (dismissed || offers.length === 0) return null;
+    return (
+      <ConnectPrompt
+        offers={offers}
+        title="Work with Notion and Google Docs here"
+        info="Read and edit Notion pages and Google Docs with your own account. Notion shows only the pages you pick when connecting."
+        onConnect={(o) => router.push(o.connect_url as never)}
+        onDismiss={() => setDismissed(true)}
+      />
+    );
+  }
+  return (
+    <ConnectedSection
+      items={connectedSectionItems(connected)}
+      loading={sources.isPending}
+      onSelect={(id) => router.push(`/docs/c/${encodeURIComponent(id)}` as never)}
+      onFix={(item) => item.fixUrl && router.push(item.fixUrl as never)}
+      {...(offers[0] ? { onAdd: () => router.push(offers[0]!.connect_url as never) } : {})}
+    />
   );
 }
 
@@ -115,6 +162,7 @@ export function DocsHomeScreen() {
           <Group title="Favorites" pages={sidebar.data.favorites} />
           <Group title="Shared" pages={sidebar.data.shared} />
           <Group title="Private" pages={sidebar.data.private} />
+          <Connected orgId={org.id} />
           {!sidebar.data.shared.length && !sidebar.data.private.length ? (
             <EmptyState
               icon={FileText}

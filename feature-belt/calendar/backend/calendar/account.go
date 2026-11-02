@@ -100,6 +100,8 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`DELETE FROM calendar_subscriptions WHERE user_id = $1`,
 		`DELETE FROM calendar_feeds WHERE user_id = $1`,
 		`DELETE FROM calendar_settings WHERE user_id = $1`,
+		`DELETE FROM calendar_connected_calendars WHERE user_id = $1`,
+		`DELETE FROM calendar_connected_conferences WHERE user_id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -108,8 +110,11 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 	return nil
 }
 
-// AccountDeleted wakes the outbox so cancellations go out promptly.
+// AccountDeleted wakes the outbox so cancellations go out promptly and
+// drops the person's cached connected calendars. Copies of their bookings
+// on their own connected calendars stay there (their connection is gone).
 func (s *Service) AccountDeleted(ctx context.Context, userID uuid.UUID) error {
+	cache.forgetUser(userID)
 	kickOutbox()
 	return nil
 }
@@ -253,6 +258,51 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	var feedCreated *time.Time
 	_ = s.d.Pool.QueryRow(ctx, `SELECT created_at FROM calendar_feeds WHERE user_id = $1`, userID).Scan(&feedCreated)
 
+	// Choices per connected calendar and rooms made for connected events
+	// (references only: the events live on the platform).
+	type exportConnected struct {
+		ConnectionID string  `json:"connection_id"`
+		CalendarID   string  `json:"calendar_id"`
+		Color        *string `json:"color"`
+		Hidden       *bool   `json:"hidden"`
+		Busy         *bool   `json:"busy"`
+	}
+	connected := []exportConnected{}
+	crows, err := s.d.Pool.Query(ctx, `SELECT connection_id, calendar_id, color, hidden, busy FROM calendar_connected_calendars WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for crows.Next() {
+		var c exportConnected
+		if err := crows.Scan(&c.ConnectionID, &c.CalendarID, &c.Color, &c.Hidden, &c.Busy); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		connected = append(connected, c)
+	}
+	crows.Close()
+	type exportRoom struct {
+		ConnectionID string    `json:"connection_id"`
+		CalendarID   string    `json:"calendar_id"`
+		EventID      string    `json:"event_id"`
+		Provider     string    `json:"provider"`
+		CreatedAt    time.Time `json:"created_at"`
+	}
+	rooms := []exportRoom{}
+	rrows, err := s.d.Pool.Query(ctx, `SELECT connection_id, calendar_id, event_id, provider, created_at FROM calendar_connected_conferences WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for rrows.Next() {
+		var r exportRoom
+		if err := rrows.Scan(&r.ConnectionID, &r.CalendarID, &r.EventID, &r.Provider, &r.CreatedAt); err != nil {
+			rrows.Close()
+			return nil, err
+		}
+		rooms = append(rooms, r)
+	}
+	rrows.Close()
+
 	return map[string]any{
 		"settings":           st,
 		"events":             events,
@@ -262,5 +312,7 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		"bookings_as_booker": made,
 		"subscriptions":      subs,
 		"feed_created_at":    feedCreated,
+		"connected_calendars": connected,
+		"connected_rooms":     rooms,
 	}, nil
 }

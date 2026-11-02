@@ -7,6 +7,13 @@ import type {
   FilesArchive,
   FilesBatchAction,
   FilesBatchResult,
+  FilesConnectedDetail,
+  FilesConnectedDrive,
+  FilesConnectedItem,
+  FilesConnectedSharing,
+  FilesConnectedSource,
+  FilesConnectedText,
+  FilesConnectedUploadTicket,
   FilesCreateFileRequest,
   FilesCreateFolderRequest,
   FilesDriveInfo,
@@ -17,6 +24,8 @@ import type {
   FilesPublicView,
   FilesSearchHit,
   FilesSection,
+  FilesShortcutTarget,
+  FilesSources,
   FilesStartUploadRequest,
   FilesTextContent,
   FilesTypeSummary,
@@ -35,6 +44,9 @@ export function filesEndpoints(http: HttpClient) {
   const org = (orgId: string) => `${F}/orgs/${seg(orgId)}`;
   const item = (id: string) => `${F}/items/${seg(id)}`;
   const pub = (token: string) => `${F}/public/${seg(token)}`;
+  const conn = (connId: string) => `${F}/connected/${seg(connId)}`;
+  const citem = (connId: string, ref: string) => `${conn(connId)}/items/${seg(ref)}`;
+  const orgQ = (orgId?: string | null) => (orgId ? { org_id: orgId } : {});
   return {
     /** Item types other features registered (repositories…). */
     types: (o?: CallOptions) => http.get<{ items: FilesTypeSummary[] }>(`${F}/types`, o),
@@ -76,6 +88,48 @@ export function filesEndpoints(http: HttpClient) {
     /** Trashed items only (manage). */
     remove: (id: string, o?: CallOptions) => http.delete<void>(item(id), o),
     restoreVersion: (id: string, versionId: string, o?: CallOptions) => http.post<FilesItem>(`${item(id)}/versions/${seg(versionId)}/restore`, {}, o),
+
+    // ---- connected drives (Google Drive, OneDrive, SharePoint), live with your own connection
+    /** The app's drive and your connected accounts, with capabilities still on offer. */
+    sources: (orgId?: string | null, o?: CallOptions) => http.get<FilesSources>(`${F}/sources`, { ...o, query: orgQ(orgId) }),
+    connectedDrives: (connId: string, orgId?: string | null, cursor?: string, o?: CallOptions) =>
+      http.get<Page<FilesConnectedDrive> & { source: FilesConnectedSource }>(`${conn(connId)}/drives`, { ...o, query: { ...orgQ(orgId), cursor } }),
+    connectedItem: (connId: string, ref: string, orgId?: string | null, o?: CallOptions) => http.get<FilesConnectedDetail>(citem(connId, ref), { ...o, query: orgQ(orgId) }),
+    connectedChildren: (connId: string, ref: string, p: FilesListParams & { cursor?: string | undefined } = {}, orgId?: string | null, o?: CallOptions) =>
+      http.get<Page<FilesConnectedItem>>(`${citem(connId, ref)}/children`, { ...o, query: { ...listQuery(p), ...orgQ(orgId) } }),
+    connectedSearch: (connId: string, q: string, cursor?: string, orgId?: string | null, o?: CallOptions) =>
+      http.get<Page<FilesConnectedItem>>(`${conn(connId)}/search`, { ...o, query: { q, cursor, ...orgQ(orgId) } }),
+    /** A 15-minute link streamed through the API (inline previews of documents are PDF renderings). */
+    connectedUrl: (connId: string, ref: string, disposition: "inline" | "attachment" = "attachment", orgId?: string | null, o?: CallOptions) =>
+      http.get<FilesUrl>(`${citem(connId, ref)}/url`, { ...o, query: { disposition, ...orgQ(orgId) } }),
+    connectedText: (connId: string, ref: string, orgId?: string | null, o?: CallOptions) => http.get<FilesConnectedText>(`${citem(connId, ref)}/text`, { ...o, query: orgQ(orgId) }),
+    connectedSharing: (connId: string, ref: string, orgId?: string | null, o?: CallOptions) =>
+      http.get<FilesConnectedSharing>(`${citem(connId, ref)}/sharing`, { ...o, query: orgQ(orgId) }),
+    connectedCreateFolder: (connId: string, body: { parent_ref: string; name: string }, orgId?: string | null, o?: CallOptions) =>
+      http.post<FilesConnectedItem>(`${conn(connId)}/folders`, body, { ...o, query: orgQ(orgId) }),
+    connectedRename: (connId: string, ref: string, name: string, orgId?: string | null, o?: CallOptions) =>
+      http.patch<FilesConnectedItem>(citem(connId, ref), { name }, { ...o, query: orgQ(orgId) }),
+    /** Within the same drive. */
+    connectedMove: (connId: string, ref: string, parentRef: string, orgId?: string | null, o?: CallOptions) =>
+      http.post<FilesConnectedItem>(`${citem(connId, ref)}/move`, { parent_ref: parentRef }, { ...o, query: orgQ(orgId) }),
+    /** To the platform's trash or recycle bin. */
+    connectedTrash: (connId: string, ref: string, orgId?: string | null, o?: CallOptions) => http.post<void>(`${citem(connId, ref)}/trash`, {}, { ...o, query: orgQ(orgId) }),
+    connectedStartUpload: (
+      connId: string,
+      body: { parent_ref?: string; item_ref?: string; name: string; content_type: string; size: number },
+      orgId?: string | null,
+      o?: CallOptions,
+    ) => http.post<FilesConnectedUploadTicket>(`${conn(connId)}/uploads`, body, { ...o, query: orgQ(orgId) }),
+    /** Copy a connected file into a Files folder (it becomes the app's own). */
+    copyToFiles: (connId: string, ref: string, body: { org_id: string; parent_id?: string | null }, o?: CallOptions) =>
+      http.post<FilesItem>(`${citem(connId, ref)}/copy-to-files`, body, { ...o, timeoutMs: 120_000 }),
+    /** Pin a connected item into a Files folder as a shortcut. */
+    createShortcut: (orgId: string, body: { parent_id?: string | null; connection_id: string; ref: string }, o?: CallOptions) =>
+      http.post<FilesItem>(`${org(orgId)}/shortcuts`, body, o),
+    shortcut: (id: string, o?: CallOptions) => http.get<FilesShortcutTarget>(`${item(id)}/shortcut`, o),
+    /** Save a Files file to your Google Drive or OneDrive (parent_ref "" = the top). */
+    saveTo: (id: string, body: { connection_id: string; parent_ref?: string }, o?: CallOptions) =>
+      http.post<FilesConnectedItem>(`${item(id)}/save-to`, body, { ...o, timeoutMs: 120_000 }),
 
     // ---- public links (no account)
     publicView: (token: string, itemId?: string, o?: CallOptions) =>

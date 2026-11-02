@@ -7,6 +7,7 @@ import { useEndpoints } from "../hooks/context";
 import { useApiQuery, usePagedQuery, type InfiniteOverrides, type PagedQueryResult, type QueryOverrides } from "../hooks/internal";
 import { registerReconnectRefetch, registerRealtimeHandler } from "../hooks/realtime-handlers";
 import { useEffect } from "react";
+import { useActiveOrgId } from "../orgs/hooks";
 import { calendarEndpoints } from "./api";
 import { calendarDeviceZone } from "./time";
 import type {
@@ -16,6 +17,12 @@ import type {
   CalendarBookingLinkInput,
   CalendarBookingRequest,
   CalendarBookingWhen,
+  CalendarCalendarRef,
+  CalendarConnectedEventDetail,
+  CalendarConnectedEventInput,
+  CalendarConnectedRange,
+  CalendarConnectedRef,
+  CalendarSources,
   CalendarEventDetail,
   CalendarEventInput,
   CalendarFeedSecret,
@@ -61,6 +68,11 @@ export const calendarKeys = {
   manage: (token: string) => ["calendar", "manage", token] as const,
   manageSlots: (token: string, from: string, to: string) => ["calendar", "manage", token, "slots", from, to] as const,
   guest: (token: string) => ["calendar", "guest", token] as const,
+  sources: (orgId: string | null) => ["calendar", "sources", orgId ?? ""] as const,
+  connectedRanges: () => ["calendar", "connected", "range"] as const,
+  connectedRange: (from: string, to: string, orgId: string | null) => ["calendar", "connected", "range", from, to, orgId ?? ""] as const,
+  connectedEvents: () => ["calendar", "connected", "event"] as const,
+  connectedEvent: (ref: CalendarConnectedRef) => ["calendar", "connected", "event", ref.connection_id, ref.calendar_id, ref.event_id] as const,
 } as const;
 
 // ───────────────────────────────────────────────────────────── realtime ──
@@ -82,11 +94,21 @@ registerRealtimeHandler("calendar.changed", (qc, e) => {
       void qc.invalidateQueries({ queryKey: calendarKeys.subscriptions() });
       void qc.invalidateQueries({ queryKey: calendarKeys.ranges() });
       break;
+    case "connected":
+      invalidateConnected(qc);
+      break;
   }
 });
 
 registerReconnectRefetch(calendarKeys.ranges());
 registerReconnectRefetch(calendarKeys.bookingLists());
+registerReconnectRefetch(calendarKeys.connectedRanges());
+
+function invalidateConnected(qc: QueryClient): void {
+  void qc.invalidateQueries({ queryKey: ["calendar", "sources"] });
+  void qc.invalidateQueries({ queryKey: calendarKeys.connectedRanges() });
+  void qc.invalidateQueries({ queryKey: calendarKeys.connectedEvents() });
+}
 
 function invalidateEvents(qc: QueryClient): void {
   void qc.invalidateQueries({ queryKey: calendarKeys.ranges() });
@@ -196,6 +218,139 @@ export function useCalendarManageSlots(token: string | null | undefined, from: s
 export function useCalendarGuestInvitation(token: string | null | undefined, options?: QueryOverrides<CalendarGuestInvitation>): UseQueryResult<CalendarGuestInvitation, ApiError> {
   const api = useEndpoints(calendarEndpoints);
   return useApiQuery(calendarKeys.guest(token ?? ""), ({ signal }) => api.guest.get(token ?? "", { signal }), { retry: false, ...options }, !!token);
+}
+
+// ─────────────────────────────────────────────────── connected calendars ──
+
+/** The app's own calendar, each connected account with its calendars, offers and meeting providers (active workspace's policy). */
+export function useCalendarSources(options?: QueryOverrides<CalendarSources>): UseQueryResult<CalendarSources, ApiError> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  return useApiQuery(calendarKeys.sources(orgId), ({ signal }) => api.sources(orgId, { signal }), { staleTime: 60_000, ...options });
+}
+
+/**
+ * Events on the visible connected calendars in [from, to), read live through the server's
+ * per-person cache (synced incrementally); polled every minute while shown.
+ */
+export function useCalendarConnectedRange(from: string | null, to: string | null, options?: QueryOverrides<CalendarConnectedRange>): UseQueryResult<CalendarConnectedRange, ApiError> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  return useApiQuery(
+    calendarKeys.connectedRange(from ?? "", to ?? "", orgId),
+    ({ signal }) => api.connectedRange(from ?? "", to ?? "", orgId, { signal }),
+    { placeholderData: keepPreviousData, refetchInterval: 60_000, staleTime: 20_000, ...options },
+    !!from && !!to,
+  );
+}
+
+/** One connected event, live (notes, guests, replies). */
+export function useCalendarConnectedEvent(ref: CalendarConnectedRef | null | undefined, options?: QueryOverrides<CalendarConnectedEventDetail>): UseQueryResult<CalendarConnectedEventDetail, ApiError> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  const r = ref ?? { connection_id: "", calendar_id: "", event_id: "" };
+  return useApiQuery(calendarKeys.connectedEvent(r), ({ signal }) => api.connectedEvent(r, orgId, { signal }), { retry: false, ...options }, !!ref);
+}
+
+export function useCreateCalendarConnectedEvent(): UseMutationResult<CalendarConnectedEventDetail, ApiError, { calendar: CalendarCalendarRef; body: CalendarConnectedEventInput }> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  const qc = useQueryClient();
+  return useMutation<CalendarConnectedEventDetail, ApiError, { calendar: CalendarCalendarRef; body: CalendarConnectedEventInput }>({
+    mutationFn: ({ calendar, body }) => api.createConnectedEvent(calendar, body, orgId),
+    onSuccess: () => invalidateConnected(qc),
+  });
+}
+
+type ConnectedSnapshot = [readonly unknown[], CalendarConnectedRange | undefined][];
+
+/** Change a connected event; a time change moves it on screen at once (rolled back if refused). */
+export function useUpdateCalendarConnectedEvent(): UseMutationResult<
+  CalendarConnectedEventDetail,
+  ApiError,
+  { ref: CalendarConnectedRef; body: CalendarConnectedEventInput },
+  { snapshot: ConnectedSnapshot }
+> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  const qc = useQueryClient();
+  return useMutation<CalendarConnectedEventDetail, ApiError, { ref: CalendarConnectedRef; body: CalendarConnectedEventInput }, { snapshot: ConnectedSnapshot }>({
+    mutationFn: ({ ref, body }) => api.updateConnectedEvent(ref, body, orgId),
+    onMutate: async ({ ref, body }) => {
+      await qc.cancelQueries({ queryKey: calendarKeys.connectedRanges() });
+      const snapshot = qc.getQueriesData<CalendarConnectedRange>({ queryKey: calendarKeys.connectedRanges() });
+      if (body.starts_at && body.ends_at && body.scope !== "all") {
+        for (const [key, data] of snapshot) {
+          if (!data) continue;
+          qc.setQueryData<CalendarConnectedRange>(key, {
+            ...data,
+            items: data.items.map((o) =>
+              o.connection_id === ref.connection_id && o.calendar_id === ref.calendar_id && o.external_id === ref.event_id
+                ? { ...o, starts_at: body.starts_at!, ends_at: body.ends_at! }
+                : o,
+            ),
+          });
+        }
+      }
+      return { snapshot };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+    },
+    onSettled: () => invalidateConnected(qc),
+  });
+}
+
+export function useDeleteCalendarConnectedEvent(): UseMutationResult<void, ApiError, { ref: CalendarConnectedRef; scope?: "this" | "all"; send_updates?: boolean }> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { ref: CalendarConnectedRef; scope?: "this" | "all"; send_updates?: boolean }>({
+    mutationFn: ({ ref, scope, send_updates }) => api.deleteConnectedEvent(ref, { ...(scope ? { scope } : {}), ...(send_updates === false ? { send_updates } : {}), orgId }),
+    onSuccess: () => invalidateConnected(qc),
+  });
+}
+
+export function useRespondCalendarConnectedEvent(): UseMutationResult<CalendarConnectedEventDetail, ApiError, { ref: CalendarConnectedRef; response: Exclude<CalendarResponse, "needs_action"> }> {
+  const api = useEndpoints(calendarEndpoints);
+  const orgId = useActiveOrgId();
+  const qc = useQueryClient();
+  return useMutation<CalendarConnectedEventDetail, ApiError, { ref: CalendarConnectedRef; response: Exclude<CalendarResponse, "needs_action"> }>({
+    mutationFn: ({ ref, response }) => api.respondConnected(ref, response, orgId),
+    onSuccess: (d, { ref }) => {
+      qc.setQueryData(calendarKeys.connectedEvent(ref), d);
+      invalidateConnected(qc);
+    },
+  });
+}
+
+/** Save a connected calendar's colour, visibility or availability choice (applied on screen at once). */
+export function useUpdateCalendarConnectedCalendar(): UseMutationResult<void, ApiError, { calendar: CalendarCalendarRef; body: { color?: string; hidden?: boolean; busy?: boolean } }, { snapshot: [readonly unknown[], CalendarSources | undefined][] }> {
+  const api = useEndpoints(calendarEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { calendar: CalendarCalendarRef; body: { color?: string; hidden?: boolean; busy?: boolean } }, { snapshot: [readonly unknown[], CalendarSources | undefined][] }>({
+    mutationFn: ({ calendar, body }) => api.updateConnectedCalendar(calendar, body),
+    onMutate: async ({ calendar, body }) => {
+      await qc.cancelQueries({ queryKey: ["calendar", "sources"] });
+      const snapshot = qc.getQueriesData<CalendarSources>({ queryKey: ["calendar", "sources"] });
+      for (const [key, data] of snapshot) {
+        if (!data) continue;
+        qc.setQueryData<CalendarSources>(key, {
+          ...data,
+          sources: data.sources.map((s) =>
+            s.id !== calendar.connection_id
+              ? s
+              : { ...s, calendars: s.calendars.map((c) => (c.id === calendar.calendar_id ? { ...c, ...body, color: (body.color as typeof c.color) ?? c.color } : c)) },
+          ),
+        });
+      }
+      return { snapshot };
+    },
+    onError: (_e, _v, ctx) => {
+      for (const [key, data] of ctx?.snapshot ?? []) qc.setQueryData(key, data);
+    },
+    onSettled: () => invalidateConnected(qc),
+  });
 }
 
 // ──────────────────────────────────────────────────────────── mutations ──

@@ -79,10 +79,71 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 			return err
 		}
 	}
+	if err := s.deletePlatformAccount(ctx, tx, userID); err != nil {
+		return err
+	}
 	for _, q := range []string{
 		`DELETE FROM connector_oauth_flows WHERE user_id = $1`,
 		`DELETE FROM connector_connections WHERE user_id = $1`,
 		`DELETE FROM connectors WHERE owner_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deletePlatformAccount queues revocation of every OAuth platform grant the
+// user holds (connections and finished-but-unclaimed sign-ins), then
+// deletes them. Policy rows they edited keep the decision (updated_by goes
+// NULL with the user row).
+func (s *Service) deletePlatformAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	conns, err := s.userPlatforms(ctx, tx, userID, "")
+	if err != nil {
+		return err
+	}
+	for _, r := range conns {
+		if _, err := s.queuePlatformRevocations(ctx, tx, r); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.Query(ctx, `SELECT `+platformFlowCols+`, access_token_enc, refresh_token_enc FROM connector_platform_flows
+		WHERE user_id = $1 AND status = 'authorized' FOR UPDATE`, userID)
+	if err != nil {
+		return err
+	}
+	type issued struct {
+		f               *platformFlowRow
+		access, refresh []byte
+	}
+	var list []issued
+	for rows.Next() {
+		var a, rf []byte
+		f, err := scanPlatformFlow(rows, &a, &rf)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, issued{f, a, rf})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, it := range list {
+		if p := s.providers[it.f.Provider]; p != nil {
+			access, _ := s.seal.open(it.access, aadPlatformFlow(it.f.ID, "access"))
+			refresh, _ := s.seal.open(it.refresh, aadPlatformFlow(it.f.ID, "refresh"))
+			if _, err := s.queueTokens(ctx, tx, p, userID, it.f.BaseURL, access, refresh); err != nil {
+				return err
+			}
+		}
+	}
+	for _, q := range []string{
+		`DELETE FROM connector_platform_flows WHERE user_id = $1`,
+		`DELETE FROM connector_platform_connections WHERE user_id = $1`,
+		`UPDATE connector_policies SET updated_by = NULL WHERE updated_by = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -110,6 +171,18 @@ type exportConnection struct {
 	LastUsedAt    *time.Time `json:"last_used_at"`
 }
 
+type exportPlatform struct {
+	Platform     string     `json:"platform"`
+	Kind         string     `json:"kind"`
+	Account      string     `json:"account"`
+	Host         string     `json:"host,omitempty"`
+	Status       string     `json:"status"`
+	Scopes       []string   `json:"scopes"`
+	Capabilities []string   `json:"capabilities"`
+	ConnectedAt  time.Time  `json:"connected_at"`
+	LastUsedAt   *time.Time `json:"last_used_at"`
+}
+
 type exportServer struct {
 	Name      string    `json:"name"`
 	ServerURL string    `json:"server_url"`
@@ -123,7 +196,22 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	out := struct {
 		Connections []exportConnection `json:"connections"`
 		Servers     []exportServer     `json:"servers"`
-	}{Connections: []exportConnection{}, Servers: []exportServer{}}
+		Platforms   []exportPlatform   `json:"platforms"`
+	}{Connections: []exportConnection{}, Servers: []exportServer{}, Platforms: []exportPlatform{}}
+	plats, err := s.userPlatforms(ctx, s.d.Pool, userID, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range plats {
+		e := exportPlatform{Platform: r.Provider, Kind: r.Kind, Account: r.Account, Status: r.Status, Scopes: r.granted(),
+			Capabilities: r.Capabilities, ConnectedAt: r.ConnectedAt, LastUsedAt: r.LastUsedAt}
+		if r.InstanceURL != "" {
+			e.Host = hostOf(r.InstanceURL)
+		} else if r.BaseURL != "" {
+			e.Host = hostOf(r.BaseURL)
+		}
+		out.Platforms = append(out.Platforms, e)
+	}
 	rows, err := s.d.Pool.Query(ctx, `
 		SELECT c.name, c.server_url, cc.status, cc.scopes, cc.writes_enabled, cc.disabled_tools, cc.connected_at, cc.last_used_at
 		FROM connector_connections cc JOIN connectors c ON c.id = cc.connector_id
@@ -191,5 +279,11 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 			return err
 		}
 	}
-	return nil
+	// Workspace policy: an explicit "everything allowed" default for each
+	// development org, so the policy screen starts from a decision. No
+	// platform connections are seeded: connecting is the flow to exercise.
+	_, err := s.d.Pool.Exec(ctx, `INSERT INTO connector_policies (org_id, provider, allowed, allow_writes, updated_by)
+		SELECT o.id, '*', true, true, $1 FROM orgs o ORDER BY o.created_at LIMIT 5
+		ON CONFLICT (org_id, provider) DO NOTHING`, admin)
+	return err
 }

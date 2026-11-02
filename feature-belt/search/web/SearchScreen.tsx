@@ -6,6 +6,8 @@ import {
   SEARCH_MIN_QUERY_CHARS,
   searchKindLabel,
   searchResultContext,
+  searchSourceOptions,
+  sourceLabel,
   unansweredSearchProviders,
   useDebouncedValue,
   useMe,
@@ -13,7 +15,7 @@ import {
   useSearchScope,
   type SearchResult,
 } from "@scaffoldapp/shared";
-import { Banner, Button, Card, Divider, EmptyState, ErrorState, IconButton, Input, SkeletonGroup, SkeletonRow, ToggleChip } from "@scaffoldapp/ui-web";
+import { Banner, Button, Card, Divider, EmptyState, ErrorState, IconButton, Input, SkeletonGroup, SkeletonRow, SourceBadge, SourceFilter, ToggleChip } from "@scaffoldapp/ui-web";
 import { Clock, SearchX, X } from "lucide-react";
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -25,8 +27,9 @@ import { SearchIcon, searchIcon } from "./icons";
 import { useRecentSearches } from "./recent";
 
 /**
- * /search?q=&kind=&scope=all: every result for a query, grouped by kind, with a filter per
- * kind found. With an org scope registered, the current org by default and every org with
+ * /search?q=&kind=&scope=all&source=: every result for a query, grouped by kind, with a
+ * filter per kind found and source chips (All · the app · each connected platform with
+ * hits); connected hits carry a SourceBadge. With an org scope registered, the current org by default and every org with
  * `scope=all`. The query and filters live in the URL (shareable, back works). Partial
  * answers say which feature didn't respond. Empty query: recent searches from this browser.
  */
@@ -34,6 +37,8 @@ export function SearchScreen() {
   const [urlQ, setUrlQ] = useUrlState("q", "");
   const [kind, setKind] = useUrlState("kind", "");
   const [scopeParam, setScopeParam] = useUrlState("scope", "");
+  const [sourceParam, setSourceParam] = useUrlState("source", "");
+  const source = sourceParam || "all";
   const scope = useSearchScope();
   const everywhere = scopeParam === "all";
   const orgId = scope && !everywhere ? scope.id : undefined;
@@ -50,9 +55,11 @@ export function SearchScreen() {
 
   const q = urlQ.trim();
   const searchable = q.length >= SEARCH_MIN_QUERY_CHARS;
-  const all = useSearch({ q, limit: 50, orgId }, { enabled: searchable });
-  const filtered = useSearch({ q, kinds: kind ? [kind] : [], limit: 50, orgId }, { enabled: searchable && !!kind });
+  const sourceFilter = source !== "all" ? { source } : {};
+  const all = useSearch({ q, limit: 50, orgId, ...sourceFilter }, { enabled: searchable });
+  const filtered = useSearch({ q, kinds: kind ? [kind] : [], limit: 50, orgId, ...sourceFilter }, { enabled: searchable && !!kind });
   const res = kind ? filtered : all;
+  const sourceOptions = useMemo(() => searchSourceOptions(res.data?.sources, APP_NAME), [res.data?.sources]);
   const groups = useMemo(() => (res.data ? groupSearchResults(res.data.items) : []), [res.data]);
   const kinds = useMemo(() => {
     const ks = all.data ? groupSearchResults(all.data.items).map((g) => g.kind) : [];
@@ -98,6 +105,7 @@ export function SearchScreen() {
             </ToggleChip>
           </div>
         ) : null}
+        {searchable ? <SourceFilter options={sourceOptions} value={source} onChange={(id) => setSourceParam(id === "all" ? null : id)} label="Source" /> : null}
         {searchable && kinds.length > 1 ? (
           <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by kind">
             <ToggleChip pressed={!kind} onPressedChange={() => setKind(null)}>
@@ -174,7 +182,11 @@ export function SearchScreen() {
               icon={<SearchX />}
               title={`No results for “${q}”`}
               action={
-                kind ? (
+                source !== "all" ? (
+                  <Button size="sm" variant="secondary" onClick={() => setSourceParam(null)}>
+                    Search every source
+                  </Button>
+                ) : kind ? (
                   <Button size="sm" variant="secondary" onClick={() => setKind(null)}>
                     Search everything
                   </Button>
@@ -211,13 +223,16 @@ export function SearchScreen() {
 
 function ResultLink({ item, orgId }: { item: SearchResult; orgId?: string }) {
   const Icon = searchIcon(item.icon, item.kind);
-  const sub = [searchResultContext(item, orgId), item.snippet].filter(Boolean).join(" · ");
+  const where = searchResultContext(item, orgId);
+  // The badge already names a connected hit's source and account.
+  const sub = [item.source && where === sourceLabel(item.source, "") ? "" : where, item.snippet].filter(Boolean).join(" · ");
   return (
     <Link href={item.link} className="flex min-h-14 items-center gap-3 px-4 py-3 hover:bg-sunken focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
       <Icon aria-hidden className="size-5 shrink-0 text-fg-muted" />
-      <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="line-clamp-2 type-body font-semibold text-fg">{item.title}</span>
         {sub ? <span className="line-clamp-2 type-label text-fg-muted">{sub}</span> : null}
+        {item.source ? <SourceBadge source={item.source} showAccount className="mt-1 self-start" /> : null}
       </span>
       <span className="shrink-0 type-caption text-fg-subtle">{formatRelative(item.at)}</span>
     </Link>

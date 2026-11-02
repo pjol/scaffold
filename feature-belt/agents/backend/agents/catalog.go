@@ -203,6 +203,7 @@ type catalogEntry struct {
 	Label      string `json:"label"`
 	ReadTools  int    `json:"read_tools"`
 	WriteTools int    `json:"write_tools"`
+	Platform   string `json:"platform,omitempty"` // a connected platform account: its provider id
 }
 
 // featureCatalog lists the app's features that give agents tools, by label.
@@ -233,7 +234,8 @@ func (s *Service) featureCatalog() []catalogEntry {
 }
 
 // serviceCatalog lists the caller's connected external services (dynamic
-// tools grouped by scope key, labelled with Tool.Source).
+// tools grouped by scope key, labelled with Tool.Source) and connected
+// platform accounts ("Google · sam@acme.com").
 func (s *Service) serviceCatalog(ctx context.Context, caller *auth.Identity) []catalogEntry {
 	byFeature := map[string]*catalogEntry{}
 	for _, t := range s.dynamicTools(ctx, caller) {
@@ -258,6 +260,21 @@ func (s *Service) serviceCatalog(ctx context.Context, caller *auth.Identity) []c
 	out := make([]catalogEntry, 0, len(byFeature))
 	for _, e := range byFeature {
 		out = append(out, *e)
+	}
+	// Connected platform accounts (app.ConnectionDirectory): every feature's
+	// tools that act on that account are capped by its level.
+	if dir := app.FindConnectionDirectory(s.d.Modules); dir != nil && caller != nil {
+		conns, err := dir.All(ctx, caller.UserID)
+		if err != nil {
+			slog.WarnContext(ctx, "agents: connected accounts unavailable", "err", err)
+		}
+		for _, c := range conns {
+			key := app.ConnectionScope(c.ID)
+			if byFeature[key] != nil {
+				continue
+			}
+			out = append(out, catalogEntry{Feature: key, Label: truncate(app.ConnectionLabel(c), 60), Platform: c.Provider})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label) })
 	return out

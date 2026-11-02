@@ -6,18 +6,20 @@ import {
   parseCallsCode,
   useActiveOrg,
   useCallsHistory,
+  useCallsPlatformMeetings,
   useCallsTimeZone,
   useCallsUpcoming,
   useCreateCallsMeeting,
   useMe,
   type CallsHistoryItem,
   type CallsMeeting,
+  type CallsPlatformMeeting,
 } from "@scaffoldapp/shared";
-import { Button, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Sheet, SkeletonRow, Spinner, Text, TitleSm, toast, useLayout, useTheme } from "@scaffoldapp/ui-native";
+import { Button, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, ProviderIcon, Sheet, SkeletonRow, SourceBadge, Spinner, Text, TitleSm, toast, useLayout, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack, type Href } from "expo-router";
 import { CalendarClock, CalendarPlus, ExternalLink, LogIn, Phone, PhoneIncoming, PhoneMissed, Plus, Share2, Video } from "lucide-react-native";
 import { useState, type ReactElement } from "react";
-import { FlatList, RefreshControl, Share, View } from "react-native";
+import { FlatList, Linking, RefreshControl, Share, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { callsScheduleAction, callsSourceLink } from "./seams";
@@ -125,20 +127,65 @@ function JoinByCode() {
 function Upcoming() {
   const theme = useTheme();
   const upcoming = useCallsUpcoming();
+  // Meet, Teams and Zoom meetings on the person's calendars, in time order with the app's own.
+  const platform = useCallsPlatformMeetings("upcoming");
   if (upcoming.isPending) return <SkeletonRow />;
   if (upcoming.isError) return <ErrorState compact title="Couldn't load upcoming meetings" onRetry={() => void upcoming.refetch()} retrying={upcoming.isFetching} />;
+  const rows = [
+    ...upcoming.data.items.slice(0, 5).map((m) => ({ at: m.starts_at ?? "", node: <UpcomingRow key={`app:${m.id}`} meeting={m} /> })),
+    ...(platform.data?.items ?? []).slice(0, 8).map((m) => ({ at: m.starts_at, node: <PlatformMeetingRow key={`ext:${m.id}`} meeting={m} /> })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
   return (
     <View style={{ gap: theme.space[3] }}>
       <TitleSm>Upcoming</TitleSm>
-      {upcoming.data.items.length === 0 ? (
+      {rows.length === 0 ? (
         <EmptyState icon={CalendarClock} title="Nothing scheduled" compact />
       ) : (
-        <ListGroup>
-          {upcoming.data.items.slice(0, 5).map((m) => (
-            <UpcomingRow key={m.id} meeting={m} />
-          ))}
-        </ListGroup>
+        <ListGroup>{rows.map((r) => r.node)}</ListGroup>
       )}
+    </View>
+  );
+}
+
+const PLATFORMS: Record<string, { label: string; platform: string; product: string | null }> = {
+  google_meet: { label: "Google Meet", platform: "google", product: "meet" },
+  teams: { label: "Microsoft Teams", platform: "microsoft", product: "teams" },
+  zoom: { label: "Zoom", platform: "zoom", product: null },
+};
+
+/** A Meet, Teams or Zoom meeting from the person's calendars: tap joins in the platform's own app. */
+function PlatformMeetingRow({ meeting: m }: { meeting: CallsPlatformMeeting }) {
+  const theme = useTheme();
+  const zone = useCallsTimeZone();
+  const p = PLATFORMS[m.provider];
+  const title = m.title || "Meeting";
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+      <View style={{ flex: 1 }}>
+        <ListRow
+          title={title}
+          leading={p ? <ProviderIcon provider={p.platform} product={p.product} size={20} /> : <Video size={20} color={theme.colors.textMuted} />}
+          trailing={
+            <View style={{ alignItems: "flex-end", gap: theme.space[1] }}>
+              <Text role="label" tone="muted">
+                {formatCallsWhen(m.starts_at, zone)}
+              </Text>
+              <SourceBadge source={m.source} iconOnly />
+            </View>
+          }
+          onPress={() => void Linking.openURL(m.join_url)}
+          accessibilityHint={`Joins on ${p?.label ?? "the platform"}`}
+        />
+      </View>
+      <ResourceMenu
+        feature={m.source?.type === "connected" ? `connectors:${m.source.connection_id}` : "calendar"}
+        {...(m.source?.type === "connected" ? {} : { kind: "calendar.event", id: m.id })}
+        title={title}
+        actions={[
+          { id: "join", label: `Join on ${p?.label ?? "the platform"}`, icon: ExternalLink, onSelect: () => void Linking.openURL(m.join_url) },
+          { id: "share", label: "Share link", icon: Share2, onSelect: () => void Share.share({ message: m.join_url, url: m.join_url }) },
+        ]}
+      />
     </View>
   );
 }

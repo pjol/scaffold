@@ -1,24 +1,30 @@
-import { crmMoney, crmMoneyTotals, useCrmBoard, useCrmPipelines, useCrmRecords, type CrmDeal } from "@scaffoldapp/shared";
-import { Button, Chip, EmptyState, ErrorState, IconButton, ListGroup, Screen, SegmentedControl, Skeleton, Text, useTheme } from "@scaffoldapp/ui-native";
+import { CRM_SOURCE_APP, crmMoney, crmMoneyTotals, useCrmBoard, useCrmPipelines, useCrmRecords, type CrmDeal, type CrmSources } from "@scaffoldapp/shared";
+import { Button, Chip, EmptyState, ErrorState, IconButton, ListGroup, Screen, SegmentedControl, Skeleton, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
 import { ArrowRightLeft, Handshake } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { StageSheet } from "./RecordScreen";
-import { CrmGate, dayLabel, recordPath } from "./parts";
+import { CrmGate, MobileSourceFilter, dayLabel, recordPath, useMobileSource } from "./parts";
 
 /** The deals board on mobile: pick a stage, see its deals and totals, move a deal to another stage. */
 export function CrmBoardScreen() {
-  return <CrmGate>{({ orgId, settings }) => <Board orgId={orgId} currency={settings.currency} />}</CrmGate>;
+  return <CrmGate>{({ orgId, settings, sources }) => <Board orgId={orgId} currency={settings.currency} sources={sources} />}</CrmGate>;
 }
 
-function Board({ orgId, currency }: { orgId: string; currency: string }) {
+function Board({ orgId, currency, sources }: { orgId: string; currency: string; sources: CrmSources | undefined }) {
   const theme = useTheme();
   const s = theme.space;
-  const pipelines = useCrmPipelines(orgId);
+  const src = useMobileSource(sources, "board");
+  const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
+  const pipelines = useCrmPipelines(orgId, sourceId);
   const [pipelineId, setPipelineId] = useState<string | undefined>(undefined);
+  useEffect(() => setPipelineId(undefined), [sourceId]);
   const [who, setWho] = useState<"all" | "me">("all");
-  const board = useCrmBoard(orgId, pipelineId, { filters: who === "me" ? [{ key: "owner", op: "is_any", value: ["me"] }] : [] });
+  const board = useCrmBoard(orgId, pipelineId, {
+    filters: who === "me" ? [{ key: "owner", op: "is_any", value: ["me"] }] : [],
+    ...(sourceId !== CRM_SOURCE_APP ? { source: sourceId } : {}),
+  });
   const [stageId, setStageId] = useState<string | null>(null);
   const [moving, setMoving] = useState<CrmDeal | null>(null);
   const columns = board.data?.columns ?? [];
@@ -29,7 +35,13 @@ function Board({ orgId, currency }: { orgId: string; currency: string }) {
   const all = useCrmRecords(
     orgId,
     "deal",
-    { filters: [...(who === "me" ? [{ key: "owner", op: "is_any" as const, value: ["me"] }] : []), { key: "stage", op: "is_any", value: [stageId ?? ""] }], sort: "close_date", dir: "asc", limit: 50 },
+    {
+      filters: [...(who === "me" ? [{ key: "owner", op: "is_any" as const, value: ["me"] }] : []), { key: "stage", op: "is_any", value: [stageId ?? ""] }],
+      sort: "close_date",
+      dir: "asc",
+      limit: 50,
+      ...(sourceId !== CRM_SOURCE_APP ? { source: sourceId } : {}),
+    },
     { enabled: !!col && !!col.next_cursor },
   );
   const deals = col?.next_cursor && all.data ? all.data.items : (col?.deals ?? []);
@@ -37,6 +49,7 @@ function Board({ orgId, currency }: { orgId: string; currency: string }) {
   return (
     <Screen edges={["bottom"]} gap={s[4]} refreshControl={<RefreshControl refreshing={board.isRefetching} onRefresh={() => void board.refetch()} />}>
       <Stack.Screen options={{ title: board.data?.pipeline.name ?? "Deals board" }} />
+      <MobileSourceFilter state={src} />
       {pipelines.data && pipelines.data.length > 1 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: s[2] }}>
           {pipelines.data.map((p) => (
@@ -64,9 +77,12 @@ function Board({ orgId, currency }: { orgId: string; currency: string }) {
         <ErrorState title="Couldn't load the board" info={board.error.message} onRetry={() => void board.refetch()} retrying={board.isRefetching} />
       ) : (
         <>
-          <Text role="label" tone="muted">
-            Open {crmMoneyTotals(board.data.open_totals, currency)} · weighted {crmMoneyTotals(board.data.open_totals, currency, "weighted")}
-          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: s[2] }}>
+            <SourceBadge source={board.data.source} />
+            <Text role="label" tone="muted">
+              Open {crmMoneyTotals(board.data.open_totals, currency)} · weighted {crmMoneyTotals(board.data.open_totals, currency, "weighted")}
+            </Text>
+          </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: s[2] }} accessibilityRole="tablist">
             {columns.map((c) => (
               <Chip key={c.stage.id} size="sm" selected={c.stage.id === stageId} count={c.count} onPress={() => setStageId(c.stage.id)} accessibilityRole="tab">

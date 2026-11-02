@@ -4,6 +4,7 @@ import { DOCS_CODE_LANGUAGES, docsTitle, useDocsFileUrl, type DocsBlock, type Do
 import { Select, Skeleton, cn } from "@scaffoldapp/ui-web";
 import { Download, FileText, Globe, Lock, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ConnectedPageBlock } from "../connected/ConnectedPageBlock";
 import { InlineDatabase } from "../database/DatabaseView";
 import { formatBytes } from "../format";
 import { useEditor } from "./context";
@@ -32,6 +33,8 @@ export function BlockBody({ block }: { block: DocsBlock }) {
       return <TableBlock block={block} />;
     case "database":
       return block.props.database_id ? <InlineDatabase databaseId={block.props.database_id} /> : null;
+    case "connected_page":
+      return <ConnectedPageInEditor block={block} />;
     default:
       return null;
   }
@@ -39,14 +42,16 @@ export function BlockBody({ block }: { block: DocsBlock }) {
 
 function Caption({ block }: { block: DocsBlock }) {
   const ctx = useEditor();
+  // A connected page keeps some blocks read-only.
+  const editable = ctx.editable && !ctx.isReadOnly(block.id);
   const caption = block.props.caption ?? [];
-  if (!ctx.editable && caption.length === 0) return null;
+  if (!editable && caption.length === 0) return null;
   return (
     <RichText
       ref={(h) => ctx.register(block.id, h)}
       spans={caption}
       refs={ctx.refs}
-      editable={ctx.editable}
+      editable={editable}
       placeholder="Add a caption"
       ariaLabel="Caption"
       className="py-1 type-label text-fg-muted"
@@ -67,6 +72,8 @@ function Caption({ block }: { block: DocsBlock }) {
 
 function CodeBlock({ block }: { block: DocsBlock }) {
   const ctx = useEditor();
+  // A connected page keeps some blocks read-only.
+  const editable = ctx.editable && !ctx.isReadOnly(block.id);
   const ref = useRef<HTMLTextAreaElement>(null);
   const code = block.props.code ?? "";
   useEffect(() => {
@@ -98,7 +105,7 @@ function CodeBlock({ block }: { block: DocsBlock }) {
   return (
     <div className="relative rounded-md bg-sunken">
       <div className="flex items-center justify-between gap-2 px-3 pt-2">
-        {ctx.editable ? (
+        {editable ? (
           <Select
             aria-label="Language"
             className="h-8 w-36"
@@ -113,7 +120,7 @@ function CodeBlock({ block }: { block: DocsBlock }) {
       <textarea
         ref={ref}
         value={code}
-        readOnly={!ctx.editable}
+        readOnly={!editable}
         spellCheck={false}
         aria-label="Code"
         rows={1}
@@ -146,16 +153,23 @@ function CodeBlock({ block }: { block: DocsBlock }) {
   );
 }
 
+function ConnectedPageInEditor({ block }: { block: DocsBlock }) {
+  const ctx = useEditor();
+  return <ConnectedPageBlock block={block} orgId={ctx.orgId} />;
+}
+
 function ImageBlock({ block }: { block: DocsBlock }) {
-  const file = useDocsFileUrl(block.props.file_id);
+  // Connected pages carry the platform's image link instead of an upload.
+  const file = useDocsFileUrl(block.props.url ? null : block.props.file_id);
+  const src = block.props.url || file.data?.url;
   const width = block.props.width ?? 100;
   return (
     <figure className="flex flex-col gap-1">
       <div style={{ width: `${width}%` }} className="max-w-full">
-        {file.data?.url ? (
-          // Private, short-lived links from storage: next/image can't optimise them.
+        {src ? (
+          // Private, short-lived links from storage or the platform: next/image can't optimise them.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={file.data.url} alt={(block.props.caption ?? []).map((s) => s.text).join("") || block.props.name || "Image"} loading="lazy" className="w-full rounded-md border border-border" />
+          <img src={src} referrerPolicy="no-referrer" alt={(block.props.caption ?? []).map((s) => s.text).join("") || block.props.name || "Image"} loading="lazy" className="w-full rounded-md border border-border" />
         ) : file.isError ? (
           <div className="flex h-32 items-center justify-center rounded-md border border-dashed border-border type-label text-fg-muted">This image isn't available.</div>
         ) : (
@@ -171,13 +185,14 @@ function ImageBlock({ block }: { block: DocsBlock }) {
 
 function FileBlock({ block }: { block: DocsBlock }) {
   const [want, setWant] = useState(false);
-  const file = useDocsFileUrl(want ? block.props.file_id : null);
+  const file = useDocsFileUrl(want && !block.props.url ? block.props.file_id : null);
+  const link = block.props.url || file.data?.url;
   useEffect(() => {
-    if (want && file.data?.url) {
-      window.open(file.data.url, "_blank", "noopener,noreferrer");
+    if (want && link) {
+      window.open(link, "_blank", "noopener,noreferrer");
       setWant(false);
     }
-  }, [want, file.data?.url]);
+  }, [want, link]);
   return (
     <div className="flex flex-col gap-1">
       <button
@@ -187,7 +202,7 @@ function FileBlock({ block }: { block: DocsBlock }) {
       >
         <FileText aria-hidden className="size-5 shrink-0 text-fg-muted" />
         <span className="min-w-0 flex-1 truncate type-body text-fg">{block.props.name ?? "File"}</span>
-        <span className="shrink-0 type-caption text-fg-muted">{formatBytes(block.props.size ?? 0)}</span>
+        {block.props.size ? <span className="shrink-0 type-caption text-fg-muted">{formatBytes(block.props.size)}</span> : null}
         <Download aria-hidden className="size-4 shrink-0 text-fg-muted" />
         <span className="sr-only">Download</span>
       </button>
@@ -254,6 +269,8 @@ function PageLinkBlock({ block }: { block: DocsBlock }) {
 
 function TableBlock({ block }: { block: DocsBlock }) {
   const ctx = useEditor();
+  // A connected page keeps some blocks read-only.
+  const editable = ctx.editable && !ctx.isReadOnly(block.id);
   const rows = block.props.rows ?? [[[]]];
   const cols = Math.max(1, ...rows.map((r) => r.length));
   const cellRefs = useRef(new Map<string, { focus: (at?: "start" | "end") => void }>());
@@ -286,7 +303,7 @@ function TableBlock({ block }: { block: DocsBlock }) {
                           }}
                           spans={row[c] ?? []}
                           refs={ctx.refs}
-                          editable={ctx.editable}
+                          editable={editable}
                           ariaLabel={`Row ${r + 1}, column ${c + 1}`}
                           className="min-h-8 py-1"
                           onChange={(spans) => setCell(r, c, spans)}
@@ -314,13 +331,13 @@ function TableBlock({ block }: { block: DocsBlock }) {
             </tbody>
           </table>
         </div>
-        {ctx.editable && cols < 20 ? (
+        {editable && cols < 20 ? (
           <button type="button" aria-label="Add a column" title="Add a column" onClick={addCol} className="flex h-8 w-6 shrink-0 items-center justify-center rounded-sm text-fg-subtle hover:bg-sunken hover:text-fg focus-visible:outline-2 focus-visible:outline-ring">
             <Plus aria-hidden className="size-4" />
           </button>
         ) : null}
       </div>
-      {ctx.editable && rows.length < 100 ? (
+      {editable && rows.length < 100 ? (
         <button type="button" onClick={addRow} className="flex h-8 items-center justify-center gap-1 rounded-sm type-caption text-fg-subtle hover:bg-sunken hover:text-fg focus-visible:outline-2 focus-visible:outline-ring">
           <Plus aria-hidden className="size-4" />
           Add a row

@@ -1,7 +1,7 @@
 {
   "name": "search",
   "title": "Search",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "summary": "People search everything they can see across installed features from one box (⌘K on web, a screen on mobile); agents get the same search as a tool.",
   "requires": [],
   "surfaces": [

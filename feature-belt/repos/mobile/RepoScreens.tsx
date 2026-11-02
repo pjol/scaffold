@@ -4,9 +4,12 @@ import {
   reposFormatBytes,
   reposRelativeTime,
   reposShortSha,
+  reposSupports,
   reposTopic,
   useActiveOrg,
   useRepo,
+  useReposConnectedList,
+  useReposSources,
   useReposBlob,
   useReposCommit,
   useReposCommits,
@@ -14,21 +17,69 @@ import {
   useReposTree,
   useTopic,
   type ReposRepo,
+  type ReposSummary,
 } from "@scaffoldapp/shared";
-import { Badge, Button, Card, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, Skeleton, SkeletonRow, Text, toast, useTheme } from "@scaffoldapp/ui-native";
+import {
+  Badge,
+  Button,
+  Card,
+  ConnectedSection,
+  ConnectPrompt,
+  EmptyState,
+  ErrorState,
+  Input,
+  ListGroup,
+  ListRow,
+  Screen,
+  SegmentedControl,
+  Skeleton,
+  SkeletonRow,
+  SourceBadge,
+  Text,
+  connectedSectionItems,
+  toast,
+  useTheme,
+} from "@scaffoldapp/ui-native";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import { Building2, ChevronDown, Copy, FileCode, Folder, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Search } from "lucide-react-native";
+import { Building2, ChevronDown, Copy, ExternalLink, FileCode, Folder, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Search } from "lucide-react-native";
 import { useState } from "react";
-import { Image, Pressable, RefreshControl, ScrollView, Share as RNShare, View } from "react-native";
+import { Image, Linking, Pressable, RefreshControl, ScrollView, Share as RNShare, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { CodeLines, DiffFileCard, MONO, RefSheet, RepoMarkdown, repoPath } from "./parts";
 
-/** Repositories in the active workspace. */
+/** A repository row: the app's own and connected ones alike, connected ones badged. */
+function RepoListRow({ repo: r }: { repo: ReposSummary }) {
+  const theme = useTheme();
+  const connected = r.source?.type === "connected";
+  return (
+    <ListRow
+      title={connected ? (r.full_name ?? r.name) : r.name}
+      leading={<GitBranch size={20} color={theme.colors.textMuted} />}
+      trailing={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+          {r.open_pulls > 0 ? (
+            <Badge tone="neutral">{`${r.open_pulls} open`}</Badge>
+          ) : (
+            <Text role="caption" tone="muted">
+              {r.pushed_at ? reposRelativeTime(r.pushed_at) : "empty"}
+            </Text>
+          )}
+          <SourceBadge source={r.source} iconOnly />
+        </View>
+      }
+      onPress={() => router.push(`/repos/${r.id}` as never)}
+    />
+  );
+}
+
+/** Repositories in the active workspace, then each connected GitHub / GitLab account. */
 export function ReposListScreen() {
   const theme = useTheme();
   const { org, isPending } = useActiveOrg();
   const [q, setQ] = useState("");
   const repos = useReposList(org?.id, q);
+  const sources = useReposSources(org?.id);
+  const connected = (sources.data?.sources ?? []).filter((x) => x.type === "connected");
   const rows = repos.data?.items ?? [];
   if (!isPending && !org) {
     return (
@@ -53,23 +104,7 @@ export function ReposListScreen() {
         ) : rows.length === 0 ? (
           <EmptyState compact icon={FolderGit2} title={q ? "No repository matches" : "No repositories yet"} info="Create one on the web, in the drive." />
         ) : (
-          rows.map((r) => (
-            <ListRow
-              key={r.id}
-              title={r.name}
-              leading={<GitBranch size={20} color={theme.colors.textMuted} />}
-              trailing={
-                r.open_pulls > 0 ? (
-                  <Badge tone="neutral">{`${r.open_pulls} open`}</Badge>
-                ) : (
-                  <Text role="caption" tone="muted">
-                    {r.pushed_at ? reposRelativeTime(r.pushed_at) : "empty"}
-                  </Text>
-                )
-              }
-              onPress={() => router.push(`/repos/${r.id}` as never)}
-            />
-          ))
+          rows.map((r) => <RepoListRow key={r.id} repo={r} />)
         )}
         {repos.hasNextPage ? (
           <Button variant="ghost" loading={repos.isFetchingNextPage} onPress={() => void repos.fetchNextPage()}>
@@ -77,20 +112,84 @@ export function ReposListScreen() {
           </Button>
         ) : null}
       </ListGroup>
+      <ConnectedSection
+        items={connectedSectionItems(sources.data?.sources)}
+        loading={sources.isPending && !!org}
+        onSelect={(id) => router.push(`/repos/connected/${id}` as never)}
+        onFix={(item) => item.fixUrl && router.push(item.fixUrl.slice(1) as never)}
+        onAdd={() => router.push("settings/connections?capability=repos.github.read" as never)}
+      />
+      {connected.length === 0 ? (
+        <ConnectPrompt offers={sources.data?.offers} title="Bring in repositories from" onConnect={(o) => router.push(o.connect_url.slice(1) as never)} style={{ marginTop: theme.space[2] }} />
+      ) : null}
+    </Screen>
+  );
+}
+
+/** One connected account's repositories, most recently active first (or by name). */
+export function ConnectedReposScreen() {
+  const theme = useTheme();
+  const { connectionID } = useLocalSearchParams<{ connectionID: string }>();
+  const { org } = useActiveOrg();
+  const sources = useReposSources(org?.id);
+  const source = sources.data?.sources.find((x) => x.id === connectionID);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<"recent" | "name">("recent");
+  const list = useReposConnectedList(connectionID, { q, sort, orgId: org?.id });
+  const rows = list.data?.items ?? [];
+  const title = source ? `${source.label}${source.account ? ` · ${source.account}` : ""}` : "Connected";
+  return (
+    <Screen edges={["bottom"]} refreshControl={<RefreshControl refreshing={list.isRefetching} onRefresh={() => void list.refetch()} />}>
+      <Stack.Screen options={{ title }} />
+      <Input value={q} onChangeText={setQ} placeholder="Search repositories" leadingIcon={Search} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Search repositories" />
+      <SegmentedControl<"recent" | "name">
+        accessibilityLabel="Sort"
+        value={sort}
+        onValueChange={setSort}
+        options={[
+          { value: "recent", label: "Recent activity" },
+          { value: "name", label: "Name" },
+        ]}
+      />
+      <ListGroup>
+        {list.isPending ? (
+          <View accessibilityLabel="Loading" accessibilityRole="progressbar">
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        ) : list.isError ? (
+          <ErrorState compact title="Couldn't load repositories" info={errorMessage(list.error)} onRetry={() => void list.refetch()} retrying={list.isRefetching} />
+        ) : rows.length === 0 ? (
+          <EmptyState compact icon={FolderGit2} title={q ? "No repository matches" : "No repositories on this account"} />
+        ) : (
+          rows.map((r) => <RepoListRow key={r.id} repo={r} />)
+        )}
+        {list.hasNextPage ? (
+          <Button variant="ghost" loading={list.isFetchingNextPage} onPress={() => void list.fetchNextPage()}>
+            Load more
+          </Button>
+        ) : null}
+      </ListGroup>
+      <View style={{ height: theme.space[4] }} />
     </Screen>
   );
 }
 
 /** The repository's header actions: copy the clone URL and the shared ⋮ menu. */
 function RepoMenu({ repo }: { repo: ReposRepo }) {
+  const connected = repo.source?.type === "connected" ? repo.source : null;
   return (
     <ResourceMenu
       feature="repos"
-      kind="repos.repository"
-      id={repo.id}
-      title={repo.name}
-      orgId={repo.org_id}
+      kind={connected ? "repos.external" : "repos.repository"}
+      id={connected ? `${connected.connection_id}:${repo.full_name ?? repo.name}` : repo.id}
+      title={repo.full_name ?? repo.name}
+      orgId={repo.org_id || undefined}
       actions={[
+        ...(connected && repo.web_url
+          ? [{ id: "repos-open-platform", label: `Open in ${connected.provider === "gitlab" ? "GitLab" : "GitHub"}`, icon: ExternalLink, onSelect: () => void Linking.openURL(repo.web_url!) }]
+          : []),
         {
           id: "repos-share-url",
           label: "Share clone URL",
@@ -109,7 +208,7 @@ export function RepoScreen() {
   const theme = useTheme();
   const { repoID, ref, path } = useLocalSearchParams<{ repoID: string; ref?: string; path?: string }>();
   const repo = useRepo(repoID);
-  useTopic(repo.data ? reposTopic(repo.data.id) : null);
+  useTopic(repo.data && reposSupports(repo.data, "realtime") ? reposTopic(repo.data.id) : null);
   const gitRef = ref || repo.data?.default_branch || "";
   const dir = path ?? "";
   const tree = useReposTree(repoID, { ref: gitRef, path: dir }, !!repo.data && !repo.data.empty);
@@ -137,9 +236,10 @@ export function RepoScreen() {
   return (
     <Screen edges={["bottom"]} refreshControl={<RefreshControl refreshing={tree.isRefetching} onRefresh={() => void tree.refetch()} />}>
       <Stack.Screen options={{ title: dir ? parts[parts.length - 1]! : r.name, headerRight: () => <RepoMenu repo={r} /> }} />
+      {!dir && r.source?.type === "connected" ? <SourceBadge source={r.source} showAccount /> : null}
       {!dir ? (
         <ListGroup>
-          <ListRow title="Pull requests" leading={<GitPullRequest size={20} color={theme.colors.textMuted} />} trailing={r.open_pulls ? <Badge tone="primary">{String(r.open_pulls)}</Badge> : undefined} onPress={() => router.push(repoPath(r.id, "pulls") as never)} />
+          <ListRow title={r.source?.type === "connected" && r.source.provider === "gitlab" ? "Merge requests" : "Pull requests"} leading={<GitPullRequest size={20} color={theme.colors.textMuted} />} trailing={r.open_pulls ? <Badge tone="primary">{String(r.open_pulls)}</Badge> : undefined} onPress={() => router.push(repoPath(r.id, "pulls") as never)} />
           <ListRow title="Commits" leading={<GitCommitHorizontal size={20} color={theme.colors.textMuted} />} onPress={() => router.push(repoPath(r.id, "commits", { ref: gitRef }) as never)} />
         </ListGroup>
       ) : null}

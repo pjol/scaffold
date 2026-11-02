@@ -7,6 +7,7 @@
 - Previews: images, PDF, video, audio, text, code, Markdown, CSV tables and SVG (drawn as an image); office and other files download. Every download is a short-lived presigned link with a forced type; anything that can run script (HTML, SVG, XML, unknown) comes back as an attachment, and an upload whose bytes don't match an inline type (HTML named `.png`) is refused.
 - Sharing through access: people, teams, the whole org, and public links (`/f/<token>`, optional expiry, revocable; needs `access.share_public`). Public pages preview and download a file or browse a folder; downloads are counted and limited per IP; visitors can report; staff turn public access off.
 - Org quota and per-file limit shown in the UI; name and text search; activity per item (uploads, versions, renames, moves, sharing); AI agents read and make single, reviewable edits as the person.
+- Connected drives (with the `connectors` feature): Google Drive (My Drive, Shared with me, shared drives), OneDrive and SharePoint libraries show under "Connected", browsed, previewed and changed live with each person's own account; Copy into Files, shortcuts colleagues open with their own connection, Save to Google Drive / OneDrive.
 
 ## Data
 
@@ -20,6 +21,8 @@
 | `files_public_stats` | public previews and downloads per item per day |
 | `files_archives` | 5-minute zip tokens (sha256 stored) |
 | `files_object_deletions` | objects to delete, filled by triggers on version and unfinished upload rows (purge, org deletion, pruning) |
+| `files_links` | a shortcut item's target on a connected platform: provider, product, the platform's id, name/kind/web address the pinner chose (never content or tokens) |
+| `files_connected_downloads` | 15-minute links that stream a connected file through the API (token sha256, person, connection, ref, type, disposition) |
 
 Every item is an access resource of kind `files.item` with its folder as parent.
 
@@ -54,6 +57,19 @@ Comment is view here (files have no comments). Org admins don't see a member's p
 | GET | `/files-archive/{token}` | zip token | streams the zip, re-checking access per item |
 | GET · POST | `/v1/admin/files/public?status=` · `/items/{id}` · `/disable` · `/enable` | support, audited | public items with traffic; turn public access off and on |
 
+Connected drives (`connected_*.go`; every route as the caller through `app.Connections`, `?org_id=` applies that workspace's policy):
+
+| Method | Path | Guard | Purpose |
+|---|---|---|---|
+| GET | `/v1/files/sources` | user | `FeatureSources`: the app's drive, each connected account (status, `can_write`, `write_url`), offers |
+| GET | `/v1/files/connected/{connID}/drives` · `/search?q=` | read capability | drives (platform cursor) · the platform's search |
+| GET | `/v1/files/connected/{connID}/items/{ref}` · `/children?sort=&dir=&thumbs=1&cursor=` · `/url?disposition=` · `/text` · `/sharing` | read | item with path · folder page (platform cursor) · 15-minute proxied link · first 1 MB of text · platform sharing summary |
+| POST · PATCH | `…/folders` · `…/items/{ref}` · `…/items/{ref}/move` · `…/items/{ref}/trash` · `…/uploads` | write capability | new folder · rename · move within the drive · platform trash · resumable session the browser PUTs chunks to |
+| POST | `…/items/{ref}/copy-to-files` `{org_id, parent_id?}` | read + edit on the folder | Copy into Files (stored through the drive's storage path, quota, versions) |
+| POST · GET | `/v1/files/orgs/{orgID}/shortcuts` · `/v1/files/items/{id}/shortcut` | member + edit · view | pin a connected item as a `link` item · resolve it with the viewer's own connection |
+| POST | `/v1/files/items/{id}/save-to` `{connection_id, parent_ref?}` | view + write capability | Save to Google Drive / OneDrive |
+| GET | `/files-connected/{token}` | link token | streams the file (Range passed through), forced type and disposition |
+
 Errors: 404 without view, 403 `access_level_required` / `agent_forbidden` (an agent's move that would change who can open the item), 409 `name_taken` / `item_trashed` / `restore_parent` / `target_changed`, 422 `content_type_mismatch` / `size_mismatch`, 507 `quota_exceeded`. Realtime: `files:<folder id>` (and the org id for shared folders, `user:` for My drive) carry `files.changed`; lost access revokes them. Notification `files.public_disabled`. Moderation target `files.item` (remove = turn public access off). Search: `files.item` (`Context` = org · folder, or My drive / Shared folders / Shared with me; scoped by `app.SearchOrg`). Agent tools: `files_search`, `files_list_folder`, `files_get_item`, `files_read_text` (read); `files_create_text_file`, `files_replace_lines`, `files_rename`, `files_move` (Target + exact Preview; edits refuse a stale `base_version_id`).
 
 ## Screens
@@ -61,7 +77,8 @@ Errors: 404 without view, 403 `access_level_required` / `agent_forbidden` (an ag
 | Where | Web | Mobile |
 |---|---|---|
 | Drive | `/files`, `/files/shared`, `/shared-with-me`, `/recent`, `/starred`, `/trash`: side sections and storage meter (title menu on phones), New (folder, upload files or a folder, shared folder, registered types), search, sort, list or grid, multi-select bar (download, move, star, trash; restore and delete in Trash), drop zone, keyboard (arrows, Space, Enter, ⌘A, Esc, Delete, F2, /), drag rows onto folders or crumbs, upload tray | Home → Files: section sheet, search, Add (photos, files, folder), rows with ⋮ |
-| Item | `/files/[itemID]`: folder listing with crumbs, or file preview with Details · Versions · Activity; ⋮ `ResourceMenu` everywhere (Share… and AI agent access from other features) | `files/[itemID]`: folder or preview, Open in browser, Save or send, versions; ⋮ in the header |
+| Item | `/files/[itemID]`: folder listing with crumbs, or file preview with Details · Versions · Activity; ⋮ `ResourceMenu` everywhere (Share… and AI agent access from other features); shortcuts open their target or say Connect / Ask for access | `files/[itemID]`: folder or preview, Open in browser, Save or send, versions; ⋮ in the header; shortcuts likewise |
+| Connected | Sidebar "Connected" (`ConnectedSection`, the open account's drives under it; `ConnectPrompt` when nothing is connected, dismissible); `/files/c/[connectionID]` drives; `/files/c/[connectionID]/[ref]` folder (same rows, grid, sort, crumbs, multi-select, keyboard, drag-move, drop-upload) or preview + details with the platform's sharing; `SourceBadge` on every row; Files search gets `SourceFilter` chips | Files home "Connected" section; `files/c/[connectionID]` drives, `files/c/[connectionID]/[ref]` browse, search, preview (image, text, Markdown, CSV; others in the browser), Open in app, Save or send, Copy into Files, Add shortcut; badges |
 | Public | `/f/[token]`: preview and Download, folder browsing, Report (signed in) | web only |
 | Admin | `/admin/files`: public now / turned off, traffic, turn off with a reason | none |
 
@@ -81,7 +98,7 @@ Upload purpose `files` (private, any type). npm: `expo-document-picker` (mobile)
 
 ## Compliance
 
-- Objects are keyed by the org, so org content survives its uploader. Account deletion: shared folders and items in others' drives stay (name cleared); each top-level My drive item anyone else can open (a grant to a person, team or the org anywhere inside) becomes org-owned under Shared folders, managed by org owners and admins; private ones go to the org's trash for `FILES_DELETED_ACCOUNT_KEEP_DAYS` (restorable by org admins), then are purged with their objects. Stars, recents, uploads in flight and zip links are deleted.
+- Objects are keyed by the org, so org content survives its uploader. Account deletion: shared folders and items in others' drives stay (name cleared); each top-level My drive item anyone else can open (a grant to a person, team or the org anywhere inside) becomes org-owned under Shared folders, managed by org owners and admins; private ones go to the org's trash for `FILES_DELETED_ACCOUNT_KEEP_DAYS` (restorable by org admins), then are purged with their objects. Stars, recents, uploads in flight, zip links and connected download links are deleted. Shortcuts are items like any other (they hold a reference, no platform content); nothing else from connected platforms is stored.
 - Leaving an org ends access; your items stay and org admins manage them (access's rule).
 - Export: items created or owned (metadata), versions uploaded, stars, activity.
 - UGC: public links serve user content to anyone: Report on public pages, the moderation queue, staff disable, per-IP limits, `noindex`, attachments for script-capable types.
@@ -93,6 +110,27 @@ Upload purpose `files` (private, any type). npm: `expo-document-picker` (mobile)
 3. Production bucket: `files/` private; CORS allows PUT from the web origin. Nothing else is public.
 4. Navigation: web nav + Home tile, mobile Home entry; make it a mobile tab if central.
 5. Link to items with `files.ItemLink(id)`; `/f/(.*)` is wired into `web/proxy.ts`.
+
+## Connected platforms
+
+Needs the `connectors` feature (≥ 2.0, `app.Connections`); without it Files offers no connected sources and works as before. Files keeps its own adapters (`connected_google.go`: Drive v3; `connected_graph.go`: Microsoft Graph) and gets each person's signing, host-locked client from `Connections.Client`; URLs come from `Connection.Endpoints` (`drive`, `drive_upload`, else `api` + `/drive/v3`; `graph`, else `api`).
+
+| Capability | Scopes | Gives |
+|---|---|---|
+| `files.google.drive` | `drive.readonly` (drive.file reaches only app-made files) | My Drive, Shared with me, shared drives (`supportsAllDrives`); previews, downloads, search, sharing summary, Copy into Files, shortcuts |
+| `files.google.drive.write` | `drive` | upload (resumable), new folder, rename, move within a drive, new version, trash, Save to |
+| `files.microsoft.onedrive` | `Files.Read.All` (needed to open items others share, e.g. shortcuts) | OneDrive |
+| `files.microsoft.onedrive.write` | `Files.ReadWrite.All` | changes as above (upload sessions) |
+| `files.microsoft.sharepoint` | `Sites.Read.All`, `Files.Read.All` | libraries of followed sites, Microsoft Search |
+| `files.microsoft.sharepoint.write` | `Sites.Read.All`, `Files.ReadWrite.All` | changes in libraries |
+
+- Live and per person: nothing from a platform is stored except shortcut references; item metadata is cached 30 s per person and connection. Previews and downloads stream through `/files-connected/{token}` (15 minutes; the token never reaches the platform, the person's token never reaches the browser); Graph's pre-authenticated links are fetched without the token. Google Docs/Sheets/Slides/Drawings preview as exported PDF and download/copy as Office files (Forms, Sites… open on the platform only); Office files on Microsoft preview through Graph's PDF conversion; native documents are read-only here with Open in Google Docs.
+- Writes: browser uploads go straight to the platform's resumable session (Drive chunks × 256 KiB, Graph × 320 KiB) and resume per chunk; moves stay inside one drive; trash goes to the platform's trash or recycle bin. Name clashes (Graph 409; Drive checked first), changed-since (Graph eTag / Drive version), no permission, rate limits and reconnects come back as `name_taken`, `target_changed`, `connected_forbidden`, `connection_rate_limited`, `connection_needs_auth`/`connection_scope_missing` (409, `details.fix_url`), never 401.
+- Sharing: the app's Share… doesn't apply; ⋮ offers Manage sharing in Google Drive / OneDrive (opens the platform) and the details panel shows the platform's sharing read-only when the account may see it.
+- Bridges: Copy into Files (the copy is app content); Add shortcut to Files (type `link`; whoever opens it is checked live with their own connection: Connect … to open, Reconnect, Ask for access in …; the pinner's connection is never used); Save to Google Drive / OneDrive from any Files file.
+- Search: `Search` adds each active connection's own search, run in parallel, 3 s each (`Kind` `files.external`, `Context` "Google Drive · sam@acme.com", `Source`, no `OrgID`).
+- Agents: `files_search` takes `source` (all · app · connected · a connection id); `files_connected_list`, `files_connected_get_item`, `files_connected_read_text` read; writes are separate tools per platform (`files_google_drive_*`, `files_onedrive_*`: create text file, replace lines in plain-text files, rename, move) with `Source` set, Target `files.external` `<connection id>:<platform id>`, exact Preview, and the connection's agent scope (`app.ConnectionScope`) checked in Preview (suggest) and Handler (edit); reads drop rows the connection's scope hides.
+- Out of scope: revisions/version history and activity of connected files, restoring from the platform trash, moves between drives, folder uploads and zip downloads to/from connected drives, platform comments, Drive shortcuts' own creation, change notifications (webhooks; lists refresh on focus and writes), offline.
 
 ## Extending
 
@@ -119,6 +157,7 @@ New in the forum belt, modelled on Google Drive (My drive, shared drives, Shared
 
 ## Changes
 
+- 1.2.0: connected drives (needs connectors ≥ 2.0 for connections; works without): Google Drive incl. shared drives, OneDrive and SharePoint browsed, previewed and changed live with each person's connection; Copy into Files, shortcuts (new item type `link`, `files_links`), Save to Google Drive / OneDrive; connected search hits; agent tools with `source` and per-platform write tools; `GET /v1/files/sources`. Migration 1701. Verified against mock Drive v3 and Graph APIs only.
 - 1.1.3: errors, the shared-folders permission, notifications and agent tool schemas name organizations with `orgs.Noun()` (orgs ≥ 1.3.0). The S3 paths (presigned upload, completion sniffing, forced-disposition downloads, versions, copies, empty files, zips, public links, purge and account deletion) ran against MinIO.
 - 1.1.2: copy names organizations with orgs' noun (`orgsNoun`…, orgs ≥ 1.2.0). Search results carry `OrgID` and `Context` (org · folder or drive section) and honour the `org_id` scope (search ≥ 1.1.0).
 

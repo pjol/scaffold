@@ -48,7 +48,7 @@ const (
 
 // EventChanged is published on the user:<id> topic of everyone whose
 // calendar changed; clients refetch. Payload {scope}: events, bookings,
-// links or subscriptions.
+// links, subscriptions or connected (connected calendars and their events).
 const EventChanged = "calendar.changed"
 
 const (
@@ -119,6 +119,7 @@ func New(d *app.Deps) *Service {
 	notifications.RegisterKind(notifications.Kind{ID: NotifyResponse, Label: "Replies to your invitations", Push: false, AgentTarget: eventTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyReminder, Label: "Calendar reminders", Push: true, AgentTarget: eventTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyBooking, Label: "Bookings", Push: true})
+	calendarService.Store(s)
 	return s
 }
 
@@ -188,6 +189,16 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/calendar/links/{id}", httpx.Handler(s.getLink))
 	write.With(auth.RateLimit(240, time.Hour)).Patch("/calendar/links/{id}", httpx.Handler(s.updateLink))
 	r.Delete("/calendar/links/{id}", httpx.Handler(s.deleteLink))
+
+	// Connected calendars (Google, Outlook) and meeting providers.
+	r.Get("/calendar/sources", httpx.Handler(s.sourcesHandler))
+	r.With(auth.RateLimit(240, time.Minute)).Get("/calendar/connected/events", httpx.Handler(s.connectedListHandler))
+	write.With(auth.RateLimit(120, time.Hour)).Patch("/calendar/connected/{conn}/calendars/{cal}", httpx.Handler(s.updateCalendarPref))
+	write.With(auth.RateLimit(120, time.Hour)).Post("/calendar/connected/{conn}/calendars/{cal}/events", httpx.Handler(s.connectedCreateHandler))
+	r.With(auth.RateLimit(240, time.Minute)).Get("/calendar/connected/{conn}/calendars/{cal}/events/{event}", httpx.Handler(s.connectedGetHandler))
+	write.With(auth.RateLimit(300, time.Hour)).Patch("/calendar/connected/{conn}/calendars/{cal}/events/{event}", httpx.Handler(s.connectedUpdateHandler))
+	write.With(auth.RateLimit(300, time.Hour)).Delete("/calendar/connected/{conn}/calendars/{cal}/events/{event}", httpx.Handler(s.connectedDeleteHandler))
+	write.With(auth.RateLimit(60, time.Minute)).Put("/calendar/connected/{conn}/calendars/{cal}/events/{event}/rsvp", httpx.Handler(s.connectedRSVPHandler))
 
 	r.Get("/calendar/bookings", httpx.Handler(s.listBookings))
 	r.Get("/calendar/bookings/{id}", httpx.Handler(s.getBooking))

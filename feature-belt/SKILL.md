@@ -1,6 +1,6 @@
 ---
 name: feature-belt
-description: "Catalog of copyable feature modules for apps built on the concrete foundation (Go/chi/pgxpool backend, Next.js web, Expo mobile): chat, social feed, places/maps, events, payments (Stripe, swappable), wallets/blockchain, AI assistant, notifications/push, moderation, orgs/teams, support, identity verification, MCP/OAuth access for agents, teams and sharing (access), presence, external MCP connectors, file drive, git repositories, Notion-style docs, CRM, video calls, calendars with booking links, Slack-style channels, AI agent scopes and suggestions, global search. Use when adding a feature to a scaffold project, choosing features for a new app, or building/updating a feature module. Install with the scaffold CLI, then stitch."
+description: "Catalog of copyable feature modules for apps built on the concrete foundation (Go/chi/pgxpool backend, Next.js web, Expo mobile): chat, social feed, places/maps, events, payments (Stripe, swappable), wallets/blockchain, AI assistant, notifications/push, moderation, orgs/teams, support, identity verification, MCP/OAuth access for agents, teams and sharing (access), presence, connected platforms and external MCP connectors, file drive, git repositories, Notion-style docs, CRM, video calls, calendars with booking links, Slack-style channels, AI agent scopes and suggestions, global search. Use when adding a feature to a scaffold project, choosing features for a new app, or building/updating a feature module. Install with the scaffold CLI, then stitch."
 ---
 
 # Feature belt
@@ -21,7 +21,7 @@ Read `../concrete/SKILL.md` first. Every feature obeys it.
 | `mcp` | 0600 | — | MCP endpoint exposing every feature's tools to agents as the user: OAuth 2.1 authorization server (DCR, PKCE, resource-bound rotating tokens, connected apps) and personal API keys; agent-only `agt_` credentials; agent-scope gate |
 | `access` | 0700 | orgs, notifications | teams; resource sharing to people, teams or the whole org with inheritance, general access and public links; org permission matrix; `access_level()`/`access_visible()` as the single source of truth; Share dialog |
 | `presence` | 0800 | — | online/away from heartbeats, custom status, Do Not Disturb, visibility policy |
-| `connectors` | 0900 | — | the assistant's external MCP servers with each user's own OAuth (discovery, DCR/CIMD, PKCE, sealed tokens, SSRF guard), per-service tools |
+| `connectors` | 0900 | orgs | connected platforms (Google, Microsoft, GitHub, GitLab, Notion, HubSpot, Salesforce, Zoom) each person connects once for every feature: `app.Connections` (signing, refreshing, host-locked client), incremental scopes, multiple accounts, personal tokens, workspace policy, webhook ingress; plus the assistant's external MCP servers (discovery, DCR/CIMD, PKCE, sealed tokens, SSRF guard) |
 | `chat` | 1000 | notifications, moderation | DMs and groups, realtime delivery, typing, read state, unread counts, attachments, replies, report/block |
 | `feed` | 1100 | notifications, moderation | posts with media, comments (one level), reactions, mentions, pins/announcements, keyset feed |
 | `places` | 1200 | — | places with coordinates, map + list views (web MapLibre, mobile expo-maps), geocoding, bounding-box search |
@@ -37,7 +37,7 @@ Read `../concrete/SKILL.md` first. Every feature obeys it.
 | `channels` | 2200 | orgs, presence, notifications, moderation | Slack-style workspace messaging: public/private channels, DMs, threads, forum channels, mentions incl. groups, pins, saved, search; call and group seams |
 | `agents` | 2300 | access, notifications | per-person AI agent scope (Off / Read / Suggest / Edit) by default, feature, service and resource; suggestions inbox with diffs; implements `app.AgentPolicy` and `access_agent_cap()` |
 | `repos` | 2400 | files | git repositories as drive items: smart-HTTP clone/push with git credentials, protected branches, in-browser commits, pull requests with reviews and merges; agent tools for branch → commit → PR |
-| `search` | — | — | ⌘K global search across every `app.SearchProvider`, as the caller; `search_everything` agent tool |
+| `search` | — | — | ⌘K global search across every `app.SearchProvider`, as the caller, with source chips and badges for connected-platform hits; `search_everything` agent tool |
 
 Core (always present, not in the belt): auth (Clerk + dev bypass), users/profile, legal consent, account deletion and export, uploads, admin console (users, roles, audit), realtime, mail, jobs (leased, once per tick across instances), bg (tracked best-effort background work). See `../concrete/backend.md`.
 

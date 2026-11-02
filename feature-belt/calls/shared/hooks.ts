@@ -8,9 +8,12 @@ import { useApiQuery, usePagedQuery, useTopic, type PagedQueryResult, type Query
 import { registerRealtimeHandler, registerReconnectRefetch } from "../hooks/realtime-handlers";
 import { topic } from "../realtime/topics";
 import type { Page } from "../types";
+import { useActiveOrgId } from "../orgs/hooks";
 import { callsEndpoints, type CallsLobbyTarget, type CallsMuteTarget } from "./api";
 import { callsTimeZone, subscribeCallsTimeZone } from "./format";
 import type {
+  CallsMeetingProviders,
+  CallsPlatformMeetings,
   CallsCallDetail,
   CallsCreateMeetingRequest,
   CallsGuestKnock,
@@ -34,6 +37,8 @@ export const callsKeys = {
   history: () => ["calls", "history"] as const,
   call: (id: string) => ["calls", "call", id] as const,
   upcoming: () => ["calls", "upcoming"] as const,
+  providers: (orgId: string | null) => ["calls", "providers", orgId ?? ""] as const,
+  platformMeetings: (when: string, orgId: string | null) => ["calls", "platform-meetings", when, orgId ?? ""] as const,
   links: () => ["calls", "links"] as const,
   rings: () => ["calls", "rings"] as const,
   people: (q: string, orgId?: string | null) => ["calls", "people", q, orgId ?? "all"] as const,
@@ -66,6 +71,20 @@ export function useCallsHistory(): PagedQueryResult<CallsHistoryItem> {
 export function useCallsCall(id: string | null | undefined, options?: QueryOverrides<CallsCallDetail>): UseQueryResult<CallsCallDetail, ApiError> {
   const c = useEndpoints(callsEndpoints);
   return useApiQuery(callsKeys.call(id ?? ""), ({ signal }) => c.call(id ?? "", { signal }), options, !!id);
+}
+
+/** Meeting providers open to the caller in the active workspace. */
+export function useCallsProviders(options?: QueryOverrides<CallsMeetingProviders>): UseQueryResult<CallsMeetingProviders, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  const orgId = useActiveOrgId();
+  return useApiQuery(callsKeys.providers(orgId), ({ signal }) => c.providers(orgId, { signal }), { staleTime: 60_000, ...options });
+}
+
+/** Meetings with Meet, Teams or Zoom links on the caller's calendars (connected ones included), polled each minute. */
+export function useCallsPlatformMeetings(when: "upcoming" | "recent", options?: QueryOverrides<CallsPlatformMeetings>): UseQueryResult<CallsPlatformMeetings, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  const orgId = useActiveOrgId();
+  return useApiQuery(callsKeys.platformMeetings(when, orgId), ({ signal }) => c.platformMeetings(when, orgId, { signal }), { refetchInterval: 60_000, staleTime: 30_000, retry: 1, ...options });
 }
 
 export function useCallsUpcoming(): PagedQueryResult<CallsMeeting> {

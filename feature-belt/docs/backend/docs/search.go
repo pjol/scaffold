@@ -217,6 +217,8 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 			OrgID: h.OrgID.String(), Context: app.SearchContext(orgNames[h.OrgID], parent),
 		})
 	}
+	// Connected Notion and Google Docs, live with the caller's own accounts.
+	out = append(out, s.searchConnected(ctx, caller, query, limit)...)
 	return out, nil
 }
 

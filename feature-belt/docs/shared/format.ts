@@ -43,6 +43,7 @@ export const DOCS_BLOCK_LABEL: Record<DocsBlockType, string> = {
   page: "Page",
   table: "Table",
   database: "Database",
+  connected_page: "Connected page",
 };
 
 /** What the slash menu offers. `action` items need more than a block (an upload, a new page). */

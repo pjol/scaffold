@@ -9,6 +9,7 @@
 - Booking links: lengths, location (video, phone, in person, other), weekly hours plus date overrides in your zone, buffers, minimum notice, days ahead, a daily cap, start-time spacing, custom questions, confirmation message, pause. **Internal** links are bookable only by signed-in members of the link's organization; **external** links by anyone, guests included.
 - Booking pages (`/book/<slug>`): free days and times only (never events) in the visitor's zone (switchable), a short form, confirmation with the video call link and add-to-calendar. Booking is race-safe; host and booker get emails with `.ics`, the event lands on both calendars, and the booker's manage link reschedules or cancels within the host's rules.
 - Times people read (notifications, reminders, emails to colleagues, agent previews, search) are in the reader's zone with the zone named; the device zone is saved the first time someone is signed in (once the account is active and the Terms are accepted). Other features hand scheduling over with a new-event link that opens the event dialog prefilled.
+- Connected calendars (Google Calendar, Outlook) appear natively in every view, under "Connected" in the sidebar per account, with their own colour, visibility and "counts for availability"; their events can be created, moved, resized, edited, deleted and answered from here, and "Video call" offers the app's own call, Google Meet, Teams or Zoom (see Connected platforms).
 
 ## Data
 
@@ -22,7 +23,11 @@
 | `calendar_subscriptions` / `calendar_busy_blocks` | external calendars (URL AES-GCM encrypted, host kept for display) and their busy ranges |
 | `calendar_booking_links` | link settings; `org_id` required when `audience = internal`; soft-deleted |
 | `calendar_bookings` | booker details, answers, buffered `block`; an exclusion constraint forbids overlapping confirmed bookings per host |
-| `calendar_outbox` | invites, cancellations, notifications and room cancellations queued in the change's transaction, sent after commit with retries: a short statement claims a batch (`claim`, `next_attempt_at` as its lease), sending holds no transaction, results are recorded by claim (`2101_calendar_outbox_claims.sql`) |
+| `calendar_outbox` | invites, cancellations, notifications, room cancellations and booking-copy moves/deletes queued in the change's transaction, sent after commit with retries: a short statement claims a batch (`claim`, `next_attempt_at` as its lease), sending holds no transaction, results are recorded by claim (`2101_calendar_outbox_claims.sql`) |
+| `calendar_connected_calendars` | per person and connected calendar: colour, hidden, busy (NULL = default) |
+| `calendar_connected_conferences` | rooms the wired conferencing made for connected events (to move or close them) |
+
+`2102_calendar_connected.sql` adds those, `write_connection_id`/`write_calendar_id`/`conference_provider`/`conference_connection_id` on links and `ext_*`/`conference_provider` on bookings. Platform events are never stored.
 
 Extensions `btree_gist` and `pg_trgm` (both trusted).
 
@@ -50,12 +55,16 @@ All under `/v1/calendar`. Signed-in routes check ownership or attendance on ever
 | GET / POST | `/manage/{token}` (+ `.ics`, `/slots`, `/cancel`, `/reschedule`) | token; writes 20/h/IP | the booker's manage link |
 | GET / POST | `/rsvp/{token}` | token | an external guest's invitation and reply |
 | GET | `/feed/{token}.ics` | token | personal feed; token paths are redacted in logs |
+| GET | `/sources?org_id=` | user | `FeatureSources` + each account's calendars and `conferencing` (meeting providers) |
+| GET | `/connected/events?from&to&source=` | user, 240/min | events of visible connected calendars (≤ 62 days) + per-source `errors` |
+| PATCH | `/connected/{conn}/calendars/{cal}` | active | `{color, hidden, busy}` |
+| POST · GET PATCH DELETE · PUT | `/connected/{conn}/calendars/{cal}/events` · `…/events/{event}` · `…/rsvp` | active (write capability) | create (guests, `recurrence`, `conference: "add"` + `conference_provider`) · read / change (`scope` this\|all) / delete (`scope`) · reply |
 
 Booking abuse controls: per-IP and per-link limits, 5 bookings per email per day, 3 upcoming per email per link, no self-booking, `slot_taken` (409) on races. Every public route answers an AI agent's credential (`agt_…`) with 401 `agent_credential`.
 
 Realtime: `calendar.changed {scope}` on `user:<id>` (events, bookings, links, subscriptions). Notifications: `calendar.invite`, `.updated`, `.cancelled`, `.response`, `.reminder`, `.booking`.
 
-Agent tools, run as the caller: `calendar_list_events`, `calendar_get_event` (Target `calendar.event`), `calendar_find_free_time`, `calendar_search_people`, `calendar_list_booking_links`, `calendar_list_bookings` (read-only) and `calendar_create_event` (write; Target kind `calendar.event`; Preview in the reviewer's zone, "Add “Title” Mon, Nov 2, 2026 · 7:00 AM – 8:00 AM PST", with the whole event as the after text: when, repeat, place, guests by name, description; colleagues only, never emails anyone). Agent calls drop rows the user's agent scope hides (`calendar.event`, `calendar.booking_link`, `calendar.subscription`); `Search` (events and booking links) does the same, with `Context` "Calendar" (members-only links: `OrgID` and "Org · Calendar", left out of a search scoped to another org).
+Agent tools, run as the caller: `calendar_list_events` (`source`: all, app or a connection id; connected events under `connected`), `calendar_list_sources`, `calendar_get_connected_event`, `calendar_get_event` (Target `calendar.event`), `calendar_find_free_time`, `calendar_search_people`, `calendar_list_booking_links`, `calendar_list_bookings` (read-only) and `calendar_create_event` (write; Target kind `calendar.event`; Preview in the reviewer's zone, "Add “Title” Mon, Nov 2, 2026 · 7:00 AM – 8:00 AM PST", with the whole event as the after text: when, repeat, place, guests by name, description; colleagues only, never emails anyone). Agent calls drop rows the user's agent scope hides (`calendar.event`, `calendar.booking_link`, `calendar.subscription`); `Search` (events and booking links) does the same, with `Context` "Calendar" (members-only links: `OrgID` and "Org · Calendar", left out of a search scoped to another org).
 
 ## Screens
 
@@ -67,6 +76,7 @@ Agent tools, run as the caller: `calendar_list_events`, `calendar_get_event` (Ta
 | Booking links | `/calendar/links` (⋮ per row: copy, open, edit, pause, delete), `/calendar/links/new`, `/calendar/links/[id]`: editor beside a live preview | `/calendar/links`: share (system sheet incl. Copy), pause |
 | Bookings | `/calendar/bookings?when&role` with answers and cancel | — |
 | Settings | `/settings/calendars`: zone, week start, working hours, default reminders, other calendars, feed link | — |
+| Connected | sidebar "Connected" (`ConnectPrompt` when none): accounts with status/Reconnect and ⋮ AI agent access, calendars with visibility checkbox in their colour and ⋮ colour / counts for availability (a sheet from the header ⋮ below 1024 px); `SourceBadge` in agenda rows and the event sheet, provider marks on grid and month chips, `SourceFilter` over the agenda; event sheet with Join on Meet/Teams/Zoom, RSVP, ⋮ Open in Google Calendar/Outlook, Edit, Delete; event dialog "Calendar" picker and "Video call" provider; link editor "Add bookings to" and "Video call with" | agenda and day show connected events with badges; `/calendar/connected`: details, Join, RSVP, Open in …, delete; the form's Calendar and Video call with rows |
 | Public | `/book/[slug]`, `/book/manage/[token]`, `/calendar/rsvp/[token]` (a reply from an email link needs a tap, so link scanners never answer) | shares web URLs |
 
 Session mount `calendarZoneSync` (web and mobile) saves the device zone when there is none, once the account is active and the Terms are accepted. Every async view has skeleton, empty and error states.
@@ -82,11 +92,27 @@ Session mount `calendarZoneSync` (web and mobile) saves the device zone when the
 
 Mobile adds `@react-native-community/datetimepicker` 9.1.0 (rebuild the dev client). No new Go dependencies.
 
+## Connected platforms
+
+| Capability | Scopes | Gives |
+|---|---|---|
+| `calendar.google.read` · `calendar.google.write` | `calendar.readonly` · + `calendar.events` | calendars, events, free/busy · create/change/delete, RSVP, Meet links |
+| `calendar.microsoft.read` · `calendar.microsoft.write` | `Calendars.Read` · `Calendars.ReadWrite` | calendars, events, getSchedule · create/change/delete, RSVP, Teams via `isOnlineMeeting` |
+
+- **Live, per person.** Adapters build URLs from `Connection.Endpoints` (`calendar`/`api`; `graph`/`api`). Google: singles, masters and exceptions since 120 days ago with `events.list` + `nextSyncToken`, then changes only; a 410 starts over; series expand with `events.instances` per window (cached until the series changes). Outlook: the default calendar per month with `calendarView/delta` (`@removed`, 410 starts the month over), other calendars live with `calendarView`. Times in UTC (`Prefer: outlook.timezone`), all-day dates kept, Windows zone names mapped. Memory caches per person (sync ≤ every 30 s, lists 2 min, busy 1 min); clients poll each minute. Webhook push is optional (Extending).
+- **Write back.** Edits need the write capability (`connection_scope_missing` + `fix_url` otherwise); guests are invited by the platform; `scope: "all"` shifts a series by the instance's change; Outlook keeps a Teams link once added.
+- **Availability.** `busyFor` adds free/busy (Google `freeBusy`, Graph `getSchedule`) of calendars marked "counts for availability" (primary by default), for booking links, find-time and colleagues' free/busy (times only). A platform that doesn't answer is skipped and logged.
+- **Bookings into a connected calendar.** A link's `add_to` writes each booking there too (no guests on the copy: the app emails the booker), with a native Meet/Teams link when `conference_provider` asks (else the room's link in its notes). The app's event stays the record; the copy follows reschedules and cancels through the outbox and is left out of connected views. A lapsed connection books without the copy; a native meeting then falls back to the app's own call.
+- **Meetings.** "Video call" options = the wired conferencing's (`ConferenceOptions`: its own call, Zoom, Teams) + the target calendar's native link (Meet on Google, Teams on Outlook), which replaces the same provider. Seam rooms on connected events are written into the event and recorded to follow its time.
+- **Agents.** Reads drop what the connection's scope hides (`app.ConnectionScope`, kind `calendar.external`, id `<connection>:<calendar>:<event>` sanitized, hashed when long). Writes: `calendar_google_create_event`/`_move_event`/`_rsvp` and `calendar_outlook_*` (`Source` "Google Calendar"/"Outlook Calendar", Target `calendar.external`), exact preview in the reviewer's zone, the connection checked at suggest in Preview and edit in Handler; colleagues only as guests and the platform never emails them (`sendUpdates=none`).
+- **Search.** Connected events 30 days back to 60 ahead (3 s per search), one hit per series (the next), `Source` and `Context` "Google Calendar · account", linking to `/calendar?view=day&date=&open=<ref>`.
+- Out of scope: Outlook non-default calendars' delta, editing a series' repeat rule on a connected calendar, attachments, conference add-ons other than Meet, push channels (Google `events.watch`, Graph subscriptions).
+
 ## Compliance
 
 - Deletion: future bookings they host are cancelled (bookers emailed "The host's account was closed"); future bookings they made are cancelled (host told); guests of their upcoming events get cancellations; then their events, links, bookings as host, subscriptions, feed, settings and invitations are deleted. Bookings they made on others' links stay with the host, anonymised ("Deleted user").
 - A host who cancels (or deletes a booked event): the booker gets a CANCEL email with the host's note and "Book another time" while the link is open.
-- Export: settings, events with guests, invitations, links, bookings (both sides), subscriptions (host only, never the secret URL), feed date.
+- Export: settings, events with guests, invitations, links, bookings (both sides), subscriptions (host only, never the secret URL), feed date, connected-calendar choices and rooms made for connected events (references). Deletion also drops those and the person's caches; booking copies stay on the person's own platform calendar.
 - Booking emails go to addresses visitors type (limits above). Privacy policy: subscribed URLs are fetched by the server; name the mail provider.
 
 ## Stitching
@@ -97,14 +123,18 @@ Mobile adds `@react-native-community/datetimepicker` 9.1.0 (rebuild the dev clie
 4. Decide who appears in the guest picker and free/busy (default: people sharing an organization) and who may create internal links (default: any member).
 5. Name booking links in product copy; keep Calendar in the main nav (default) or Home only.
 6. Mobile: add a Calendar tab if scheduling is a primary destination (default: a Home entry).
-7. Scheduling started elsewhere (a meetings feature's Schedule, a channel's "Schedule a meeting") can open `calendarNewEventLink({ title, guests, video: true })` so it lands on calendars with invitations; give other features people's zones with `calendar.UserZone` (e.g. `calls.SetUserZone`) and, on the client, the settings' zone (`useCalendarSettings`: `timezone` when `timezone_set`, e.g. into `setCallsTimeZone`) so they show times on the calendar's clock. Product words: "Video call" is the location type; other features say Start call (instant) and New meeting (a link).
+7. Connected platforms: install the connectors feature (2.0+) and register the Google and Microsoft OAuth apps there; wire Zoom/Teams meeting options by implementing `calendar.ConferenceOptions` on your Conferencing (e.g. over `calls.Providers`) and routing `ConferenceRequest.Provider` (`calls.CreateProviderMeeting`…). Pass the active workspace (`?org_id=`, the shared hooks do) so its connection policy applies.
+8. Scheduling started elsewhere (a meetings feature's Schedule, a channel's "Schedule a meeting") can open `calendarNewEventLink({ title, guests, video: true })` so it lands on calendars with invitations; give other features people's zones with `calendar.UserZone` (e.g. `calls.SetUserZone`) and, on the client, the settings' zone (`useCalendarSettings`: `timezone` when `timezone_set`, e.g. into `setCallsTimeZone`) so they show times on the calendar's clock. Product words: "Video call" is the location type; other features say Start call (instant) and New meeting (a link).
 
 ## Extending
 
 - `calendar.SetConferencing(c Conferencing)` with `Create(ctx, ConferenceRequest) (Conference, error)`, `Update(ctx, id, ConferenceRequest) (Conference, error)`, `Cancel(ctx, id) error`; `calendar.VideoAvailable() bool`. `ConferenceRequest.EventID` names the event a room is for (link back to `/calendar/event/<id>`; a series' occurrences may share it, so it isn't a unique key).
 - `calendar.UserZone(ctx, q, userID) (*time.Location, bool)`: the person's zone (false until they have one).
+- Additive conferencing: `ConferenceRequest.Provider`/`ConnectionID`/`GuestEmails`, `Conference.Provider`, `ConferenceOption`, optional `ConferenceOptions` on the wired Conferencing; provider ids `ProviderApp`, `ProviderGoogleMeet`, `ProviderTeams`, `ProviderZoom`.
+- `calendar.PlatformMeetings(ctx, caller, orgID, from, to)`: events with Meet/Teams/Zoom links on the person's own and connected calendars (for a meetings feature's lists, e.g. `calls.SetCalendarMeetings`).
+- Webhooks: implement `app.ConnectionWebhookHandler` and mark caches stale (`cache.stale`) once the connectors feature registers Google `events.watch` / Graph subscriptions.
 - Shared: `calendarNewEventLink(draft)`, `parseCalendarNewEventLink(params)`, `calendarDraftTimes`, `calendarDraftGuests`, `useCalendarPeopleByIds(ids)`, `useCalendarDeviceZoneSave()`.
-- Out of scope: Google/Microsoft OAuth sync, iTIP REPLY by mail (replies use the RSVP link), round-robin or collective booking links, paid bookings, RRULE parts beyond the subset (BYSETPOS, hourly), per-occurrence guest lists (guests are series-wide), Windows zone names in subscriptions beyond the mapped set (others fall back to the file's standard offset).
+- Out of scope: iTIP REPLY by mail (replies use the RSVP link), round-robin or collective booking links, paid bookings, RRULE parts beyond the subset (BYSETPOS, hourly), per-occurrence guest lists (guests are series-wide), Windows zone names in subscriptions beyond the mapped set (others fall back to the file's standard offset).
 - Don't store subscription URLs or tokens in plain text; never put event details on booking pages; never save from new-event link parameters (anyone can craft one): they only prefill the dialog the person confirms.
 
 ## Provenance
@@ -118,3 +148,4 @@ New module. Recurrence follows Google Calendar's master/exception model; the SSR
 - 1.1.1: the `calendar_create_event` suggestion shows the whole event the person accepts (when, repeat, place, guests by name, description) and refuses guests who aren't colleagues before review; its `Target` names `calendar.event`; feed, manage and RSVP token routes (and booking routes) refuse AI agent credentials. Event notifications name their event (`AgentTarget`, notifications ≥ 1.1.1), so an agent reading the inbox doesn't see them for an event its scope hides.
 - 1.1.2: the outbox claims rows in one short statement (`FOR UPDATE SKIP LOCKED`, a claim id, `next_attempt_at` as a lease), sends with no transaction or connection held, and records each result by claim, so a rollback never re-sends what went out and a crashed sender's rows come due when the lease ends (migration `2101_calendar_outbox_claims.sql`). The public booking confirmation links the video call ("Join video call", the manage page's words). The session zone save waits for an active account with the Terms accepted (no 403 for new accounts). Search hits carry `Context` (and `OrgID` for members-only links) and honour `app.SearchOrg` (template `SearchResult.Context`). Copy names organizations with orgs' noun (`orgsNoun`…, orgs with `configureOrgsNoun`). A new link's live preview no longer fails (400) before a title is typed.
 - 1.1.3: errors and agent tool descriptions name organizations with `orgs.Noun()` (orgs ≥ 1.3.0).
+- 1.2.0: connected calendars (Google Calendar, Outlook through `app.Connections`): capabilities, `/sources`, `/connected/*`, incremental sync with per-person caches, write-back and RSVP, connected busy time in availability, booking links' `add_to` and `conference_provider` (Meet/Teams native, Zoom/Teams/app through the seam), additive conferencing options, `PlatformMeetings`, connected agent tools and search hits; web sidebar, badges, event sheet, dialog and link editor; mobile agenda/day, detail and form (migration `2102_calendar_connected.sql`; template `SourceRef`, UI kit).

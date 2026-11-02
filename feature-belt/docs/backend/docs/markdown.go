@@ -26,6 +26,9 @@ import (
 type mdOptions struct {
 	names   mdNames
 	withIDs bool
+	// pageLink is the app path of a linked page (default /docs/<id>;
+	// connected pages link to /docs/c/<connection>/<id>).
+	pageLink func(id string) string
 }
 
 // blocksToMarkdown renders blocks (document order, as loadBlocks returns
@@ -106,9 +109,17 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 				if alt == "" {
 					alt = propString(b.Props, "name")
 				}
-				out.WriteString(indent + "![" + mdEscaper.Replace(alt) + "](/docs/files/" + propString(b.Props, "file_id") + ")\n")
+				src := "/docs/files/" + propString(b.Props, "file_id")
+				if u := propString(b.Props, "url"); u != "" && propString(b.Props, "file_id") == "" {
+					src = u
+				}
+				out.WriteString(indent + "![" + mdEscaper.Replace(alt) + "](" + src + ")\n")
 			case "file":
-				out.WriteString(indent + "[" + mdEscaper.Replace(propString(b.Props, "name")) + "](/docs/files/" + propString(b.Props, "file_id") + ")\n")
+				src := "/docs/files/" + propString(b.Props, "file_id")
+				if u := propString(b.Props, "url"); u != "" && propString(b.Props, "file_id") == "" {
+					src = u
+				}
+				out.WriteString(indent + "[" + mdEscaper.Replace(propString(b.Props, "name")) + "](" + src + ")\n")
 			case "bookmark":
 				title := propString(b.Props, "title")
 				if title == "" {
@@ -131,7 +142,21 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 				if b.Type == "database" && opt.withIDs {
 					suffix = " (database: read it with docs_query_database)"
 				}
-				out.WriteString(indent + "[" + mdEscaper.Replace(title) + "](/docs/" + id + ")" + suffix + "\n")
+				link := "/docs/" + id
+				if opt.pageLink != nil {
+					link = opt.pageLink(id)
+				}
+				out.WriteString(indent + "[" + mdEscaper.Replace(title) + "](" + link + ")" + suffix + "\n")
+			case "connected_page":
+				title := propString(b.Props, "title")
+				if title == "" {
+					title = "Untitled"
+				}
+				suffix := ""
+				if opt.withIDs {
+					suffix = " (" + platformLabel(propString(b.Props, "provider")) + " page " + propString(b.Props, "ref") + ": read it with docs_get_page and that source)"
+				}
+				out.WriteString(indent + "[" + mdEscaper.Replace(title) + "](" + propString(b.Props, "url") + ")" + suffix + "\n")
 			case "table":
 				raw, _ := json.Marshal(b.Props["rows"])
 				var rows [][][]Span

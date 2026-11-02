@@ -216,3 +216,43 @@ func TestRunScopesToOrg(t *testing.T) {
 		t.Error("parseOrg accepted a non-uuid")
 	}
 }
+
+func TestSourcesSanitizedFacetedAndFiltered(t *testing.T) {
+	now := time.Now()
+	conn := app.Connection{ID: "6f1c0f1e-8a7b-4c62-9d55-1f2a3b4c5d6e", Provider: "google", Account: "sam@acme.com"}
+	in := []app.SearchResult{
+		{Kind: "files.file", ID: "1", Title: "Plan", Link: "/files/1", At: now, Score: 0.5},
+		{Kind: "files.file", ID: "2", Title: "Plan (Drive)", Link: "/files?source=x", At: now, Score: 0.9, Source: app.ConnectedSource(conn, "drive", "javascript:alert(1)")},
+		{Kind: "files.file", ID: "3", Title: "Broken source", Link: "/files/3", At: now, Source: &app.SourceRef{Provider: "Not A Provider"}},
+		{Kind: "files.file", ID: "4", Title: "Plan (GitHub)", Link: "/repos", At: now, Score: 0.7, Source: &app.SourceRef{Type: "connected", Provider: "github", ConnectionID: "c2", Account: "octo"}},
+	}
+	clean := sanitize("files", in, Query{Limit: 10})
+	if len(clean) != 3 {
+		t.Fatalf("a malformed source must drop the hit, got %d hits", len(clean))
+	}
+	for _, h := range clean {
+		if h.ID == "2" && h.Source.URL != "" {
+			t.Fatalf("non-https source URL kept: %q", h.Source.URL)
+		}
+	}
+	facets := sourceFacets(clean)
+	if len(facets) != 3 || facets[0].ID != "app" || facets[0].Count != 1 || facets[1].ID != "provider:google" {
+		t.Fatalf("facets: %+v", facets)
+	}
+	for filter, want := range map[string]int{"": 3, "app": 1, "connected": 2, "provider:google": 1, "provider:zoom": 0, conn.ID: 1} {
+		n := 0
+		for _, h := range clean {
+			if sourceMatches(filter, h) {
+				n++
+			}
+		}
+		if n != want {
+			t.Errorf("source %q kept %d, want %d", filter, n, want)
+		}
+	}
+	for _, bad := range []string{"provider:", "provider:GOOGLE!", "x"} {
+		if _, err := parseSource(bad); err == nil {
+			t.Errorf("parseSource(%q) accepted", bad)
+		}
+	}
+}

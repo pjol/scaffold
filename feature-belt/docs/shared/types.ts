@@ -1,4 +1,5 @@
 import type { AccessLevel } from "../access/types";
+import type { ConnectionOffer, FeatureSource, SourceRef } from "../sources";
 
 /** A person, page or date shown as a chip inside text. `text` is the label when it was made; clients show live names. */
 export type DocsMention = { type: "user"; id: string } | { type: "page"; id: string } | { type: "date"; date: string };
@@ -29,13 +30,15 @@ export type DocsTextBlockType =
   | "quote"
   | "callout";
 
-export type DocsBlockType = DocsTextBlockType | "code" | "divider" | "image" | "file" | "bookmark" | "page" | "table" | "database";
+export type DocsBlockType = DocsTextBlockType | "code" | "divider" | "image" | "file" | "bookmark" | "page" | "table" | "database" | "connected_page";
 
 /**
  * Props by type: text types `{text}` (+ to_do `checked`, callout `icon`); code `{code, language}`;
  * image `{file_id, name, content_type, size, caption, width}`; file `{file_id, name, content_type, size, caption}`;
  * bookmark `{url, title, caption}`; page `{page_id}`; database `{database_id}`;
- * table `{rows: DocsSpan[][][], header_row, header_col}`; divider `{}`.
+ * table `{rows: DocsSpan[][][], header_row, header_col}`; divider `{}`;
+ * connected_page `{provider, account_id, ref, title, url}` (a Notion page or Google Doc each viewer opens with their own connection).
+ * Blocks of connected pages: image and file carry `url` (the platform's link) instead of `file_id`.
  */
 export interface DocsBlockProps {
   text?: DocsSpan[];
@@ -56,6 +59,9 @@ export interface DocsBlockProps {
   rows?: DocsSpan[][][];
   header_row?: boolean;
   header_col?: boolean;
+  provider?: string;
+  account_id?: string;
+  ref?: string;
 }
 
 export interface DocsBlock {
@@ -102,6 +108,8 @@ export interface DocsProperty {
   type: DocsPropertyType;
   options?: DocsOption[];
   number_format?: "number" | "percent" | "dollar" | "euro" | "pound";
+  /** Shown but not changed here (a connected database's formulas, rollups, people…). */
+  read_only?: boolean;
 }
 
 /** Row values by type: text/url/email string, number, select/status option id, multi_select option ids, date {start, end?}, person user ids, checkbox. */
@@ -290,6 +298,10 @@ export interface DocsRow {
   created_at: string;
   updated_at: string;
   my_level: DocsMyLevel;
+  /** Connected rows: where the row comes from, its platform id and its page there. */
+  source?: SourceRef;
+  ref?: string;
+  url?: string;
 }
 
 export interface DocsRowPage {
@@ -371,6 +383,94 @@ export interface DocsPublicPage {
   path: DocsCrumb[];
   root_id: string;
   database: DocsDatabaseInfo | null;
+}
+
+// ---- connected platforms (Notion, Google Docs)
+
+/** Where connected content comes from (always a connection). */
+export type DocsConnectedSourceRef = Extract<SourceRef, { type: "connected" }>;
+
+/** A connected account in Docs (`FeatureSource` plus whether changes are allowed). */
+export interface DocsConnectedSource extends FeatureSource {
+  /** The platform's id for the account (a Notion workspace), which connected-page blocks record. */
+  account_id?: string;
+  can_write: boolean;
+  /** Grants changes when `can_write` is false. */
+  write_url?: string;
+}
+
+/** `GET /v1/docs/sources` (`FeatureSources`). */
+export interface DocsConnectedSources {
+  sources: DocsConnectedSource[];
+  offers: ConnectionOffer[];
+}
+
+/** A connected page or database in trees, lists and search. `id` is the platform's id. */
+export interface DocsConnectedItem {
+  id: string;
+  connection_id: string;
+  kind: "page" | "database";
+  title: string;
+  icon: string | null;
+  has_children: boolean;
+  parent_ref: string | null;
+  updated_at: string;
+  /** Google: the owner's name. */
+  snippet?: string;
+  /** The page on the platform. */
+  url: string;
+  /** The app path that opens it here. */
+  link: string;
+  source: DocsConnectedSourceRef;
+}
+
+export interface DocsConnectedList {
+  items: DocsConnectedItem[];
+  next_cursor: string | null;
+}
+
+/** `GET /v1/docs/connected/{connection}/pages/{ref}`: a page detail plus where it comes from and its editing session. */
+export interface DocsConnectedPageDetail extends DocsPageDetail {
+  ref: string;
+  connection_id: string;
+  /** Sent with every edit; a new one comes with each load. */
+  session_id: string;
+  source: DocsConnectedSourceRef;
+  connection: DocsConnectedSource;
+  url: string;
+  /** The account may change it on the platform and the connection allows changes from here. */
+  can_edit: boolean;
+  /** Blocks shown but not changed here ("Edit in Notion"). */
+  read_only_blocks: string[];
+  /** More blocks than Docs shows: open it on the platform for the rest. */
+  partial: boolean;
+  /** A database row's database (platform id). */
+  database_ref?: string;
+}
+
+export interface DocsConnectedComment {
+  id: string;
+  thread_id: string;
+  block_id: string | null;
+  quote: string | null;
+  body: DocsSpan[];
+  author: { id: string; name: string; avatar_url: string | null } | null;
+  created_at: string;
+  resolved: boolean;
+  replies: DocsConnectedComment[];
+}
+
+/** What a viewer sees of a connected-page block, through their own connection. */
+export interface DocsResolvedLink {
+  state: "ok" | "connect" | "reconnect" | "no_access" | "blocked";
+  connection_id?: string;
+  item?: DocsConnectedItem;
+  /** The first top-level blocks, for the live preview. */
+  blocks: DocsBlock[];
+  refs?: DocsRefs;
+  offer?: ConnectionOffer;
+  fix_url?: string;
+  more: boolean;
 }
 
 // ---- requests

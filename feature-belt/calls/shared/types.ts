@@ -1,5 +1,7 @@
 /** Calls DTOs. JSON matches backend/internal/calls exactly (snake_case). */
 
+import type { ConnectionOffer, SourceRef } from "../sources";
+
 /** org: members of the meeting's org and invitees · invited: invitees, others may ask · open: anyone with the link may ask (guests too). */
 export type CallsAccess = "org" | "invited" | "open";
 export type CallsKind = "meeting" | "call";
@@ -235,6 +237,51 @@ export interface CallsParticipantMeta {
   role: CallsRole;
   user_id?: string;
   avatar_url?: string | null;
+}
+
+/** A way to hold a video meeting: the app's own call (embedded) or a connected platform (opens its own app). */
+export interface CallsMeetingProvider {
+  id: "app" | "zoom" | "teams" | "google_meet" | (string & {});
+  label: string;
+  platform?: string;
+  connection_id?: string;
+  account?: string;
+  status?: "active" | "needs_reauth" | "blocked";
+  fix_url?: string;
+  /** Runs inside the app (the app's own); the others open Zoom, Teams or Meet. */
+  embedded: boolean;
+  via?: string;
+}
+
+/** `GET /v1/calls/providers`. */
+export interface CallsMeetingProviders {
+  providers: CallsMeetingProvider[];
+  offers: ConnectionOffer[];
+}
+
+/** A meeting with a platform link (Meet, Teams, Zoom) on the person's calendars, beside the app's own. */
+export interface CallsPlatformMeeting {
+  /** The calendar's reference for the event. */
+  id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  provider: "google_meet" | "teams" | "zoom" | (string & {});
+  join_url: string;
+  organizer: string;
+  my_response?: string;
+  /** App path that opens it in the calendar. */
+  link?: string;
+  /** Set when it comes from a connected calendar; null for the app's own calendar. */
+  source: SourceRef | null;
+}
+
+/** `GET /v1/calls/external?when=upcoming|recent`. */
+export interface CallsPlatformMeetings {
+  items: CallsPlatformMeeting[];
+  /** A calendar is wired (the app's stitching). */
+  available: boolean;
 }
 
 declare module "../types" {

@@ -31,6 +31,7 @@ import { DriveListing, useFilesSortParam } from "./DriveListing";
 import { FILES_SECTION_PATH, SectionTitle } from "./FilesLayout";
 import { FILES_DRAG_TYPE } from "./ItemList";
 import { FilesPreview } from "./Preview";
+import { ShortcutView } from "./ShortcutView";
 
 const EMPTY: Record<FilesSection, { title: string; icon: React.ReactNode }> = {
   my: { title: "No files yet", icon: <HardDrive /> },
@@ -144,7 +145,30 @@ export function FilesItemScreen({ itemId }: { itemId: string }) {
     return <ErrorState title="Couldn't load this item" info={errorMessage(detail.error, "")} onRetry={() => void detail.refetch()} />;
   }
   if (detail.data.item.type === "folder") return <FolderView detail={detail.data} />;
+  if (detail.data.item.type === "link") return <ShortcutScreen detail={detail.data} />;
   return <FileView detail={detail.data} />;
+}
+
+/** A shortcut to a connected item: opens it with your own connection, or says what to do. */
+function ShortcutScreen({ detail }: { detail: FilesItemDetail }) {
+  const item = detail.item;
+  const actions = useFilesItemMenu(item, { showOpen: false });
+  return (
+    <ShortcutView
+      detail={detail}
+      header={
+        <header className="flex flex-col gap-2">
+          <Breadcrumbs detail={detail} />
+          <div className="flex min-h-control-lg items-center gap-2">
+            <h1 className="min-w-0 flex-1 truncate type-title text-fg" title={item.name}>
+              {item.name}
+            </h1>
+            <ResourceMenu feature="files" kind="files.item" id={item.id} title={item.name} orgId={item.org_id} actions={actions} />
+          </div>
+        </header>
+      }
+    />
+  );
 }
 
 /** Breadcrumbs: where the path starts, then each folder you can open; crumbs take dropped items. */

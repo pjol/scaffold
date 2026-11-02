@@ -19,15 +19,16 @@ import (
 // checks as the REST routes: only the caller's calendar, colleagues'
 // free/busy only, and one write that never emails anyone outside the app.
 func (s *Service) Tools() []app.Tool {
-	return []app.Tool{
+	return append([]app.Tool{
 		{
 			Name:        "calendar_list_events",
-			Description: "List events on the user's calendar between two times (at most 31 days apart): their own events and invitations with their reply, recurring events expanded, plus busy blocks from calendars they subscribed to.",
+			Description: "List events on the user's calendar between two times (at most 31 days apart): their own events and invitations with their reply, recurring events expanded, busy blocks from calendars they subscribed to, and (under connected) events from their connected Google and Outlook calendars, each with its source.",
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"from": {"type": "string", "format": "date-time", "description": "Start of the window (RFC 3339)."},
-					"to": {"type": "string", "format": "date-time", "description": "End of the window (RFC 3339)."}
+					"to": {"type": "string", "format": "date-time", "description": "End of the window (RFC 3339)."},
+					"source": {"type": "string", "description": "all (default), app (this app's calendar only), or a connection id from calendar_list_sources."}
 				},
 				"required": ["from", "to"],
 				"additionalProperties": false
@@ -142,7 +143,7 @@ func (s *Service) Tools() []app.Tool {
 			Target:  func(json.RawMessage) (string, string) { return KindEvent, "" },
 			Preview: s.previewCreate,
 		},
-	}
+	}, s.connectedTools()...)
 }
 
 func decodeTool(raw json.RawMessage, dst any) error {
@@ -157,8 +158,9 @@ func decodeTool(raw json.RawMessage, dst any) error {
 
 func (s *Service) toolListEvents(ctx context.Context, caller *auth.Identity, raw json.RawMessage) (any, error) {
 	var in struct {
-		From string `json:"from"`
-		To   string `json:"to"`
+		From   string `json:"from"`
+		To     string `json:"to"`
+		Source string `json:"source"`
 	}
 	if err := decodeTool(raw, &in); err != nil {
 		return nil, err
@@ -170,6 +172,28 @@ func (s *Service) toolListEvents(ctx context.Context, caller *auth.Identity, raw
 	readable, err := s.agentReadable(ctx, caller)
 	if err != nil {
 		return nil, err
+	}
+	type withConnected struct {
+		RangeResponse
+		Connected       []ConnectedEvent `json:"connected"`
+		ConnectedErrors []SourceError    `json:"connected_errors,omitempty"`
+	}
+	res := withConnected{Connected: []ConnectedEvent{}}
+	if in.Source != "" && in.Source != "all" && in.Source != "app" {
+		c, err := s.connectedRange(ctx, caller, uuid.Nil, from, to, in.Source)
+		if err != nil {
+			return nil, err
+		}
+		res.RangeResponse = RangeResponse{Items: []Occurrence{}, Busy: []ExternalBusy{}}
+		res.Connected, res.ConnectedErrors = c.Items, c.Errors
+		return res, nil
+	}
+	if in.Source != "app" {
+		c, err := s.connectedRange(ctx, caller, uuid.Nil, from, to, "")
+		if err != nil {
+			return nil, err
+		}
+		res.Connected, res.ConnectedErrors = c.Items, c.Errors
 	}
 	out, err := s.listRange(ctx, caller.UserID, from, to)
 	if err != nil {
@@ -188,7 +212,8 @@ func (s *Service) toolListEvents(ctx context.Context, caller *auth.Identity, raw
 		}
 	}
 	out.Items, out.Busy = items, busy
-	return out, nil
+	res.RangeResponse = out
+	return res, nil
 }
 
 func (s *Service) toolGetEvent(ctx context.Context, caller *auth.Identity, raw json.RawMessage) (any, error) {
@@ -361,7 +386,9 @@ func (s *Service) toolCreateEvent(ctx context.Context, caller *auth.Identity, ra
 }
 
 // Search finds the caller's events (owned or invited: title, place or
-// description) and booking links for global search. Events belong to no
+// description), booking links, and events on their connected calendars
+// (live, time-boxed; Source and Context "Google Calendar · account") for
+// global search. Events belong to no
 // org (Context "Calendar"); members-only links name theirs (OrgID, Context
 // "Org · Calendar"), and a search scoped to another org leaves them out.
 func (s *Service) Search(ctx context.Context, caller *auth.Identity, query string, limit int) ([]app.SearchResult, error) {
@@ -453,7 +480,11 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 		}
 		out = append(out, hit)
 	}
-	return out, lrows.Err()
+	if err := lrows.Err(); err != nil {
+		return nil, err
+	}
+	lrows.Close()
+	return append(out, s.connectedSearch(ctx, caller, q, limit)...), nil
 }
 
 // agentReadable returns whether the request may read a calendar resource.

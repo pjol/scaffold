@@ -44,8 +44,10 @@ import {
   Select,
   Skeleton,
   SkeletonGroup,
+  SourceBadge,
   TextArea,
   cn,
+  sourcePlatformName,
   toast,
 } from "@scaffoldapp/ui-web";
 import {
@@ -91,6 +93,8 @@ const FILTERS: { value: CrmTimelineFilter; label: string }[] = [
 /** The record's timeline with the composer on top and open tasks first. */
 export function TimelinePanel({ record, suggestions }: { record: CrmRecord; suggestions: CrmRecordRef[] }) {
   const [filter, setFilter] = useUrlState<CrmTimelineFilter>("activity", "all");
+  // Platforms keep their own field history; a connected record's timeline is its engagements.
+  const filters = record.source ? FILTERS.filter((f) => f.value !== "changes") : FILTERS;
   const timeline = useCrmTimeline(record.type, record.id, filter);
   const upcoming = crmUpcoming(timeline.data);
   const canComment = accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "comment");
@@ -110,7 +114,7 @@ export function TimelinePanel({ record, suggestions }: { record: CrmRecord; sugg
         </section>
       ) : null}
       <div className="-mx-1 flex gap-1 overflow-x-auto px-1" role="tablist" aria-label="Show">
-        {FILTERS.map((f) => (
+        {filters.map((f) => (
           <button
             key={f.value}
             type="button"
@@ -187,7 +191,8 @@ function ActivityCard({ activity: a, record }: { activity: CrmActivity; record: 
               {a.type === "task" ? formatRelative(a.created_at) : formatDateTime(a.occurred_at)}
             </time>
           </div>
-          {a.can_edit ? (
+          <SourceBadge source={a.source} iconOnly />
+          {a.can_edit && !a.source ? (
             <Menu trigger={<IconButton label="Activity actions" icon={<MoreHorizontal />} size="sm" />}>
               <MenuItem icon={<Pencil />} onSelect={() => setEditing(true)}>
                 Edit
@@ -390,6 +395,9 @@ function nowLocal(): string {
 /** Log a note, call, email or meeting, or create a task, with @mentions and the records it's also about. */
 function Composer({ record, suggestions }: { record: CrmRecord; suggestions: CrmRecordRef[] }) {
   const { orgId } = useCrm();
+  // Connected records take notes, calls and tasks, written to the platform; people are its owners.
+  const external = record.source?.type === "connected" ? record.source : null;
+  const kinds = external ? KIND_OPTIONS.filter((o) => o.value === "note" || o.value === "call" || o.value === "task") : KIND_OPTIONS;
   const [kind, setKind] = useState<Kind>("note");
   const [text, setText] = useState("");
   const [mentions, setMentions] = useState<AccessDirectoryEntry[]>([]);
@@ -438,11 +446,12 @@ function Composer({ record, suggestions }: { record: CrmRecord; suggestions: Crm
         ...((kind === "call" || kind === "meeting") && minutes ? { duration_minutes: Number(minutes) } : {}),
       };
     }
-    req.also_on = alsoOn.map((r) => ({ type: r.type, id: r.id }));
+    if (!external) req.also_on = alsoOn.map((r) => ({ type: r.type, id: r.id }));
     setError(null);
     log.mutate(req, {
       onSuccess: (a) => {
-        toast.success(kind === "task" ? "Task added" : `${CRM_ACTIVITY_LABEL[kind]} logged`);
+        const where = external ? ` in ${sourcePlatformName(external.provider)}` : "";
+        toast.success(kind === "task" ? `Task added${where}` : `${CRM_ACTIVITY_LABEL[kind]} logged${where}`);
         if (a.unreachable?.length) toast.info(`${a.unreachable.join(", ")} can't see this record, so wasn't notified.`);
         reset();
       },
@@ -452,7 +461,7 @@ function Composer({ record, suggestions }: { record: CrmRecord; suggestions: Crm
   return (
     <Card padding="compact" className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="What to log">
-        {KIND_OPTIONS.map((o) => {
+        {kinds.map((o) => {
           const Icon = ACTIVITY_ICON[o.value];
           return (
             <button
@@ -473,7 +482,7 @@ function Composer({ record, suggestions }: { record: CrmRecord; suggestions: Crm
         })}
       </div>
       {kind === "task" ? (
-        <TaskFields orgId={orgId} value={task} onChange={setTask} />
+        <TaskFields orgId={orgId} value={task} onChange={setTask} source={external?.connection_id} />
       ) : (
         <>
           {kind !== "note" ? (
@@ -509,8 +518,12 @@ function Composer({ record, suggestions }: { record: CrmRecord; suggestions: Crm
           ) : null}
         </>
       )}
-      <MentionInput orgId={orgId} label={kind === "task" ? "Notes" : kind === "note" ? "Note" : "What happened"} value={text} onChange={setText} mentions={mentions} onMention={(m) => setMentions((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]))} />
-      {alsoOn.length > 0 ? (
+      {external ? (
+        <TextArea aria-label={kind === "task" ? "Notes" : kind === "note" ? "Note" : "What happened"} placeholder={kind === "note" ? "Note" : "What happened"} value={text} onChange={(e) => setText(e.target.value)} />
+      ) : (
+        <MentionInput orgId={orgId} label={kind === "task" ? "Notes" : kind === "note" ? "Note" : "What happened"} value={text} onChange={setText} mentions={mentions} onMention={(m) => setMentions((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]))} />
+      )}
+      {alsoOn.length > 0 && !external ? (
         <div className="flex flex-wrap items-center gap-2 type-caption text-fg-muted">
           <span>Also log on</span>
           {alsoOn.map((r) => (

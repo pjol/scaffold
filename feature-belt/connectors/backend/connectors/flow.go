@@ -265,6 +265,9 @@ func (s *Service) callback(w http.ResponseWriter, r *http.Request) {
 		s.finishRedirect(w, r, "web", "", "invalid_callback")
 		return
 	}
+	if s.platformCallback(ctx, w, r, state) {
+		return
+	}
 	f, err := scanFlow(s.d.Pool.QueryRow(ctx, `
 		UPDATE connector_oauth_flows SET state_hash = NULL
 		WHERE state_hash = $1 AND status = 'pending'

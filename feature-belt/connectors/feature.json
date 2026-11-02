@@ -1,9 +1,11 @@
 {
   "name": "connectors",
   "title": "Connectors",
-  "version": "1.0.2",
-  "summary": "Users connect external MCP servers (Linear, GitHub, Notion…) with their own account, so the in-app assistant reaches exactly what they can there.",
-  "requires": [],
+  "version": "2.1.0",
+  "summary": "People connect their accounts on Google, Microsoft, GitHub, GitLab, Notion, HubSpot, Salesforce and Zoom once and every feature uses them as that person, with incremental consent and workspace policy; the assistant also reaches external MCP servers.",
+  "requires": [
+    "orgs"
+  ],
   "surfaces": [
     "backend",
     "web",
@@ -60,6 +62,221 @@
       "required": "optional",
       "default": "30s",
       "doc": "Longest a remote tool call may run (5s to 2m)."
+    },
+    {
+      "name": "CONNECTORS_DEV_PROVIDER_URLS",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Development only: point platforms at local mocks, as provider=http://127.0.0.1:port pairs separated by commas; each platform URL becomes <mock>/<original host><path>. Refused outside development."
+    },
+    {
+      "name": "GOOGLE_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Google OAuth client ID for sign-in. Unset: Google shows Not set up.",
+      "source": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "name": "GOOGLE_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Google OAuth client secret (set together with GOOGLE_CLIENT_ID).",
+      "source": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "name": "MICROSOFT_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Microsoft (Entra ID) OAuth client ID for sign-in. Unset: Microsoft shows Not set up.",
+      "source": "https://entra.microsoft.com"
+    },
+    {
+      "name": "MICROSOFT_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Microsoft (Entra ID) OAuth client secret (set together with MICROSOFT_CLIENT_ID).",
+      "source": "https://entra.microsoft.com"
+    },
+    {
+      "name": "MICROSOFT_TENANT",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "default": "common",
+      "doc": "Entra tenant for sign-in: common (any work or personal account), organizations, consumers, or one tenant id/domain."
+    },
+    {
+      "name": "GITHUB_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "GitHub (OAuth App) OAuth client ID for sign-in. Unset: GitHub shows Not set up (personal tokens still work).",
+      "source": "https://github.com/settings/developers"
+    },
+    {
+      "name": "GITHUB_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "GitHub (OAuth App) OAuth client secret (set together with GITHUB_CLIENT_ID).",
+      "source": "https://github.com/settings/developers"
+    },
+    {
+      "name": "GITLAB_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "GitLab OAuth client ID for sign-in. Unset: GitLab shows Not set up (personal tokens still work).",
+      "source": "GitLab → Preferences → Applications"
+    },
+    {
+      "name": "GITLAB_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "GitLab OAuth client secret (set together with GITLAB_CLIENT_ID).",
+      "source": "GitLab → Preferences → Applications"
+    },
+    {
+      "name": "GITLAB_BASE_URL",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "default": "https://gitlab.com",
+      "doc": "GitLab instance sign-in uses (a self-managed instance's address, or gitlab.com). Personal tokens may name any instance."
+    },
+    {
+      "name": "NOTION_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Notion (public integration) OAuth client ID for sign-in. Unset: Notion shows Not set up (personal tokens still work).",
+      "source": "https://www.notion.so/profile/integrations"
+    },
+    {
+      "name": "NOTION_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Notion (public integration) OAuth client secret (set together with NOTION_CLIENT_ID).",
+      "source": "https://www.notion.so/profile/integrations"
+    },
+    {
+      "name": "HUBSPOT_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "HubSpot OAuth client ID for sign-in. Unset: HubSpot shows Not set up (personal tokens still work).",
+      "source": "https://developers.hubspot.com"
+    },
+    {
+      "name": "HUBSPOT_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "HubSpot OAuth client secret (set together with HUBSPOT_CLIENT_ID).",
+      "source": "https://developers.hubspot.com"
+    },
+    {
+      "name": "SALESFORCE_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Salesforce (connected app) OAuth client ID for sign-in. Unset: Salesforce shows Not set up.",
+      "source": "Setup → App Manager"
+    },
+    {
+      "name": "SALESFORCE_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Salesforce (connected app) OAuth client secret (set together with SALESFORCE_CLIENT_ID).",
+      "source": "Setup → App Manager"
+    },
+    {
+      "name": "SALESFORCE_LOGIN_URL",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "default": "https://login.salesforce.com",
+      "doc": "Salesforce login host: login.salesforce.com, test.salesforce.com (sandboxes) or your My Domain."
+    },
+    {
+      "name": "ZOOM_CLIENT_ID",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "doc": "Zoom (general app) OAuth client ID for sign-in. Unset: Zoom shows Not set up.",
+      "source": "https://marketplace.zoom.us"
+    },
+    {
+      "name": "ZOOM_CLIENT_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Zoom (general app) OAuth client secret (set together with ZOOM_CLIENT_ID).",
+      "source": "https://marketplace.zoom.us"
+    },
+    {
+      "name": "GITHUB_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Secret of GitHub webhooks sent to /webhooks/connectors/github (X-Hub-Signature-256). Unset: refused."
+    },
+    {
+      "name": "GITLAB_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Secret token of GitLab webhooks sent to /webhooks/connectors/gitlab (X-Gitlab-Token). Unset: refused."
+    },
+    {
+      "name": "NOTION_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Verification token of the Notion webhook subscription (X-Notion-Signature). Unset: refused."
+    },
+    {
+      "name": "ZOOM_WEBHOOK_SECRET",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Secret token of the Zoom app's event subscription (x-zm-signature, URL validation). Unset: refused."
+    },
+    {
+      "name": "GOOGLE_WEBHOOK_TOKEN",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "Channel token features set on Google Drive/Calendar watches (X-Goog-Channel-Token). Unset: refused."
+    },
+    {
+      "name": "MICROSOFT_WEBHOOK_CLIENT_STATE",
+      "tier": "backend",
+      "group": "connectors",
+      "required": "optional",
+      "secret": true,
+      "doc": "clientState features set on Microsoft Graph subscriptions. Unset: refused."
     }
   ],
   "files": [
@@ -105,7 +322,7 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { connectorsAdminNav, connectorsSettings } from \"./connectors/nav\";"
+      "insert": "import { connectorsAdminNav, connectorsPolicySettings, connectorsSettings } from \"./connectors/nav\";"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -126,6 +343,11 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "settings",
       "insert": "connectorsSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "connectorsPolicySettings,"
     }
   ],
   "stitch": [
@@ -135,6 +357,9 @@
     "Decide CONNECTORS_ALLOW_CUSTOM: leave it off unless people should add arbitrary MCP servers.",
     "Install the assistant feature (1.1.0 or later) so connected tools reach it; without it, connections have no consumer.",
     "Name each connected service as a processor in the privacy policy only if your company operates it; otherwise say that the assistant sends the user's requests to services they connect, and their results to the AI provider.",
-    "If the mobile app's scheme changes, update mobileReturnURL in backend/internal/connectors/connectors.go and RETURN_URL in mobile/src/features/connectors/ConnectionsScreen.tsx together."
+    "If the mobile app's scheme changes, update mobileReturnURL in backend/internal/connectors/connectors.go and RETURN_URL in mobile/src/features/connectors/ConnectionsScreen.tsx together.",
+    "Register an OAuth app with each platform you want people to sign in to (the consent screen shows its name), with redirect URL <PUBLIC_API_URL>/v1/connectors/oauth/callback, and set its <PLATFORM>_CLIENT_ID and _SECRET. Admin → Connectors → Platforms shows what is missing. GitHub, GitLab, Notion and HubSpot also take personal tokens without any setup.",
+    "Request verification of sensitive scopes where the platform requires it before launch (Google restricted/sensitive scopes such as Drive, Microsoft admin consent for org-wide permissions).",
+    "Decide each workspace's default connection policy (Settings → Connection policy; admins), and name the platforms people may connect in the privacy policy (data stays on the platform and is read live with the person's own token)."
   ]
 }

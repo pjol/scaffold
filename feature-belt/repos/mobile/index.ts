@@ -3,3 +3,4 @@ export { ReposListScreen, RepoScreen, FileScreen, CommitsScreen, CommitScreen } 
 export { PullsScreen, PullScreen } from "./PullScreens";
 export { CredentialsScreen } from "./CredentialsScreen";
 export { reposHomeEntry, reposCredentialsInfo } from "./registry";
+export { ConnectedReposScreen } from "./RepoScreens";

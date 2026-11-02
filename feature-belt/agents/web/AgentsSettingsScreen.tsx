@@ -47,6 +47,9 @@ import { LEVEL_TONE, VIA_LABEL, agentIcon } from "./labels";
 const MANAGE_LINKS = ["/settings/connected-apps", "/settings/api-keys", "/settings/assistant", "/settings/connections"];
 
 function toolsInfo(f: AgentsFeatureScope): string {
+  if (f.platform) {
+    return `Caps what AI agents read and change in this account through every feature; each feature's own level applies too.${f.connected ? "" : " Not connected now; the setting is kept for when you reconnect."}`;
+  }
   const parts = [`${f.read_tools} ${f.read_tools === 1 ? "tool reads" : "tools read"}`];
   if (f.write_tools) parts.push(`${f.write_tools} ${f.write_tools === 1 ? "tool makes" : "tools make"} changes`);
   let s = parts.join(", ") + ".";
@@ -98,7 +101,7 @@ function Services({ settings }: { settings: AgentsSettings }) {
   const q = useAgentsServices();
   const connectLink = settingsSections.find((s) => s.href === "/settings/connections");
   return (
-    <Section title="Connected services" info="Outside services you connected (through Connections) that the assistant can use for you. Each has its own level.">
+    <Section title="Connections" info="Accounts and services you connected in Connections. Each has its own level: an account's level caps what agents do there through every feature, and a service's covers the tools the assistant uses from it.">
       <Card padding="none" className="p-1">
         {q.isPending ? (
           <SkeletonGroup label="Loading services" className="flex flex-col">
@@ -111,11 +114,11 @@ function Services({ settings }: { settings: AgentsSettings }) {
           <EmptyState
             compact
             icon={<Plug />}
-            title="No services connected"
+            title="Nothing connected"
             action={
               connectLink ? (
                 <Button asChild variant="secondary" size="auto">
-                  <Link href={connectLink.href}>Connect a service</Link>
+                  <Link href={connectLink.href}>Connect an account</Link>
                 </Button>
               ) : undefined
             }

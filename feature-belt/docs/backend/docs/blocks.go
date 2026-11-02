@@ -35,7 +35,7 @@ type Block struct {
 // Block types. Text types carry rich text in props.text.
 var (
 	textTypes = []string{"paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"}
-	allTypes  = append(slices.Clone(textTypes), "code", "divider", "image", "file", "bookmark", "page", "table", "database")
+	allTypes  = append(slices.Clone(textTypes), "code", "divider", "image", "file", "bookmark", "page", "table", "database", "connected_page")
 	// nestable types may hold child blocks (indent with Tab).
 	nestable = []string{"paragraph", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"}
 )
@@ -273,6 +273,27 @@ func normalizeProps(pc propCtx, typ string, raw map[string]json.RawMessage) (nor
 		}
 		n.props["rows"], n.props["header_row"], n.props["header_col"] = out, hr, hc
 		n.plain = strings.Join(plain, " ")
+	case "connected_page":
+		// A Notion page or Google Doc shown live to each viewer through their
+		// own connection (connected_routes.go resolveRoute).
+		provider := str("provider")
+		if provider != providerNotion && provider != providerGoogle {
+			return n, badProps(typ, "needs a Notion page or a Google document.")
+		}
+		ref, account := str("ref"), str("account_id")
+		if !validRef(ref) || len(account) > 128 {
+			return n, badProps(typ, "needs a Notion page or a Google document.")
+		}
+		title := strings.TrimSpace(cleanText(str("title")))
+		if utf8.RuneCountInString(title) > maxTitleChars {
+			title = string([]rune(title)[:maxTitleChars])
+		}
+		link := safeLink(str("url"))
+		if !strings.HasPrefix(link, "https://") {
+			link = ""
+		}
+		n.props["provider"], n.props["ref"], n.props["account_id"], n.props["title"], n.props["url"] = provider, ref, account, title, link
+		n.plain = title
 	case "divider":
 	}
 	return n, nil

@@ -450,6 +450,9 @@ export function docsBlocksToMarkdown(blocks: readonly DocsBlock[], names: Parame
         case "database":
           lines.push(`${indent}[${names.page?.(b.props.database_id ?? "") ?? "Untitled"}](/docs/${b.props.database_id})`);
           break;
+        case "connected_page":
+          lines.push(`${indent}[${b.props.title || "Untitled"}](${b.props.url ?? ""})`);
+          break;
         case "table":
           (b.props.rows ?? []).forEach((row, ri) => {
             lines.push(`${indent}| ${row.map((c) => docsSpansToMarkdown(c, names).replace(/\|/g, "\\|")).join(" | ")} |`);

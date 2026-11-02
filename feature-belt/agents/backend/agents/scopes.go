@@ -27,6 +27,10 @@ type FeatureScope struct {
 	WriteTools        int    `json:"write_tools"`
 	ResourceOverrides int    `json:"resource_overrides"` // items in it with their own setting
 	Connected         bool   `json:"connected"`          // services: still connected
+	// Platform is set on a connected platform account (its provider id:
+	// google, github…): its level caps what agents do there through every
+	// feature, so it has no tools of its own.
+	Platform string `json:"platform,omitempty"`
 }
 
 // AgentInfo is an agent that has acted for the user.
@@ -224,7 +228,8 @@ func (s *Service) listServices(w http.ResponseWriter, r *http.Request) error {
 	items := []FeatureScope{}
 	seen := map[string]bool{}
 	for _, e := range s.serviceCatalog(r.Context(), me) {
-		fs := FeatureScope{Feature: e.Feature, Label: e.Label, Effective: st.Default, ReadTools: e.ReadTools, WriteTools: e.WriteTools, Connected: true}
+		fs := FeatureScope{Feature: e.Feature, Label: e.Label, Effective: st.Default, ReadTools: e.ReadTools, WriteTools: e.WriteTools,
+			Connected: true, Platform: e.Platform}
 		if o, ok := own[e.Feature]; ok {
 			l := o.level
 			fs.Level, fs.Effective = &l, l
@@ -355,7 +360,11 @@ func (s *Service) resolve(ctx context.Context, userID uuid.UUID, refs []scopeRef
 	out := make([]ScopeInfo, len(refs))
 	for i, x := range list {
 		ref := refs[i]
-		info := ScopeInfo{Feature: ref.feature, FeatureLabel: featureLabel(ref.feature), Kind: ref.kind, ID: ref.id,
+		label := featureLabel(ref.feature)
+		if isService(ref.feature) {
+			label = s.serviceLabel(ctx, userID, ref.feature)
+		}
+		info := ScopeInfo{Feature: ref.feature, FeatureLabel: label, Kind: ref.kind, ID: ref.id,
 			Level: rankLevel(x.level), Override: x.override, Paused: st.Paused(),
 			Inherited: Inherited{Level: rankLevel(x.inherited), From: x.from}}
 		if info.Paused {
@@ -458,6 +467,12 @@ func (s *Service) putScope(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("level must be off, read, suggest, edit or null.")
 	}
 	title := truncate(strings.TrimSpace(in.Title), 200)
+	if isService(ref.feature) && ref.kind == "" && title == "" {
+		// Set from the settings list (no menu title): keep the account's name.
+		if l := s.serviceLabel(r.Context(), me.UserID, ref.feature); l != featureLabel(ref.feature) {
+			title = l
+		}
+	}
 	link := strings.TrimSpace(in.Link)
 	if link != "" && !appPath(link) {
 		return httpx.BadRequest("link must be an app path such as /docs/….")

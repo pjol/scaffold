@@ -1,7 +1,7 @@
 "use client";
 
-import { errorMessage, reposRelativeTime, reposShortSha, useReposCodeSearch, useReposCommit, useReposCommits, type ApiError, type ReposCommit } from "@scaffoldapp/shared";
-import { Button, Card, EmptyState, ErrorState, IconButton, Input, Skeleton, SkeletonGroup, Tooltip } from "@scaffoldapp/ui-web";
+import { errorMessage, reposPlatformName, reposRelativeTime, reposShortSha, reposSupports, useReposCodeSearch, useReposCommit, useReposCommits, type ApiError, type ReposCommit } from "@scaffoldapp/shared";
+import { Button, Card, EmptyState, ErrorState, IconButton, InfoTip, Input, Skeleton, SkeletonGroup, Tooltip } from "@scaffoldapp/ui-web";
 import { Copy, FileCode, GitCommitHorizontal, Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,6 +10,7 @@ import { LoadMore } from "@/components/shell/LoadMore";
 import { useUrlState } from "@/lib/url-state";
 import { DiffModeToggle, DiffSkeleton, DiffView, useDiffMode } from "./DiffView";
 import { PathCrumbs } from "./parts";
+import { ChecksList } from "./PullScreen";
 import { RefPicker } from "./RefPicker";
 import { copyText, repoHref, useRepoContext } from "./RepoLayout";
 
@@ -154,6 +155,7 @@ export function CommitScreen({ sha }: { sha: string }) {
             <Link href={repoHref(repo.id, "", { ref: c.sha })}>Browse files</Link>
           </Button>
         </div>
+        {reposSupports(repo, "checks") ? <ChecksList repoId={repo.id} sha={c.sha} /> : null}
       </Card>
       <div className="flex flex-wrap items-center gap-3">
         <span className="type-label text-fg-muted">
@@ -185,7 +187,14 @@ export function SearchScreen() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
-        <RefPicker repoId={repo.id} value={gitRef} onChange={(r) => router.push(repoHref(repo.id, "search", { q: urlQ, ref: r }))} />
+        {reposSupports(repo, "code_search_refs") ? (
+          <RefPicker repoId={repo.id} value={gitRef} onChange={(r) => router.push(repoHref(repo.id, "search", { q: urlQ, ref: r }))} />
+        ) : (
+          <span className="flex items-center gap-1 type-label text-fg-muted">
+            {repo.default_branch}
+            <InfoTip content={`${reposPlatformName(repo) ?? "The platform"} searches code on the default branch only.`} />
+          </span>
+        )}
         <form
           role="search"
           className="min-w-0 flex-1"

@@ -2,6 +2,7 @@
 
 import {
   CRM_PRIORITY_LABEL,
+  CRM_SOURCE_APP,
   CRM_TYPE_LABEL,
   crmIsOverdue,
   errorMessage,
@@ -16,7 +17,26 @@ import {
   type CrmTaskBucket,
   type CrmUserRef,
 } from "@scaffoldapp/shared";
-import { Badge, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Field, Input, SegmentedControl, Select, SkeletonGroup, SkeletonRow, Tab, Tabs, TabsList, cn, toast } from "@scaffoldapp/ui-web";
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Dialog,
+  EmptyState,
+  Field,
+  Input,
+  SegmentedControl,
+  Select,
+  SkeletonGroup,
+  SkeletonRow,
+  SourceBadge,
+  Tab,
+  Tabs,
+  TabsList,
+  cn,
+  toast,
+} from "@scaffoldapp/ui-web";
 import { CheckSquare, Plus, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -24,6 +44,7 @@ import { LoadMore } from "@/components/shell/LoadMore";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { MemberPicker, PersonChip, RecordPicker, TYPE_ICON, dayLabel, recordHref, timeLabel } from "./parts";
+import { CrmLoadError, CrmSourceBar, CrmSourceNotices, useCrmSource } from "./Sources";
 
 const BUCKETS: { value: CrmTaskBucket; label: string }[] = [
   { value: "overdue", label: "Overdue" },
@@ -51,13 +72,19 @@ export function CrmTasksScreen() {
 
 function Tasks() {
   const { orgId } = useCrm();
+  const src = useCrmSource("tasks");
+  const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
   const [bucket, setBucket] = useUrlState<CrmTaskBucket>("bucket", "today");
-  const [who, setWho] = useUrlState<"me" | "any">("who", "me");
-  const summary = useCrmTaskSummary(orgId);
-  const tasks = useCrmTasks(orgId, bucket, who);
+  const [whoRaw, setWho] = useUrlState<"me" | "any">("who", "me");
+  // A connected account lists its own tasks (the platform's owner is you).
+  const who = sourceId === CRM_SOURCE_APP ? whoRaw : "me";
+  const summary = useCrmTaskSummary(orgId, undefined, sourceId);
+  const tasks = useCrmTasks(orgId, bucket, who, undefined, sourceId);
   const counts: Partial<Record<CrmTaskBucket, number>> = summary.data ? { overdue: summary.data.overdue, today: summary.data.today, upcoming: summary.data.upcoming } : {};
   return (
     <section className="flex flex-col gap-4">
+      <CrmSourceBar state={src} scope="tasks" />
+      <CrmSourceNotices state={src} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="-mx-1 overflow-x-auto px-1">
           <Tabs value={bucket} onValueChange={(v) => setBucket(v as CrmTaskBucket)} variant="pill">
@@ -70,16 +97,18 @@ function Tasks() {
             </TabsList>
           </Tabs>
         </div>
-        <SegmentedControl<"me" | "any">
-          aria-label="Assigned to"
-          className="sm:ml-auto sm:w-56"
-          value={who}
-          onValueChange={setWho}
-          options={[
-            { value: "me", label: "Mine" },
-            { value: "any", label: "Everyone" },
-          ]}
-        />
+        {sourceId === CRM_SOURCE_APP ? (
+          <SegmentedControl<"me" | "any">
+            aria-label="Assigned to"
+            className="sm:ml-auto sm:w-56"
+            value={who}
+            onValueChange={setWho}
+            options={[
+              { value: "me", label: "Mine" },
+              { value: "any", label: "Everyone" },
+            ]}
+          />
+        ) : null}
       </div>
       <Card padding="none" className="p-1">
         {tasks.isPending ? (
@@ -89,7 +118,7 @@ function Tasks() {
             <SkeletonRow leading={false} />
           </SkeletonGroup>
         ) : tasks.isError ? (
-          <ErrorState compact title="Couldn't load tasks" info={tasks.error.message} onRetry={() => void tasks.refetch()} retrying={tasks.isRefetching} />
+          <CrmLoadError inCard state={src} error={tasks.error} title="Couldn't load tasks" onRetry={() => void tasks.refetch()} retrying={tasks.isRefetching} />
         ) : tasks.data.items.length === 0 ? (
           <EmptyState compact icon={<CheckSquare />} title={bucket === "done" ? "No finished tasks yet" : bucket === "overdue" ? "Nothing overdue" : bucket === "today" ? "Nothing due today" : "No upcoming tasks"} />
         ) : (
@@ -129,7 +158,10 @@ export function TaskRow({ task, showAssignee, compact }: { task: CrmActivity; sh
         className="mt-0.5"
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className={cn("type-label font-semibold", done ? "text-fg-muted line-through" : "text-fg")}>{task.subject}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className={cn("type-label font-semibold", done ? "text-fg-muted line-through" : "text-fg")}>{task.subject}</span>
+          <SourceBadge source={task.source} iconOnly />
+        </span>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1 type-caption text-fg-muted">
           {rec ? (
             <Link href={recordHref(rec.type, rec.id)} className="inline-flex min-w-0 items-center gap-1 hover:text-fg hover:underline">
@@ -172,10 +204,13 @@ export function TaskFields({
   orgId,
   value,
   onChange,
+  source,
 }: {
   orgId: string;
   value: TaskDraft;
   onChange: (v: TaskDraft) => void;
+  /** A connected record's connection: assignees are the platform's owners. */
+  source?: string | undefined;
 }) {
   const [picking, setPicking] = useState(false);
   return (
@@ -207,6 +242,7 @@ export function TaskFields({
         {picking ? (
           <MemberPicker
             orgId={orgId}
+            source={source}
             label="Choose the assignee"
             autoFocus
             onPick={(u) => {
@@ -258,6 +294,9 @@ export function taskRequest(t: TaskDraft) {
 
 function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { orgId } = useCrm();
+  const src = useCrmSource("tasks");
+  // Tasks go where the screen reads from: a connected account's record, or the app's.
+  const source = src.connection ? src.value : undefined;
   const [record, setRecord] = useState<CrmSearchHit | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyTask);
   const [error, setError] = useState<string | null>(null);
@@ -309,10 +348,10 @@ function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v
               </Button>
             </div>
           ) : (
-            <RecordPicker orgId={orgId} types={["contact", "company", "deal"]} label="Find a contact, company or deal" onPick={setRecord} autoFocus />
+            <RecordPicker orgId={orgId} types={["contact", "company", "deal"]} label="Find a contact, company or deal" onPick={setRecord} autoFocus source={source} />
           )}
         </Field>
-        <TaskFields orgId={orgId} value={draft} onChange={setDraft} />
+        <TaskFields orgId={orgId} value={draft} onChange={setDraft} source={source} />
       </div>
     </Dialog>
   );

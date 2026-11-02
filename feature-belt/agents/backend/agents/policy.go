@@ -176,8 +176,19 @@ func (s *Service) GateTool(ctx context.Context, caller *auth.Identity, feature s
 		return refuse("invalid_input", "That id doesn't name an item. Pass the id a read tool returned."), nil
 	}
 	var lvl app.AgentLevel
+	connCapped := "" // the connected account whose own level is lower than the item's
 	if kind != "" && id != "" {
 		lvl, err = s.ResourceLevel(ctx, caller, feature, kind, id)
+		// An item on a connected platform ("<feature>.external", id
+		// "<connection>:<platform id>") is also capped by that account's own
+		// level, so Edit in a feature with a connection at Suggest suggests,
+		// and a connection at Read or Off refuses.
+		if connID, ok := app.TargetConnection(kind, id); ok && err == nil {
+			var connLvl app.AgentLevel
+			if connLvl, _, err = s.FeatureLevel(ctx, caller, app.ConnectionScope(connID)); err == nil && connLvl < lvl {
+				lvl, connCapped = connLvl, app.ConnectionScope(connID)
+			}
+		}
 	} else {
 		var base, top app.AgentLevel
 		base, top, err = s.FeatureLevel(ctx, caller, feature)
@@ -193,11 +204,16 @@ func (s *Service) GateTool(ctx context.Context, caller *auth.Identity, feature s
 	}
 
 	label := featureLabel(feature)
+	item := kind != ""
+	if connCapped != "" {
+		// The connected account's level decided: name it.
+		label, item = s.serviceLabel(ctx, caller.UserID, connCapped), false
+	}
 	if t.ReadOnly {
 		if lvl >= app.AgentRead {
 			return app.ToolDecision{Action: app.ToolRun}, nil
 		}
-		return refuse(CodeScopeOff, offMessage(label, kind != "")), nil
+		return refuse(CodeScopeOff, offMessage(label, item)), nil
 	}
 	switch lvl {
 	case app.AgentEdit:
@@ -205,9 +221,32 @@ func (s *Service) GateTool(ctx context.Context, caller *auth.Identity, feature s
 	case app.AgentSuggest:
 		return s.suggest(ctx, caller, agent, feature, t, kind, id, input)
 	case app.AgentRead:
-		return refuse(CodeScopeReadOnly, fmt.Sprintf("The person lets AI agents read %s but not change it. They can allow suggestions or edits in Settings → AI agents.", scopeNoun(label, kind != ""))), nil
+		return refuse(CodeScopeReadOnly, fmt.Sprintf("The person lets AI agents read %s but not change it. They can allow suggestions or edits in Settings → AI agents.", scopeNoun(label, item))), nil
 	}
-	return refuse(CodeScopeOff, offMessage(label, kind != "")), nil
+	return refuse(CodeScopeOff, offMessage(label, item)), nil
+}
+
+// serviceLabel names an external service or connected account for people:
+// the connected account ("Google · sam@acme.com"), else the name saved with
+// its setting, else a generic one.
+func (s *Service) serviceLabel(ctx context.Context, userID uuid.UUID, feature string) string {
+	if id, ok := strings.CutPrefix(feature, "connectors:"); ok {
+		if dir := app.FindConnectionDirectory(s.d.Modules); dir != nil {
+			if conns, err := dir.All(ctx, userID); err == nil {
+				for _, c := range conns {
+					if c.ID == id {
+						return truncate(app.ConnectionLabel(c), 60)
+					}
+				}
+			}
+		}
+		var saved string
+		_ = s.d.Pool.QueryRow(ctx, `SELECT label FROM agents_feature_scopes WHERE user_id = $1 AND feature = $2`, userID, feature).Scan(&saved)
+		if saved != "" {
+			return saved
+		}
+	}
+	return featureLabel(feature)
 }
 
 func refuse(code, msg string) app.ToolDecision {
@@ -244,6 +283,10 @@ func targetOf(ctx context.Context, t app.Tool, input json.RawMessage) (kind, id 
 	kind, id = strings.TrimSpace(kind), strings.TrimSpace(id)
 	if u, err := uuid.Parse(id); err == nil {
 		id = u.String()
+	} else if conn, ok := app.TargetConnection(kind, id); ok {
+		// "<connection>:<platform id>": the connection part canonicalised too.
+		_, rest, _ := strings.Cut(id, ":")
+		id = app.ExternalTarget(conn, rest)
 	}
 	if !kindRE.MatchString(kind) || !idRE.MatchString(id) {
 		return "", "", kindRE.MatchString(kind) && id != ""

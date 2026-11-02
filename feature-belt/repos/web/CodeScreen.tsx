@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, reposRelativeTime, useReposTree, useReposTreeCommits, type ApiError, type ReposRepo } from "@scaffoldapp/shared";
+import { errorMessage, reposRelativeTime, reposSupports, useReposTree, useReposTreeCommits, type ApiError, type ReposRepo } from "@scaffoldapp/shared";
 import { Button, Card, EmptyState, ErrorState, Input, Menu, MenuItem, Skeleton, SkeletonGroup, Tooltip } from "@scaffoldapp/ui-web";
 import { FileCode, FilePlus, Folder, FolderGit2, GitCommitHorizontal, Link2, Plus, Search, Upload } from "lucide-react";
 import Link from "next/link";
@@ -21,7 +21,7 @@ export function CodeScreen() {
   const [finder, setFinder] = useState(false);
   const [q, setQ] = useState("");
   const tree = useReposTree(repo.id, { ref: gitRef, path }, !repo.empty);
-  const commits = useReposTreeCommits(repo.id, { ref: gitRef, path }, !!tree.data);
+  const commits = useReposTreeCommits(repo.id, { ref: gitRef, path }, !!tree.data && reposSupports(repo, "tree_commits"));
   const openFinder = useCallback(() => setFinder(true), []);
   useFinderShortcut(openFinder);
 

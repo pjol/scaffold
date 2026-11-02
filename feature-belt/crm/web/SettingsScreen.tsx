@@ -25,6 +25,9 @@ import {
   type CrmPipeline,
   type CrmProperty,
   type CrmRecordAccess,
+  type CrmSourceMode,
+  type CrmProvider,
+  CRM_PROVIDERS,
   type CrmStageInput,
   type CrmTag,
   type CrmTagTone,
@@ -39,7 +42,10 @@ import {
   ErrorState,
   Field,
   IconButton,
+  Checkbox,
   InfoTip,
+  ProviderIcon,
+  sourcePlatformName,
   Input,
   Select,
   SegmentedControl,
@@ -51,6 +57,7 @@ import {
 import { ArrowDown, ArrowUp, Pencil, Plus, Tags, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Section } from "@/components/shell/PageHeader";
+import { APP_NAME } from "@/lib/app";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 
@@ -84,11 +91,90 @@ function Settings() {
   const can = settings.can.manage_settings;
   return (
     <div className="flex flex-col gap-section">
+      <SourcesSection can={can} />
       <AccessSection can={can} />
       <PipelinesSection can={can} />
       <PropertiesSection can={can} />
       <TagsSection can={can} />
     </div>
+  );
+}
+
+const SOURCE_MODES: { value: CrmSourceMode; label: string; info: string }[] = [
+  { value: "app", label: `${APP_NAME} CRM`, info: `Everyone works in ${APP_NAME}'s own CRM. Connected CRMs don't show here.` },
+  {
+    value: "connected",
+    label: "Connected CRM",
+    info: `People work in HubSpot or Salesforce from here, each through their own account, so the platform decides what they see. ${APP_NAME}'s own records are hidden.`,
+  },
+  { value: "both", label: "Both side by side", info: `${APP_NAME}'s records and each person's connected CRM, with a source filter on lists and the board.` },
+];
+
+/** Which CRM this workspace works in: the app's own, connected HubSpot/Salesforce, or both. */
+function SourcesSection({ can }: { can: boolean }) {
+  const { orgId, settings } = useCrm();
+  const update = useCrmUpdateSettings(orgId);
+  const save = (body: { source_mode?: CrmSourceMode; source_providers?: CrmProvider[] }) =>
+    update.mutate(body, { onSuccess: () => toast.success("Saved"), onError: (e) => toast.error(errorMessage(e, "Couldn't save.")) });
+  const providers = settings.source_providers ?? [];
+  const mode = settings.source_mode ?? "app";
+  return (
+    <Section title="Connected CRMs" info="Records in HubSpot or Salesforce are read and changed live with each person's own connection; nothing from there is copied here unless someone imports it.">
+      <div className="grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Which CRM">
+        {SOURCE_MODES.map((o) => {
+          const on = mode === o.value;
+          return (
+            <div
+              key={o.value}
+              className={cn(
+                "relative flex min-h-tap items-center gap-2 rounded-lg border p-4 transition-colors",
+                on ? "border-primary bg-primary-soft" : "border-border bg-surface",
+                can && !on && "hover:border-border-strong",
+              )}
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={on}
+                disabled={!can || update.isPending}
+                onClick={() => !on && save({ source_mode: o.value })}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left type-label font-semibold text-fg after:absolute after:inset-0 after:rounded-lg after:content-[''] disabled:cursor-default"
+              >
+                <span className={cn("size-4 shrink-0 rounded-pill border-2", on ? "border-primary bg-primary" : "border-border-strong")} aria-hidden />
+                {o.label}
+              </button>
+              <span className="relative z-10">
+                <InfoTip content={o.info} label={`About ${o.label}`} />
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {mode !== "app" ? (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1 type-label font-semibold text-fg">Platforms people may connect</legend>
+          <div className="flex flex-wrap gap-4">
+            {CRM_PROVIDERS.map((p) => {
+              const on = providers.includes(p);
+              return (
+                <Checkbox
+                  key={p}
+                  disabled={!can || update.isPending || (on && providers.length === 1)}
+                  checked={on}
+                  onCheckedChange={(c) => save({ source_providers: c ? [...providers, p] : providers.filter((x) => x !== p) })}
+                  label={
+                    <span className="inline-flex items-center gap-2">
+                      <ProviderIcon provider={p} size={16} />
+                      {sourcePlatformName(p)}
+                    </span>
+                  }
+                />
+              );
+            })}
+          </div>
+        </fieldset>
+      ) : null}
+    </Section>
   );
 }
 

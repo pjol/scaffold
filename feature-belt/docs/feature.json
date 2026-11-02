@@ -1,8 +1,8 @@
 {
   "name": "docs",
   "title": "Docs",
-  "version": "1.0.4",
-  "summary": "Org members write Notion-style pages and databases together: nested pages of blocks edited live, comments, history, trash, sharing through access, Markdown import/export and publishing to the web.",
+  "version": "1.1.0",
+  "summary": "Org members write Notion-style pages and databases together: nested pages of blocks edited live, comments, history, trash, sharing through access, Markdown import/export and publishing to the web; connected Notion and Google Docs open and edit in the same editor.",
   "requires": [
     "access",
     "orgs",
@@ -130,6 +130,7 @@
     "Choose the role defaults for the org permissions docs.create_shared (top-level pages everyone can edit) and docs.publish (public links on pages; also gated by access.share_public).",
     "Install the agents feature for per-page AI agent scopes (docs uses access_agent_cap through access.ViaAgent) and the search feature for global search (docs implements app.SearchProvider).",
     "Add to the privacy policy that published pages can be read by anyone with the link, and to the community rules that published pages and comments can be reported.",
-    "If the app has its own people directory, keep @-mentions in sync with it (mentions use the access directory of org members)."
+    "If the app has its own people directory, keep @-mentions in sync with it (mentions use the access directory of org members).",
+    "With connectors 2.0 installed, register the Notion integration (capabilities: read, update and insert content, comments, user information) and the Google OAuth client (Docs and Drive APIs); Docs offers docs.notion.* and docs.google.* capabilities and shows each person's connections under Connected. Without connectors nothing changes."
   ]
 }

@@ -1,14 +1,14 @@
-import { CRM_TYPE_LABEL, crmTotal, useCrmRecords, type CrmObjectType, type CrmRecord } from "@scaffoldapp/shared";
-import { Button, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, SkeletonRow, Text, useTheme } from "@scaffoldapp/ui-native";
+import { CRM_SOURCE_APP, CRM_TYPE_LABEL, crmTotal, useCrmRecords, type CrmObjectType, type CrmRecord, type CrmSources } from "@scaffoldapp/shared";
+import { Button, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, SkeletonRow, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
 import { Search } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { RefreshControl, View } from "react-native";
-import { CrmGate, TYPE_ICON, dayLabel, money, recordPath } from "./parts";
+import { CrmGate, MobileSourceFilter, TYPE_ICON, dayLabel, money, recordPath, useMobileSource } from "./parts";
 
 /** A list of contacts, companies or deals you can see: search, yours or everyone's. */
 export function CrmListScreen({ type, mine: initialMine }: { type: CrmObjectType; mine?: boolean }) {
-  return <CrmGate>{({ orgId }) => <List orgId={orgId} type={type} initialMine={!!initialMine} />}</CrmGate>;
+  return <CrmGate>{({ orgId, sources }) => <List orgId={orgId} type={type} initialMine={!!initialMine} sources={sources} />}</CrmGate>;
 }
 
 function detail(r: CrmRecord): string {
@@ -22,8 +22,9 @@ function detail(r: CrmRecord): string {
   }
 }
 
-function List({ orgId, type, initialMine }: { orgId: string; type: CrmObjectType; initialMine: boolean }) {
+function List({ orgId, type, initialMine, sources }: { orgId: string; type: CrmObjectType; initialMine: boolean; sources: CrmSources | undefined }) {
   const theme = useTheme();
+  const src = useMobileSource(sources, "list");
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [who, setWho] = useState<"all" | "mine">(initialMine ? "mine" : "all");
@@ -37,6 +38,7 @@ function List({ orgId, type, initialMine }: { orgId: string; type: CrmObjectType
     sort: type === "deal" ? "close_date" : "name",
     dir: "asc",
     limit: 30,
+    ...(src.value !== CRM_SOURCE_APP ? { source: src.value } : {}),
   });
   const total = crmTotal(list.data);
   const Icon = TYPE_ICON[type];
@@ -44,6 +46,7 @@ function List({ orgId, type, initialMine }: { orgId: string; type: CrmObjectType
     <Screen edges={["bottom"]} gap={theme.space[4]} refreshControl={<RefreshControl refreshing={list.isRefetching} onRefresh={() => void list.refetch()} />}>
       <Stack.Screen options={{ title: CRM_TYPE_LABEL[type].Many }} />
       <View style={{ gap: theme.space[3] }}>
+        <MobileSourceFilter state={src} />
         <Input value={q} onChangeText={setQ} placeholder={`Search ${CRM_TYPE_LABEL[type].many}`} leadingIcon={Search} autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Search ${CRM_TYPE_LABEL[type].many}`} />
         <SegmentedControl<"all" | "mine">
           accessibilityLabel="Whose"
@@ -78,9 +81,12 @@ function List({ orgId, type, initialMine }: { orgId: string; type: CrmObjectType
               title={r.title}
               leading={<Icon size={20} color={theme.colors.textMuted} />}
               trailing={
-                <Text role="caption" tone="muted" numberOfLines={1} style={{ maxWidth: 160 }}>
-                  {detail(r)}
-                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2] }}>
+                  <SourceBadge source={r.source} iconOnly />
+                  <Text role="caption" tone="muted" numberOfLines={1} style={{ maxWidth: 160 }}>
+                    {detail(r)}
+                  </Text>
+                </View>
               }
               onPress={() => router.push(recordPath(r.type, r.id))}
             />

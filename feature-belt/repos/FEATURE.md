@@ -8,6 +8,7 @@
 - Pull requests: compare and open, description, unified and split diffs with a file list, line comments in threads (resolve, outdated), reviews (comment, approve, request changes), review requests, merge commit or squash, branch protection (pull requests only, required approvals, stale approvals reset, no force-push or deletion), conflicts listed with local resolution steps, close and reopen, live updates.
 - AI agents work as the person through tools: read the tree, files, history and pull requests; commit to a feature branch and open a pull request (with scope Suggest, the commit becomes a diff the person accepts). Merging is always a person's action.
 - Mobile browses code, reads history and reviews pull requests (comments, line comments, approve); editing and merging are on the web.
+- Connected GitHub and GitLab (also self-managed) repositories open in the same screens, read and written live with the person's own account (see Connected platforms).
 
 ## Data
 
@@ -18,6 +19,7 @@
 | `repos_pulls` | pull requests: number per repo, head/base branch and commit, state, merge method and commit, who merged or closed |
 | `repos_reviews`, `repos_comments`, `repos_review_requests`, `repos_pull_events` | reviews (the head reviewed, dismissed when stale), conversation and line comments (path, line, side, thread root, resolved), who's asked, the timeline |
 | `repos_git_credentials` | sha256 of each credential, prefix, access, expiry, last used, revoked |
+| `repos_links` | drive links (item type `repo_link`) to a connected repository: provider, web base, path, who made it; nothing from the platform |
 
 Git data: bare repositories at `REPOS_DIR/<id>.git`, plus `refs/pull/<n>/head` per pull request (kept after merge or branch deletion so its diff stays). In-app commits use `<user id>@users.noreply.<web host>` as the email.
 
@@ -57,14 +59,37 @@ Org permission `repos.create` (owner, admin, member). Realtime `repos:<id>` (vie
 
 Agent tools (same checks; `repos.repository` targets, also from `Target({})`): reads `repos_list`, `repos_read_tree`, `repos_read_file`, `repos_search_code`, `repos_log`, `repos_diff`, `repos_list_pull_requests`, `repos_read_pull_request`; writes `repos_create_branch`, `repos_commit_files` (feature branch only, optional `open_pull_request`; `Preview` = every touched file before and after), `repos_open_pull_request`, `repos_comment_on_pull_request`. Search: repositories by name (`repos.repository`) and file paths in your 5 most recently changed repositories (`repos.file`).
 
+## Connected platforms
+
+Needs a module implementing `app.Connections` (the connectors feature); without one nothing below appears. Capabilities (`app.CapabilityProvider`), asked for incrementally in Settings → Connections:
+
+| Capability | Scopes | Gives |
+|---|---|---|
+| `repos.github.read` · `repos.gitlab.read` | `repo read:org` · `read_api read_repository read_user` | browse, history, compare, pull/merge requests, checks, search, import, links |
+| `repos.github.write` · `repos.gitlab.write` | `repo read:org workflow` · `api write_repository` | comment, review, merge, edit files, branches, open pull/merge requests |
+
+GitHub OAuth apps have no read-only scope for private repositories, so repos keeps the split itself: every write opens the connection with the write capability, and without it the level caps at view (`grant_write_url` offers it).
+
+- **Seam.** A connected repository's id is `<provider>~<connection>~<path with / as ~>` (`github~c1~acme~web`, `gitlab~c2~acme~platform~api`). Every `{repoID}` route picks the implementation from the id (`viaRead`/`viaWrite`): the git engine for UUIDs, a `RepoSource` (`source.go`; `github.go` maps REST v3, `gitlab.go` REST v4) for connected ones, answering the same JSON plus `source`, `web_url`, `supports` (what the host offers: no blame on GitHub REST, no "request changes" on GitLab REST, CI checks on both). API bases come from the connection's `api`/`web` endpoints, so GitHub Enterprise and self-managed GitLab (also under a path) work.
+- **Levels.** GitHub `admin`→manage, `push`/`maintain`→edit, `triage`/`pull`→comment; GitLab Maintainer+→manage, Developer→edit, Reporter→comment, Guest→view.
+- **Writes.** Edits commit through the contents API (one file; the file's blob as of the edit's base commit is the conflict check) or the git data API (several files; a fast-forward-only ref update from the base) on GitHub, and the commits API with each file's `last_commit_id` on GitLab: a file changed since answers 409 `head_moved`. Merge uses the methods the repository allows; protection and required checks answer 409 `not_mergeable` with the platform's reason, a moved head 409 `head_moved`.
+- **Errors.** The platform's 401 → 409 `connection_needs_auth` with `fix_url` (never a sign-out here), rate limits → 429 `connection_rate_limited`, other refusals keep the platform's message.
+- **Routes.** `GET /v1/repos/sources?org_id=` (`FeatureSources`), `GET /v1/repos/connections/{id}/repos?q=&sort=recent|name&owner=&cursor=` (+ `owners`), `GET …/commits/{sha}/checks` (CI checks; "none" for the app's own), `POST /v1/repos/connected/import` (`repos.create`; git over HTTPS through the connection's client via a loopback relay, branches and tags, capped at `REPOS_MAX_PUSH_BYTES`), `POST /v1/repos/links` · `GET /v1/repos/links/{id}` (a drive link; whoever opens it is checked live with their own connection to that host).
+- **Agents.** The read tools take connected `repo_id`s and return `source`; `repos_list` takes `source` (`app`, `connected`, `github`, `gitlab` or a connection id). Writes are `repos_github_*` / `repos_gitlab_*`: `create_branch`, `commit_files` (feature branches only, optional pull/merge request), `open_pull_request`, `comment_on_pull_request`; `Source` "GitHub"/"GitLab", target `repos.external` `<connection>:<owner/repo>`, exact Preview, the connection's scope (`connectors:<id>`) checked at suggest in Preview and at edit in Handler. No merge tool. Search adds connected repositories (`repos.repository`) and code (`repos.file`) in each account's 3 most recently active repositories, 1.5 s per connection, `Context` "GitHub · account", `source` set.
+- **Caching.** Answers keyed by commit id for 10 minutes, everything else for seconds, per person and connection, in memory; platform content is never stored.
+- Out of scope: GitHub blame and thread resolution (GraphQL), GitLab "request changes", reviewer requests, protection settings (managed on the platform; "Manage access in GitHub/GitLab" in ⋮), a push mirror from the app's repositories (one person's token pushing on everyone's behalf; see Extending), webhooks (screens poll).
+
 ## Screens
 
 | Where | Web | Mobile |
 |---|---|---|
-| List | `/repos` (nav "Repositories") | `repos` (Home row) |
+| List | `/repos` (nav "Repositories"): the workspace's own, then a Connected section and source chips (`?source=`: All shows 5 of each account, one account shows its repositories with search, recent activity or name, owner) | `repos` (Home row) with the Connected section · `repos/connected/[id]` |
 | Repository | `/repos/[id]` code · `blob` · `edit` (`new=1`) · `upload` · `search` · `commits[/sha]` · `branches` · `compare` (open a pull request) · `pulls[/n]` (Conversation, Commits, Files changed) · `settings`; one header with Clone and the ⋮ menu (`feature "repos", kind "repos.repository"`) | `repos/[id]` tree + README · `blob` · `commits[/sha]` · `pulls[/n]` (conversation, files, review sheet) |
 | Create | `/repos/new?folder=` · `?from_folder=` (the drive's New menu and folder ⋮) | — |
 | Settings | `/settings/git-credentials` | `settings/git-credentials` |
+| Links | `/repos/links/[id]` opens the linked repository with your own connection, or says how to connect | — |
+
+Connected repositories use the same screens with a `SourceBadge` in the header, rows and pull requests; ⋮ adds Open in GitHub/GitLab, Manage access there, Import into Scaffold App, Add to a Scaffold App folder; Settings, git credentials, reviewer requests and unsupported actions are hidden; checks show in the merge box and on commits.
 
 Every async view has skeleton, empty and error states; diffs collapse large files and fetch cut ones on demand.
 
@@ -95,6 +120,8 @@ npm: `highlight.js` (BSD-3) and `marked` (MIT) in web and mobile (the shared pac
 
 ## Extending
 
+- Another host (Bitbucket, Gitea): implement `RepoSource` and `connectedLister`, add the provider to `platformNames` and `openRemote`, declare its capabilities.
+- Push mirror: a repository setting that pushes each accepted push to a connected remote would run with one person's token for everyone; build it with a dedicated machine account on the connection when needed.
 - Seams: `files.RegisterItemType` (type `repo`, `CreatePath`, `ConvertPath`, `OnDelete`); the engine in `git.go`, `write.go`, `diff.go` (`ApplyChanges`, `MergeTrees`, `FastImport`, `DiffCommits`); `checkPush` for more push rules (signed commits, path rules).
 - Scale: one writer. More API instances need a shared filesystem with working POSIX locks for `REPOS_DIR`, or a router sending `/git/*` and `/v1/repos/{id}` writes to the volume's instance. Ref updates are atomic (git lock files and `update-ref` old values); in-app writes also take a per-repository advisory lock.
 - Time limits: `net/http/cgi` can't cancel its process, so a git HTTP request is cut on its next write past `REPOS_HTTP_TIMEOUT` (git sends keepalives every 5 s). Processes the API runs itself have hard deadlines.
@@ -110,3 +137,4 @@ New in the forum belt, built on `files` and `access`. Mechanics follow git's sma
 - 1.0.1: `highlight.js` and `marked` declared for `packages/shared` too (its repos helpers import them; hoisting only hid it).
 - 1.0.2: no direct writes to access grants or owners: "Turn into repository" copies the folder's grants with `access.AddGrant` (a grant to a suspended account stays on the trashed folder) and its restricted flag with `access.SetInherits` (needs access 1.2.1), and the repository resource follows its drive item's owner through `access.SetOwner`; the `repos_commit_files` suggestion preview shows the pull request it would open (title and description) or the open one it adds to. Pull request notifications name their repository (`AgentTarget`, notifications ≥ 1.1.1), so an agent reading the inbox doesn't see them for a repository its scope hides.
 - 1.0.3: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: size recount (`repos.update_size`) and `git gc` after in-app writes (`repos.gc`). A pull request's “Check out locally” commands stay on one line and scroll sideways (a long branch name wrapped mid-word). gofmt. Search sets `OrgID` and `Context` (the org, then the repository for a file hit; template `app.SearchResult.Context`) and keeps to the org a search is scoped to (`app.SearchOrg`).
+- 1.1.0: GitHub and GitLab (incl. self-managed) repositories through `app.Connections`: capabilities `repos.{github,gitlab}.{read,write}`, a `RepoSource` seam behind every `{repoID}` route, browsing, history, compare, pull/merge requests with line comments, reviews, merges, CI checks, in-browser commits with conflict checks, branches; `GET /v1/repos/sources`, connected lists, import into the app, drive links (`repo_link`, migration 2401), connected search, agent read tools on connected ids and `repos_github_*`/`repos_gitlab_*` write tools; web Connected section, source chips and badges; mobile connected lists and badges. Needs agents ≥ 1.1.1 (ids with `/`).

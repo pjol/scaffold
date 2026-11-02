@@ -14,6 +14,10 @@ export interface EditorContextValue {
   pageId: string;
   orgId: string;
   editable: boolean;
+  /** A block shown but not changed here (connected pages: "Edit in Notion"). */
+  isReadOnly: (id: string) => boolean;
+  /** Blocks can be dragged and moved (not on connected pages). */
+  canMove: boolean;
   canComment: boolean;
   refs: DocsRefs;
   viewersByBlock: ReadonlyMap<string, DocsViewer[]>;

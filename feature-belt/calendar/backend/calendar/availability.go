@@ -26,7 +26,8 @@ type Slot struct {
 
 // busyFor collects userID's busy time overlapping [from, to): their own
 // events and invitations they haven't declined that show as busy, their
-// bookings (with buffers), and busy blocks from subscribed calendars.
+// bookings (with buffers), busy blocks from subscribed calendars, and busy
+// time from connected calendars that count for availability.
 // excludeBooking leaves one booking out (rescheduling it).
 func (s *Service) busyFor(ctx context.Context, q db.Querier, userID uuid.UUID, from, to time.Time, excludeBooking uuid.UUID) ([]busyItem, error) {
 	// Buffers reach up to a day past a booking's own time.
@@ -87,8 +88,37 @@ func (s *Service) busyFor(ctx context.Context, q db.Querier, userID uuid.UUID, f
 		}
 		out = append(out, busyItem{Start: a, End: b, BlockStart: a, BlockEnd: b})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Connected calendars marked as counting (free/busy only). A booking
+	// being moved isn't blocked by its own platform copy.
+	var spans []busySpan
+	if ctx.Value(skipConnectedBusy{}) == nil {
+		spans = s.connectedBusy(ctx, userID, from, to)
+	}
+	if excludeBooking != uuid.Nil && len(spans) > 0 {
+		var a, b time.Time
+		if err := q.QueryRow(ctx, `SELECT starts_at, ends_at FROM calendar_bookings WHERE id = $1 AND ext_event_id IS NOT NULL`, excludeBooking).Scan(&a, &b); err == nil {
+			spans = subtractSpan(spans, a, b)
+		}
+	}
+	for _, sp := range spans {
+		out = append(out, busyItem{Start: sp.Start, End: sp.End, BlockStart: sp.Start, BlockEnd: sp.End})
+	}
 	slices.SortFunc(out, func(a, b busyItem) int { return a.Start.Compare(b.Start) })
-	return out, rows.Err()
+	return out, nil
+}
+
+type skipConnectedBusy struct{}
+
+// withoutConnectedBusy leaves connected calendars out of busyFor: the check
+// a booking repeats inside its transaction (against other bookings) runs
+// after the platform copy of the booking itself was written, and connected
+// busy time was checked moments before.
+func withoutConnectedBusy(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipConnectedBusy{}, true)
 }
 
 // conflicts reports whether a candidate meeting (start/end, widened by its

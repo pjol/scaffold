@@ -235,6 +235,8 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/calls/history", h(s.listHistory))
 	r.Get("/calls/history/{id}", h(s.getHistory))
 	r.Get("/calls/upcoming", h(s.listUpcoming))
+	r.Get("/calls/providers", h(s.providersHandler))
+	r.With(auth.RateLimit(120, time.Minute)).Get("/calls/external", h(s.externalHandler))
 	r.Get("/calls/links", h(s.listLinks))
 	r.Get("/calls/rings", h(s.listRings))
 	r.With(auth.RateLimit(60, time.Minute)).Get("/calls/people", h(s.people))

@@ -314,6 +314,11 @@ type listSpec struct {
 	TZ      string
 	// where adds SQL fragments built with the same sqlb (board columns).
 	where []func(b *sqlb) string
+	// Connected sources: a pipeline, stage ids and a stage outcome
+	// (open, won, lost) to keep to (boards, the deals tool).
+	xPipeline string
+	xStages   []string
+	xOutcome  string
 }
 
 const maxFilters = 25

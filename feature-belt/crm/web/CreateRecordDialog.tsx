@@ -2,6 +2,7 @@
 
 import {
   CRM_LIFECYCLE_LABEL,
+  CRM_SOURCE_APP,
   CRM_TYPE_LABEL,
   crmParseMoney,
   errorMessage,
@@ -14,7 +15,7 @@ import {
   type CrmObjectType,
   type CrmSearchHit,
 } from "@scaffoldapp/shared";
-import { Banner, Button, Dialog, Field, IconButton, Input, Select, toast } from "@scaffoldapp/ui-web";
+import { Banner, Button, Dialog, EmptyState, Field, IconButton, Input, ProviderIcon, Select, sourcePlatformName, toast } from "@scaffoldapp/ui-web";
 import { X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -49,22 +50,28 @@ export function CreateRecordDialog({
   open,
   onOpenChange,
   initial,
+  source = CRM_SOURCE_APP,
 }: {
   type: CrmObjectType;
   open: boolean;
   onOpenChange: (v: boolean) => void;
   /** Prefill associations (a contact from a company page, a deal from a contact page). */
   initial?: { company?: CrmSearchHit; contact?: CrmSearchHit };
+  /** Where it goes: the app (default), a connected account (connection id), or null when the screen's source takes no new records. */
+  source?: string | null;
 }) {
-  const { orgId, settings } = useCrm();
+  const { orgId, settings, sources } = useCrm();
+  const conn = source && source !== CRM_SOURCE_APP ? (sources?.sources.find((x) => x.id === source) ?? null) : null;
+  const external = !!conn;
+  const platform = conn?.provider ? sourcePlatformName(conn.provider) : null;
   const router = useRouter();
   const [d, setD] = useState<Draft>(empty);
   const [error, setError] = useState<string | null>(null);
   const [dups, setDups] = useState<CrmDuplicate[]>([]);
-  const create = useCrmCreateRecord(orgId, type);
-  const pipelines = useCrmPipelines(type === "deal" ? orgId : null);
+  const create = useCrmCreateRecord(orgId, type, source ?? CRM_SOURCE_APP);
+  const pipelines = useCrmPipelines(type === "deal" ? orgId : null, source ?? CRM_SOURCE_APP);
   const stages = useMemo(() => (pipelines.data ?? []).flatMap((p) => p.stages.filter((s) => s.outcome === "open").map((s) => ({ ...s, pipeline: p }))), [pipelines.data]);
-  const live = useCrmDuplicates(orgId, type === "contact" ? { object: "contact", emails: d.email.includes("@") ? [d.email.trim()] : [] } : { object: "company", domain: type === "company" ? d.domain.trim() : "" });
+  const live = useCrmDuplicates(external ? null : orgId, type === "contact" ? { object: "contact", emails: d.email.includes("@") ? [d.email.trim()] : [] } : { object: "company", domain: type === "company" ? d.domain.trim() : "" });
 
   useEffect(() => {
     if (open) {
@@ -94,8 +101,8 @@ export function CreateRecordDialog({
       if (d.email.trim()) body.emails = [d.email.trim()];
       if (d.phone.trim()) body.phones = [d.phone.trim()];
       if (d.title.trim()) body.job_title = d.title.trim();
-      body.lifecycle_stage = d.lifecycle;
-      if (d.company) body.company_id = d.company.id;
+      if (!external) body.lifecycle_stage = d.lifecycle;
+      if (d.company && !external) body.company_id = d.company.id;
     } else {
       if (!d.name.trim()) return setError("Enter the deal's name.");
       body.name = d.name.trim();
@@ -106,14 +113,14 @@ export function CreateRecordDialog({
       }
       if (d.stageId) body.stage = d.stageId;
       if (d.closeDate) body.close_date = d.closeDate;
-      if (d.company) body.company_id = d.company.id;
-      if (d.contacts.length) body.contact_ids = d.contacts.map((c) => c.id);
+      if (d.company && !external) body.company_id = d.company.id;
+      if (d.contacts.length && !external) body.contact_ids = d.contacts.map((c) => c.id);
     }
     if (allowDuplicate) body.allow_duplicate = true;
     setError(null);
     create.mutate(body, {
       onSuccess: (rec) => {
-        toast.success(`${CRM_TYPE_LABEL[type].One} added`);
+        toast.success(platform ? `${CRM_TYPE_LABEL[type].One} added in ${platform}` : `${CRM_TYPE_LABEL[type].One} added`);
         onOpenChange(false);
         router.push(recordHref(type, rec.id));
       },
@@ -127,18 +134,43 @@ export function CreateRecordDialog({
     });
   };
 
+  if (source === null) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange} title={`New ${CRM_TYPE_LABEL[type].one}`} size="sm">
+        <EmptyState
+          title="This account is read-only here"
+          info="Turn on editing for the connected CRM in Settings → Connections to add records from here."
+          action={
+            <Button asChild size="auto" variant="secondary">
+              <Link href="/settings/connections">Connections</Link>
+            </Button>
+          }
+        />
+      </Dialog>
+    );
+  }
   return (
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={`New ${CRM_TYPE_LABEL[type].one}`}
+      title={
+        platform && conn?.provider ? (
+          <span className="inline-flex items-center gap-2">
+            <ProviderIcon provider={conn.provider} size={18} />
+            New {platform} {CRM_TYPE_LABEL[type].one}
+          </span>
+        ) : (
+          `New ${CRM_TYPE_LABEL[type].one}`
+        )
+      }
+      {...(platform ? { info: `Added in ${platform} with your account; it shows here because the CRM reads ${platform} live.` } : {})}
       size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          {dups.length > 0 ? (
+          {dups.length > 0 && !external ? (
             <Button variant="secondary" loading={create.isPending} onClick={() => submit(true)}>
               Add anyway
             </Button>
@@ -206,13 +238,17 @@ export function CreateRecordDialog({
               <Field label="Job title">
                 <Input value={d.title} maxLength={200} onChange={(e) => set("title", e.target.value)} />
               </Field>
-              <Field label="Lifecycle stage">
-                <Select value={d.lifecycle} onValueChange={(v) => set("lifecycle", v as CrmLifecycleStage)} options={(Object.keys(CRM_LIFECYCLE_LABEL) as CrmLifecycleStage[]).map((k) => ({ value: k, label: CRM_LIFECYCLE_LABEL[k] }))} />
-              </Field>
+              {!external ? (
+                <Field label="Lifecycle stage">
+                  <Select value={d.lifecycle} onValueChange={(v) => set("lifecycle", v as CrmLifecycleStage)} options={(Object.keys(CRM_LIFECYCLE_LABEL) as CrmLifecycleStage[]).map((k) => ({ value: k, label: CRM_LIFECYCLE_LABEL[k] }))} />
+                </Field>
+              ) : null}
             </div>
-            <Field label="Company">
-              <AssocPick orgId={orgId} type="company" value={d.company} onChange={(v) => set("company", v)} />
-            </Field>
+            {!external ? (
+              <Field label="Company">
+                <AssocPick orgId={orgId} type="company" value={d.company} onChange={(v) => set("company", v)} />
+              </Field>
+            ) : null}
           </>
         ) : (
           <>
@@ -221,7 +257,13 @@ export function CreateRecordDialog({
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Amount">
-                <Input value={d.amount} inputMode="decimal" onChange={(e) => set("amount", e.target.value)} trailing={<span className="px-2 type-caption">{settings.currency}</span>} placeholder="12500" />
+                <Input
+                  value={d.amount}
+                  inputMode="decimal"
+                  onChange={(e) => set("amount", e.target.value)}
+                  {...(!external ? { trailing: <span className="px-2 type-caption">{settings.currency}</span> } : {})}
+                  placeholder="12500"
+                />
               </Field>
               <Field label="Close date">
                 <Input type="date" value={d.closeDate} onChange={(e) => set("closeDate", e.target.value)} />
@@ -234,17 +276,21 @@ export function CreateRecordDialog({
                 options={stages.map((s) => ({ value: s.id, label: (pipelines.data?.length ?? 0) > 1 ? `${s.pipeline.name} · ${s.name}` : s.name }))}
               />
             </Field>
-            <Field label="Company">
-              <AssocPick orgId={orgId} type="company" value={d.company} onChange={(v) => set("company", v)} />
-            </Field>
-            <Field label="Contacts">
-              <div className="flex flex-col gap-2">
-                {d.contacts.map((c) => (
-                  <Picked key={c.id} hit={c} onRemove={() => set("contacts", d.contacts.filter((x) => x.id !== c.id))} />
-                ))}
-                <RecordPicker orgId={orgId} types={["contact"]} exclude={new Set(d.contacts.map((c) => c.id))} label="Add a contact" onPick={(h) => set("contacts", [...d.contacts, h])} />
-              </div>
-            </Field>
+            {!external ? (
+              <>
+                <Field label="Company">
+                  <AssocPick orgId={orgId} type="company" value={d.company} onChange={(v) => set("company", v)} />
+                </Field>
+                <Field label="Contacts">
+                  <div className="flex flex-col gap-2">
+                    {d.contacts.map((c) => (
+                      <Picked key={c.id} hit={c} onRemove={() => set("contacts", d.contacts.filter((x) => x.id !== c.id))} />
+                    ))}
+                    <RecordPicker orgId={orgId} types={["contact"]} exclude={new Set(d.contacts.map((c) => c.id))} label="Add a contact" onPick={(h) => set("contacts", [...d.contacts, h])} />
+                  </div>
+                </Field>
+              </>
+            ) : null}
           </>
         )}
         <button type="submit" hidden aria-hidden tabIndex={-1} />

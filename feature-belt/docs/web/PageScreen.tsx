@@ -67,7 +67,7 @@ import { EmojiPicker } from "./EmojiPicker";
 import { Floating } from "./Floating";
 import { RowProperties } from "./RowProperties";
 
-function SaveState({ state, error }: { state: DocsSaveState; error: string | null }) {
+export function SaveState({ state, error }: { state: DocsSaveState; error: string | null }) {
   const map = {
     saved: { icon: <Check aria-hidden />, label: "Saved", tone: "text-fg-subtle" },
     saving: { icon: <Loader2 aria-hidden className="animate-spin motion-reduce:animate-none" />, label: "Saving…", tone: "text-fg-muted" },

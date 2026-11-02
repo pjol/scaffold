@@ -23,20 +23,24 @@ import (
 // with Target and Preview; there is no delete, merge, export or sharing tool.
 func (s *Service) Tools() []app.Tool {
 	recordSchema := `"record_type":{"type":"string","enum":["company","contact","deal"]},"record_id":{"type":"string","format":"uuid"}`
+	readRecordSchema := `"record_type":{"type":"string","enum":["company","contact","deal"]},"record_id":{"type":"string","description":"The app's own record id (UUID) or a connected record's id from crm_search."}`
+	sourceSchema := `"source":{"type":"string","description":"Where to look: app (the app's own CRM), all, or a connected CRM's id from crm_list_sources."}`
 	orgSchema := `"org_id":{"type":"string","format":"uuid","description":"` + orgs.NounTitle() + `; optional when the user uses the CRM in one ` + orgs.Noun() + `."}`
-	return []app.Tool{
+	return append([]app.Tool{
 		{
-			Name:        "crm_search",
-			Description: "Search CRM companies, contacts and deals the user can see by name, email, phone or domain.",
+			Name: "crm_search",
+			Description: "Search CRM companies, contacts and deals the user can see by name, email, phone or domain: the app's own records and, " +
+				"where the workspace connects HubSpot or Salesforce, the user's records there (each hit's source says where it lives).",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"types":{"type":"array","items":{"type":"string","enum":["company","contact","deal"]}},` +
-				orgSchema + `,"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["query"],"additionalProperties":false}`),
+				orgSchema + `,"limit":{"type":"integer","minimum":1,"maximum":50},` + sourceSchema + `},"required":["query"],"additionalProperties":false}`),
 			ReadOnly: true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					Query string     `json:"query"`
-					Types []string   `json:"types"`
-					OrgID *uuid.UUID `json:"org_id"`
-					Limit int        `json:"limit"`
+					Query  string     `json:"query"`
+					Types  []string   `json:"types"`
+					OrgID  *uuid.UUID `json:"org_id"`
+					Limit  int        `json:"limit"`
+					Source string     `json:"source"`
 				}
 				if err := decodeInput(input, &in); err != nil {
 					return nil, err
@@ -51,7 +55,37 @@ func (s *Service) Tools() []app.Tool {
 					}
 					orgIDs = []uuid.UUID{*in.OrgID}
 				}
-				return s.search(ctx, caller.UserID, orgIDs, in.Query, parseTypes(strings.Join(in.Types, ",")), in.Limit)
+				types := parseTypes(strings.Join(in.Types, ","))
+				source := in.Source
+				if source == "" {
+					source = SourceAll
+				}
+				out := []any{}
+				if source == SourceApp || source == SourceAll {
+					appOrgs := []uuid.UUID{}
+					for _, id := range orgIDs {
+						if st, err := s.sourceSettings(ctx, id); err == nil && st.allowsApp() {
+							appOrgs = append(appOrgs, id)
+						}
+					}
+					hits, err := s.search(ctx, caller.UserID, appOrgs, in.Query, types, in.Limit)
+					if err != nil {
+						return nil, err
+					}
+					for _, h := range hits {
+						out = append(out, h)
+					}
+				}
+				if source != SourceApp {
+					hits, err := s.xSearchTool(ctx, caller, orgIDs, source, in.Query, types, in.Limit)
+					if err != nil {
+						return nil, err
+					}
+					for _, h := range hits {
+						out = append(out, h)
+					}
+				}
+				return out, nil
 			},
 		},
 		s.getTool(objContact, "crm_get_contact", "Get a CRM contact the user can see: fields, owner, tags, custom properties, and the companies and deals it is associated with."),
@@ -61,8 +95,8 @@ func (s *Service) Tools() []app.Tool {
 			Name: "crm_list_deals",
 			Description: "List CRM deals the user can see, with filters for pipeline, stage, owner (\"me\" or a person's id), status and close date. " +
 				"Returns deals, the number that match and a cursor for the next page.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{` + orgSchema + `,
-				"pipeline_id":{"type":"string","format":"uuid"},"stage_id":{"type":"string","format":"uuid"},
+			InputSchema: json.RawMessage(`{"type":"object","properties":{` + orgSchema + `,` + sourceSchema + `,
+				"pipeline_id":{"type":"string"},"stage_id":{"type":"string"},
 				"owner":{"type":"string","description":"me, or a person's user id"},"status":{"type":"string","enum":["open","won","lost"]},
 				"close_from":{"type":"string","format":"date"},"close_to":{"type":"string","format":"date"},
 				"limit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string"}},"additionalProperties":false}`),
@@ -70,19 +104,20 @@ func (s *Service) Tools() []app.Tool {
 			Handler:  s.toolListDeals,
 		},
 		{
-			Name:        "crm_list_activities",
-			Description: "List the timeline of a CRM record the user can see, newest first: notes, calls, emails, meetings, tasks and changes.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{` + recordSchema + `,
+			Name: "crm_list_activities",
+			Description: "List the timeline of a CRM record the user can see, newest first: notes, calls, emails, meetings, tasks and changes. " +
+				"Connected records (HubSpot, Salesforce) list their engagements from the platform.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{` + readRecordSchema + `,
 				"filter":{"type":"string","enum":["all","activities","notes","calls","emails","meetings","tasks","changes"]},
 				"limit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string"}},"required":["record_type","record_id"],"additionalProperties":false}`),
 			ReadOnly: true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					RecordType string    `json:"record_type"`
-					RecordID   uuid.UUID `json:"record_id"`
-					Filter     string    `json:"filter"`
-					Limit      int       `json:"limit"`
-					Cursor     string    `json:"cursor"`
+					RecordType string `json:"record_type"`
+					RecordID   string `json:"record_id"`
+					Filter     string `json:"filter"`
+					Limit      int    `json:"limit"`
+					Cursor     string `json:"cursor"`
 				}
 				if err := decodeInput(input, &in); err != nil {
 					return nil, err
@@ -91,7 +126,11 @@ func (s *Service) Tools() []app.Tool {
 				if !ok {
 					return nil, httpx.BadRequest("record_type is company, contact or deal.")
 				}
-				page, err := s.loadTimeline(ctx, caller.UserID, o, in.RecordID, in.Filter, in.Cursor, in.Limit)
+				recordID, err := uuid.Parse(in.RecordID)
+				if err != nil {
+					return s.xTimelineTool(ctx, caller, o, in.RecordID, in.Filter, in.Cursor, in.Limit)
+				}
+				page, err := s.loadTimeline(ctx, caller.UserID, o, recordID, in.Filter, in.Cursor, in.Limit)
 				if err != nil {
 					return nil, err
 				}
@@ -204,22 +243,31 @@ func (s *Service) Tools() []app.Tool {
 			Preview:  s.previewActivity("call"),
 			Handler:  s.toolActivity("call"),
 		},
-	}
+		s.listSourcesTool(),
+	}, s.connectedTools()...)
 }
 
 func (s *Service) getTool(o objectType, name, desc string) app.Tool {
 	return app.Tool{
 		Name:        name,
 		Description: desc,
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","format":"uuid"}},"required":["id"],"additionalProperties":false}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"The record's id: the app's own (a UUID) or a connected record's, as crm_search returned it."}},"required":["id"],"additionalProperties":false}`),
 		ReadOnly:    true,
 		Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
-			var in struct {
-				ID uuid.UUID `json:"id"`
+			var raw struct {
+				ID string `json:"id"`
 			}
-			if err := decodeInput(input, &in); err != nil {
+			if err := decodeInput(input, &raw); err != nil {
 				return nil, err
 			}
+			parsed, err := uuid.Parse(raw.ID)
+			if err != nil {
+				if _, _, ok := parseXRef(raw.ID); ok {
+					return s.xRecordDetail(ctx, caller, o, raw.ID)
+				}
+				return nil, httpx.BadRequest("id must be a record id.")
+			}
+			in := struct{ ID uuid.UUID }{parsed}
 			if in.ID == uuid.Nil {
 				return nil, httpx.BadRequest("id must be a record id.")
 			}
@@ -278,8 +326,9 @@ func (s *Service) toolOrg(ctx context.Context, userID uuid.UUID, orgID *uuid.UUI
 func (s *Service) toolListDeals(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 	var in struct {
 		OrgID      *uuid.UUID `json:"org_id"`
-		PipelineID *uuid.UUID `json:"pipeline_id"`
-		StageID    *uuid.UUID `json:"stage_id"`
+		Source     string     `json:"source"`
+		PipelineID *string    `json:"pipeline_id"`
+		StageID    *string    `json:"stage_id"`
 		Owner      string     `json:"owner"`
 		Status     string     `json:"status"`
 		CloseFrom  string     `json:"close_from"`
@@ -294,16 +343,41 @@ func (s *Service) toolListDeals(ctx context.Context, caller *auth.Identity, inpu
 	if err != nil {
 		return nil, err
 	}
+	if in.Source != "" && in.Source != SourceApp {
+		if in.Source == SourceAll {
+			return nil, httpx.BadRequest("Deals list one source at a time: app, or a connection id from crm_list_sources.")
+		}
+		if in.Status != "" && in.Status != "open" && in.Status != "won" && in.Status != "lost" {
+			return nil, httpx.BadRequest("status is open, won or lost.")
+		}
+		return s.xListDeals(ctx, caller, orgID, in.Source, deref(in.PipelineID), deref(in.StageID), in.Owner, in.Status, in.CloseFrom, in.CloseTo, in.Cursor, in.Limit)
+	}
+	if st, err := s.sourceSettings(ctx, orgID); err == nil && !st.allowsApp() {
+		return nil, httpx.BadRequest("This workspace works in its connected CRM: pass source, a connection id from crm_list_sources.")
+	}
+	var pipelineID, stageID *uuid.UUID
+	for _, pair := range []struct {
+		in  *string
+		out **uuid.UUID
+	}{{in.PipelineID, &pipelineID}, {in.StageID, &stageID}} {
+		if pair.in != nil && *pair.in != "" {
+			id, err := uuid.Parse(*pair.in)
+			if err != nil {
+				return nil, httpx.BadRequest("pipeline_id and stage_id of the app's own deals are ids from crm_get_deal.")
+			}
+			*pair.out = &id
+		}
+	}
 	raw := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	spec := listSpec{SortKey: "close_date", SortDir: "asc", Cursor: in.Cursor, Limit: in.Limit}
 	if spec.Limit <= 0 || spec.Limit > 100 {
 		spec.Limit = 25
 	}
-	if in.PipelineID != nil {
-		spec.Filters = append(spec.Filters, Filter{Key: "pipeline", Op: "is_any", Value: raw([]string{in.PipelineID.String()})})
+	if pipelineID != nil {
+		spec.Filters = append(spec.Filters, Filter{Key: "pipeline", Op: "is_any", Value: raw([]string{pipelineID.String()})})
 	}
-	if in.StageID != nil {
-		spec.Filters = append(spec.Filters, Filter{Key: "stage", Op: "is_any", Value: raw([]string{in.StageID.String()})})
+	if stageID != nil {
+		spec.Filters = append(spec.Filters, Filter{Key: "stage", Op: "is_any", Value: raw([]string{stageID.String()})})
 	}
 	if in.Owner != "" {
 		spec.Filters = append(spec.Filters, Filter{Key: "owner", Op: "is_any", Value: raw([]string{in.Owner})})

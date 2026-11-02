@@ -5,8 +5,12 @@ import {
   hasErrorCode,
   reposRelativeTime,
   reposResolveSteps,
+  reposPlatformName,
+  reposPullNoun,
   reposShortSha,
+  reposSupports,
   useAddReposComment,
+  useReposChecks,
   useDeleteReposComment,
   useEditReposComment,
   useMergeReposPull,
@@ -26,7 +30,9 @@ import {
   useUpdateReposPull,
   type ApiError,
   type ReposComment,
+  type ReposCheck,
   type ReposEvent,
+  type ReposMergeMethod,
   type ReposMergeability,
   type ReposPerson,
   type ReposPull,
@@ -53,6 +59,7 @@ import {
   SegmentedControl,
   Skeleton,
   SkeletonGroup,
+  SourceBadge,
   Tab,
   Tabs,
   TabsList,
@@ -65,7 +72,10 @@ import {
   AlertTriangle,
   Check,
   CircleDot,
+  CircleX,
+  Clock,
   Copy,
+  ExternalLink,
   Eye,
   GitBranch,
   GitCommitHorizontal,
@@ -177,13 +187,19 @@ function PullHeader({ repo, pull: p, commits }: { repo: ReposRepo; pull: ReposPu
       ) : (
         <div className="flex items-start gap-3">
           <h2 className="min-w-0 flex-1 type-headline text-fg">
-            {p.title} <span className="font-normal text-fg-muted">#{p.number}</span>
+            {p.title} <span className="font-normal text-fg-muted">{repo.source?.type === "connected" && repo.source.provider === "gitlab" ? "!" : "#"}{p.number}</span>
           </h2>
+          {p.web_url && reposPlatformName(repo) ? (
+            <Tooltip content={`Open in ${reposPlatformName(repo)}`}>
+              <IconButton label={`Open in ${reposPlatformName(repo)}`} icon={<ExternalLink />} variant="ghost" size="sm" onClick={() => window.open(p.web_url, "_blank", "noopener,noreferrer")} />
+            </Tooltip>
+          ) : null}
           {p.can_edit ? <IconButton label="Edit title" icon={<Pencil />} variant="ghost" size="sm" tooltip onClick={() => (setTitle(p.title), setEditing(true))} /> : null}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 type-label text-fg-muted">
         {stateBadge(p)}
+        <SourceBadge source={p.source ?? repo.source} />
         <span>
           <span className="font-semibold text-fg">{p.author?.display_name || "Deleted user"}</span>{" "}
           {p.state === "merged" ? "merged" : "wants to merge"} {commits !== undefined ? `${commits} ${commits === 1 ? "commit" : "commits"} ` : ""}into
@@ -422,12 +438,13 @@ interface EventData {
 
 function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
   const who = e.actor?.display_name || (e.actor ? "Deleted user" : "Someone");
+  const noun = reposPullNoun(repo).toLowerCase();
   const d = e.data as EventData;
   let icon: ReactNode = <CircleDot />;
   let text: ReactNode;
   switch (e.kind) {
     case "opened":
-      text = "opened this pull request";
+      text = `opened this ${noun}`;
       break;
     case "pushed":
       icon = <GitCommitHorizontal />;
@@ -450,10 +467,10 @@ function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
       break;
     case "closed":
       icon = <GitPullRequestClosed />;
-      text = "closed this pull request";
+      text = `closed this ${noun}`;
       break;
     case "reopened":
-      text = "reopened this pull request";
+      text = `reopened this ${noun}`;
       break;
     case "merged":
       icon = <GitMerge />;
@@ -494,7 +511,7 @@ function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
       icon = <Trash2 />;
       text = (
         <>
-          deleted the <span className="font-mono">{String(d.branch)}</span> branch{d.after_merge ? "" : ", which closed this pull request"}
+          deleted the <span className="font-mono">{String(d.branch)}</span> branch{d.after_merge ? "" : `, which closed this ${noun}`}
         </>
       );
       break;
@@ -538,7 +555,7 @@ export function ThreadCard({ repo, pull, thread: t, showPath }: { repo: ReposRep
               {open ? "Hide" : "Show"}
             </Button>
           ) : null}
-          {repo.my_level !== "view" ? (
+          {repo.my_level !== "view" && reposSupports(repo, "resolve_threads") ? (
             <Button size="sm" variant="ghost" loading={resolve.isPending} onClick={() => resolve.mutate({ commentId: t.root.id, resolved: !resolved }, { onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}>
               {resolved ? "Unresolve" : "Resolve"}
             </Button>
@@ -620,7 +637,7 @@ function Composer({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
               leftIcon={p.state === "open" ? <GitPullRequestClosed /> : <CircleDot />}
               onClick={() => setOpen.mutate(p.state !== "open", { onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}
             >
-              {p.state === "open" ? "Close pull request" : "Reopen"}
+              {p.state === "open" ? `Close ${reposPullNoun(repo).toLowerCase()}` : "Reopen"}
             </Button>
           ) : null}
           <Button type="submit" loading={add.isPending} disabled={!body.trim()}>
@@ -650,7 +667,7 @@ function ClosedBox({ pull: p }: { pull: ReposPull }) {
 
 function MergeBox({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   const m = useReposMergeability(repo.id, p.number);
-  const [method, setMethod] = useState<"merge" | "squash">("merge");
+  const [method, setMethod] = useState<ReposMergeMethod>("merge");
   const [confirm, setConfirm] = useState(false);
   if (m.isPending) return <Skeleton className="h-28 w-full" />;
   if (m.isError) {
@@ -667,19 +684,20 @@ function MergeBox({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   return (
     <Card className={cn("flex flex-col gap-4 border-2", tone)}>
       <MergeStatus repo={repo} pull={p} m={d} />
+      {reposSupports(repo, "checks") ? <ChecksList repoId={repo.id} sha={p.head_sha} /> : null}
       {d.state === "clean" || d.state === "blocked" ? (
         <div className="flex flex-wrap items-center gap-3">
           {methods.length > 1 ? (
-            <SegmentedControl<"merge" | "squash">
+            <SegmentedControl<ReposMergeMethod>
               aria-label="Merge method"
               fullWidth={false}
               value={chosen}
               onValueChange={setMethod}
-              options={methods.map((x) => ({ value: x, label: x === "merge" ? "Merge commit" : "Squash" }))}
+              options={methods.map((x) => ({ value: x, label: METHOD_LABEL[x] }))}
             />
           ) : null}
           <Button variant="success" leftIcon={<GitMerge />} disabled={!d.can_merge} onClick={() => setConfirm(true)}>
-            {chosen === "squash" ? "Squash and merge" : "Merge pull request"}
+            {chosen === "squash" ? "Squash and merge" : chosen === "rebase" ? "Rebase and merge" : reposPullNoun(repo) === "Merge request" ? "Merge" : "Merge pull request"}
           </Button>
           {!repo.can_push ? <span className="type-caption text-fg-muted">People who can edit the repository merge.</span> : null}
         </div>
@@ -747,7 +765,53 @@ function MergeStatus({ repo, pull: p, m }: { repo: ReposRepo; pull: ReposPull; m
   );
 }
 
-function MergeDialog({ open, onOpenChange, repo, pull: p, m, method }: { open: boolean; onOpenChange: (o: boolean) => void; repo: ReposRepo; pull: ReposPull; m: ReposMergeability; method: "merge" | "squash" }) {
+const METHOD_LABEL: Record<ReposMergeMethod, string> = { merge: "Merge commit", squash: "Squash", rebase: "Rebase" };
+
+const CHECK_ICON: Record<ReposCheck["status"], ReactNode> = {
+  success: <Check className="size-4 text-success-strong" aria-label="Passed" />,
+  failure: <CircleX className="size-4 text-danger-strong" aria-label="Failed" />,
+  in_progress: <Clock className="size-4 text-warning-strong" aria-label="Running" />,
+  queued: <Clock className="size-4 text-fg-subtle" aria-label="Queued" />,
+  neutral: <CircleDot className="size-4 text-fg-subtle" aria-label="Neutral" />,
+  cancelled: <X className="size-4 text-fg-subtle" aria-label="Cancelled" />,
+  skipped: <CircleDot className="size-4 text-fg-subtle" aria-label="Skipped" />,
+};
+
+/** CI status checks / pipeline jobs on a commit, read-only, linking to the platform. */
+export function ChecksList({ repoId, sha }: { repoId: string; sha: string }) {
+  const checks = useReposChecks(repoId, sha);
+  if (checks.isPending) return <Skeleton className="h-10 w-full" />;
+  if (checks.isError || checks.data.items.length === 0) return null;
+  const d = checks.data;
+  const failed = d.items.filter((c) => c.status === "failure" && !c.allow_failure).length;
+  const running = d.items.filter((c) => c.status === "queued" || c.status === "in_progress").length;
+  const summary = failed ? `${failed} failing ${failed === 1 ? "check" : "checks"}` : running ? `${running} ${running === 1 ? "check" : "checks"} running` : "All checks passed";
+  return (
+    <section aria-label="Checks" className="flex flex-col gap-2 border-t border-border pt-3">
+      <p className="flex items-center gap-2 type-label font-semibold text-fg">
+        {d.state === "failure" ? CHECK_ICON.failure : d.state === "pending" ? CHECK_ICON.in_progress : CHECK_ICON.success}
+        {summary}
+      </p>
+      <ul className="flex flex-col gap-1 pl-6">
+        {d.items.map((c) => (
+          <li key={c.name} className="flex min-h-8 items-center gap-2 type-label">
+            {CHECK_ICON[c.status]}
+            <span className="min-w-0 truncate font-medium text-fg">{c.name}</span>
+            {c.allow_failure && c.status === "failure" ? <Badge tone="neutral">allowed to fail</Badge> : null}
+            {c.description ? <span className="hidden min-w-0 truncate text-fg-muted sm:inline">{c.description}</span> : null}
+            {c.url ? (
+              <a href={c.url} target="_blank" rel="noopener noreferrer" className="ml-auto shrink-0 text-primary-strong hover:underline">
+                Details
+              </a>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function MergeDialog({ open, onOpenChange, repo, pull: p, m, method }: { open: boolean; onOpenChange: (o: boolean) => void; repo: ReposRepo; pull: ReposPull; m: ReposMergeability; method: ReposMergeMethod }) {
   const merge = useMergeReposPull(repo.id, p.number);
   const [title, setTitle] = useState("");
   const [del, setDel] = useState(m.delete_branch);
@@ -756,9 +820,9 @@ function MergeDialog({ open, onOpenChange, repo, pull: p, m, method }: { open: b
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={method === "squash" ? `Squash ${p.head_branch} into ${p.base_branch}?` : `Merge ${p.head_branch} into ${p.base_branch}?`}
+      title={method === "squash" ? `Squash ${p.head_branch} into ${p.base_branch}?` : method === "rebase" ? `Rebase ${p.head_branch} onto ${p.base_branch}?` : `Merge ${p.head_branch} into ${p.base_branch}?`}
       tone="success"
-      confirmLabel={method === "squash" ? "Squash and merge" : "Merge"}
+      confirmLabel={method === "squash" ? "Squash and merge" : method === "rebase" ? "Rebase and merge" : "Merge"}
       onConfirm={async () => {
         await merge.mutateAsync({ method, expected_head: m.head_sha, delete_branch: del && m.can_delete_branch, ...(title.trim() ? { title: title.trim() } : {}) });
         toast.success(`Merged #${p.number}`);
@@ -796,7 +860,7 @@ function Sidebar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h3 className="type-label font-semibold text-fg">Reviewers</h3>
-          {p.can_edit && p.state === "open" ? <IconButton label="Ask for reviews" icon={<UserPlus />} variant="ghost" size="sm" tooltip onClick={() => (setPicked([]), setAsking(true))} /> : null}
+          {p.can_edit && p.state === "open" && reposSupports(repo, "reviewers") ? <IconButton label="Ask for reviews" icon={<UserPlus />} variant="ghost" size="sm" tooltip onClick={() => (setPicked([]), setAsking(true))} /> : null}
         </div>
         {p.reviewers.length === 0 ? (
           <p className="type-label text-fg-muted">No reviews yet.</p>
@@ -810,7 +874,7 @@ function Sidebar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
                   <Tooltip content={r.state === "" ? "Asked to review" : r.state.replace("_", " ")}>
                     <span>{REVIEWER_ICON[r.state]}</span>
                   </Tooltip>
-                  {r.requested && (p.can_edit || r.user.id === me?.id) && p.state === "open" ? (
+                  {r.requested && (p.can_edit || r.user.id === me?.id) && p.state === "open" && reposSupports(repo, "reviewers") ? (
                     <IconButton label={`Remove ${r.user.display_name}`} icon={<X />} variant="ghost" size="sm" onClick={() => remove.mutate(r.user.id)} />
                   ) : null}
                 </span>
@@ -963,8 +1027,9 @@ function PullFiles({ repo, pull: p, diff }: { repo: ReposRepo; pull: ReposPull; 
 function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; onOpenChange: (o: boolean) => void; repo: ReposRepo; pull: ReposPull }) {
   const me = useMe().data;
   const submit = useSubmitReposReview(repo.id, p.number);
-  const own = !!me && p.author?.id === me.id;
+  const own = p.is_author ?? (!!me && p.author?.id === me.id);
   const canDecide = repo.can_push && !own;
+  const canRequestChanges = reposSupports(repo, "request_changes");
   const [state, setState] = useState<"comment" | "approve" | "request_changes">("comment");
   const [body, setBody] = useState("");
   return (
@@ -972,7 +1037,7 @@ function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; on
       open={open}
       onOpenChange={onOpenChange}
       title="Review changes"
-      info={!canDecide ? (own ? "You can't approve your own pull request." : "Approving and requesting changes needs edit access.") : undefined}
+      info={!canDecide ? (own ? `You can't approve your own ${reposPullNoun(repo).toLowerCase()}.` : "Approving and requesting changes needs edit access.") : undefined}
       footer={
         <>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -1008,7 +1073,7 @@ function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; on
           options={[
             { value: "comment", label: "Comment" },
             { value: "approve", label: "Approve", disabled: !canDecide },
-            { value: "request_changes", label: "Request changes", disabled: !canDecide },
+            ...(canRequestChanges ? [{ value: "request_changes" as const, label: "Request changes", disabled: !canDecide }] : []),
           ]}
         />
       </div>

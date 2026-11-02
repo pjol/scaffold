@@ -16,7 +16,7 @@ import {
   type DocsViewConfig,
 } from "@scaffoldapp/shared";
 import { Button, IconButton, Skeleton, cn } from "@scaffoldapp/ui-web";
-import { ChevronLeft, ChevronRight, Copy, FileText, Maximize2, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, ExternalLink, FileText, Maximize2, Plus, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { Floating } from "../Floating";
@@ -46,12 +46,16 @@ export interface ViewProps {
   onConfigChange: (cfg: DocsViewConfig) => void;
   onTrashRow: (row: DocsRow) => void;
   onDuplicateRow: (row: DocsRow) => void;
+  /** Properties can be added, renamed and removed (default: editable). Off for connected databases. */
+  schemaEditable?: boolean;
+  /** A connected database: rows open on the platform and carry its agent scope (no trash or duplicate here). */
+  external?: { platform: string; connectionId: string };
 }
 
 /** A cell that opens an editor for its value. */
 function EditableValue({ p, row, props, children, className }: { p: DocsProperty; row: DocsRow; props: ViewProps; children: ReactNode; className?: string }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const canEdit = props.editable && row.my_level !== "view" && row.my_level !== "comment" && row.my_level !== "none";
+  const canEdit = props.editable && !p.read_only && row.my_level !== "view" && row.my_level !== "comment" && row.my_level !== "none";
   if (p.type === "checkbox") {
     return (
       <button
@@ -90,7 +94,7 @@ function EditableValue({ p, row, props, children, className }: { p: DocsProperty
           value={row.props[p.id]}
           orgId={props.orgId}
           onChange={(v) => props.onSetValue(row, p.id, v)}
-          onSchema={props.editable ? (next) => props.onSchemaChange(props.schema.map((x) => (x.id === next.id ? next : x))) : undefined}
+          onSchema={(props.schemaEditable ?? props.editable) ? (next) => props.onSchemaChange(props.schema.map((x) => (x.id === next.id ? next : x))) : undefined}
           onDone={() => setAnchor(null)}
         />
       </Floating>
@@ -100,6 +104,22 @@ function EditableValue({ p, row, props, children, className }: { p: DocsProperty
 
 function RowMenu({ row, props }: { row: DocsRow; props: ViewProps }) {
   if (props.publicView) return null;
+  if (props.external) {
+    const ext = props.external;
+    return (
+      <ResourceMenu
+        feature={`connectors:${ext.connectionId}`}
+        kind="docs.external"
+        id={`${ext.connectionId}:${row.ref ?? row.id}`}
+        title={docsTitle(row.title)}
+        label={`More actions for ${docsTitle(row.title)}`}
+        actions={[
+          { id: "open", label: "Open", icon: Maximize2, onSelect: () => props.onOpenRow(row.id) },
+          ...(row.url ? [{ id: "platform", label: `Open in ${ext.platform}`, icon: ExternalLink, onSelect: () => void window.open(row.url, "_blank", "noopener,noreferrer") }] : []),
+        ]}
+      />
+    );
+  }
   const canEdit = props.editable && (row.my_level === "edit" || row.my_level === "manage");
   return (
     <ResourceMenu
@@ -193,7 +213,7 @@ function HeaderCell({ p, col, props, index, cols }: { p: DocsProperty; col: Docs
     <th scope="col" style={{ width: w, minWidth: w, maxWidth: w }} className="relative border-b border-r border-border p-0 text-left font-normal last:border-r-0">
       <button
         type="button"
-        disabled={!props.editable}
+        disabled={!(props.schemaEditable ?? props.editable)}
         className="flex h-control w-full items-center gap-1.5 px-2 type-label text-fg-muted hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring disabled:hover:bg-transparent"
         onClick={(e) => setAnchor(e.currentTarget)}
       >
@@ -244,7 +264,7 @@ function HeaderCell({ p, col, props, index, cols }: { p: DocsProperty; col: Docs
 
 function AddPropertyHeader({ props }: { props: ViewProps }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  if (!props.editable) return null;
+  if (!(props.schemaEditable ?? props.editable)) return null;
   return (
     <th scope="col" className="w-10 border-b border-border p-0">
       <IconButton label="Add a property" icon={<Plus />} size="sm" variant="ghost" onClick={(e) => setAnchor(e.currentTarget)} />

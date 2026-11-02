@@ -7,22 +7,26 @@ import {
   filesKindLabel,
   orgsNoun,
   useAccessResource,
+  sourceProductLabel,
   useFilesActivity,
+  useFilesConnectedSharing,
   useFilesGetUrl,
   useFilesItem,
   useFilesRestoreVersion,
   useFilesVersions,
   type FilesActivity,
+  type FilesConnectedItem,
   type FilesItem,
 } from "@scaffoldapp/shared";
-import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Sheet, SkeletonGroup, SkeletonRow, Tab, TabPanel, Tabs, TabsList, toast } from "@scaffoldapp/ui-web";
-import { Download, Globe, Lock, RotateCcw, Upload, Users } from "lucide-react";
+import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Sheet, SkeletonGroup, SkeletonRow, SourceBadge, Tab, TabPanel, Tabs, TabsList, toast } from "@scaffoldapp/ui-web";
+import { Download, ExternalLink, Globe, Lock, RotateCcw, Upload, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { ShareButton } from "@/features/access";
 import { formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import { startDownload, useFilesActions } from "./actions";
+import { useFilesConnectedActions } from "./connected";
 import { filesIconTone, filesItemIcon } from "./icons";
 
 /** The details sheet for the item `useFilesActions().details` opened (side panel ≥ 768 px, bottom sheet on phones). */
@@ -300,6 +304,95 @@ function ActivityTab({ item }: { item: FilesItem }) {
         ))}
       </ol>
       <LoadMore hasNextPage={!!activity.hasNextPage} isFetchingNextPage={activity.isFetchingNextPage} fetchNextPage={activity.fetchNextPage} />
+    </div>
+  );
+}
+
+// ---- connected items -------------------------------------------------------------------------
+
+/** The details sheet for a connected item (`useFilesConnectedActions().details`). */
+export function FilesConnectedDetailsSheet() {
+  const a = useFilesConnectedActions();
+  const item = a?.detailsItem ?? null;
+  return (
+    <Sheet open={!!item} onOpenChange={(o) => !o && a?.closeDetails()} title={item?.name ?? "Details"} size="md">
+      {item ? <FilesConnectedDetails item={item} path={[]} orgId={a?.orgId ?? null} /> : null}
+    </Sheet>
+  );
+}
+
+/** Details of a connected item, with the platform's sharing summary (read-only; manage it on the platform). */
+export function FilesConnectedDetails({ item, path, orgId }: { item: FilesConnectedItem; path: string[]; orgId: string | null }) {
+  const sharing = useFilesConnectedSharing(item.connection_id, item.ref, orgId);
+  const s = sharing.data;
+  const Icon = filesItemIcon(item);
+  const product = sourceProductLabel(item.source.provider, item.source.product);
+  const ROLE: Record<string, string> = { owner: "Owner", edit: "Can edit", comment: "Can comment", view: "Can view" };
+  return (
+    <div className="flex flex-col gap-section">
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Icon className={`size-8 ${filesIconTone(item)}`} aria-hidden />
+          <Badge>{filesKindLabel(item)}</Badge>
+          <SourceBadge source={item.source} showAccount size="md" />
+        </div>
+        <dl className="flex flex-col gap-4">
+          {item.type === "file" && item.size > 0 ? <Row label="Size">{filesFormatSize(item.size)}</Row> : null}
+          <Row label="Location">{[`${product} · ${item.source.account}`, ...path].join(" / ")}</Row>
+          {item.created_by?.name ? <Row label="Owner">{item.created_by.name}</Row> : null}
+          <Row label="Modified">
+            {formatDateTime(item.updated_at)}
+            {item.updated_by?.name ? ` by ${item.updated_by.name}` : ""}
+          </Row>
+          {item.type === "file" && item.mime_type ? <Row label="Type">{item.mime_type}</Row> : null}
+          <Row label="Your access">
+            {!item.can_edit ? "Can view" : item.native ? `Can edit in ${item.kind_label ?? product}; read-only here` : item.can_write ? `Can edit, here and in ${product}` : `Can edit in ${product}; read-only here`}
+          </Row>
+        </dl>
+      </section>
+      <section className="flex flex-col gap-3">
+        <div className="flex min-h-control items-center gap-3">
+          <h3 className="flex-1 type-title-sm text-fg">Who has access</h3>
+          {item.web_url ? (
+            <Button asChild variant="ghost" size="sm" rightIcon={<ExternalLink />}>
+              <a href={s?.manage_url || item.web_url} target="_blank" rel="noopener noreferrer">
+                Manage in {product}
+              </a>
+            </Button>
+          ) : null}
+        </div>
+        {sharing.isPending ? (
+          <SkeletonGroup label="Loading sharing" className="flex flex-col">
+            <SkeletonRow />
+          </SkeletonGroup>
+        ) : sharing.isError ? (
+          <ErrorState compact title="Couldn't load sharing" info={errorMessage(sharing.error, "")} onRetry={() => void sharing.refetch()} />
+        ) : s && s.available ? (
+          <ul className="flex flex-col gap-2 type-body text-fg">
+            {s.link ? (
+              <li className="flex items-center gap-2">
+                <Globe className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                {s.link === "anyone" ? "Anyone with the link" : s.link === "domain" ? `Everyone at ${s.domain}` : "Everyone in the organization"} {s.link_role === "edit" ? "can edit" : "can view"}
+              </li>
+            ) : (
+              <li className="flex items-center gap-2">
+                <Lock className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                Only people with access
+              </li>
+            )}
+            {s.people.slice(0, 8).map((p, i) => (
+              <li key={`${p.name}-${i}`} className="flex items-center gap-2">
+                <Users className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                <span className="type-label text-fg-muted">{ROLE[p.role] ?? p.role}</span>
+              </li>
+            ))}
+            {s.people.length > 8 ? <li className="type-label text-fg-muted">and {s.people.length - 8} more</li> : null}
+          </ul>
+        ) : (
+          <p className="type-body text-fg-muted">{s?.owner ? `Owned by ${s.owner}. ` : ""}Only people who can share it see who has access in {product}.</p>
+        )}
+      </section>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   parseCallsCode,
   useCallsHistory,
   useCallsLinks,
+  useCallsPlatformMeetings,
   useCallsTimeZone,
   useCallsUpcoming,
   useCancelCallsMeeting,
@@ -28,6 +29,7 @@ import { AppAvatar } from "@/components/shell/AppAvatar";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { Screen, Section } from "@/components/shell/PageHeader";
 import { copyMeetingLink, MeetingLinkDialog, ScheduleMeetingDialog, StartCallDialog } from "./MeetingDialogs";
+import { PlatformMeetingRow } from "./PlatformMeetings";
 import { callsScheduleAction, callsSourceLink } from "./seams";
 
 /**
@@ -140,19 +142,24 @@ function ListSkeleton({ rows = 3 }: { rows?: number }) {
 
 function UpcomingSection() {
   const upcoming = useCallsUpcoming();
+  // Meet, Teams and Zoom meetings on the person's calendars, in time order with the app's own.
+  const platform = useCallsPlatformMeetings("upcoming");
+  const external = platform.data?.items ?? [];
+  const rows = [
+    ...(upcoming.data?.items ?? []).map((m) => ({ at: m.starts_at ?? "", key: `app:${m.id}`, node: <UpcomingRow key={`app:${m.id}`} meeting={m} /> })),
+    ...external.map((m) => ({ at: m.starts_at, key: `ext:${m.id}`, node: <PlatformMeetingRow key={`ext:${m.id}`} meeting={m} /> })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
   return (
     <Section title="Upcoming">
       {upcoming.isPending ? (
         <ListSkeleton rows={2} />
       ) : upcoming.isError ? (
         <ErrorState compact title="Couldn't load upcoming meetings" info={upcoming.error.message} onRetry={() => void upcoming.refetch()} retrying={upcoming.isFetching} />
-      ) : upcoming.data.items.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState compact icon={<CalendarClock />} title="Nothing scheduled" />
       ) : (
         <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
-          {upcoming.data.items.map((m) => (
-            <UpcomingRow key={m.id} meeting={m} />
-          ))}
+          {rows.map((r) => r.node)}
           <li>
             <LoadMore hasNextPage={upcoming.hasNextPage} isFetchingNextPage={upcoming.isFetchingNextPage} fetchNextPage={upcoming.fetchNextPage} />
           </li>
@@ -229,19 +236,25 @@ function UpcomingRow({ meeting: m }: { meeting: CallsMeeting }) {
 
 function HistorySection() {
   const history = useCallsHistory();
+  const platform = useCallsPlatformMeetings("recent");
+  const items = history.data?.items ?? [];
+  // Past Meet, Teams and Zoom meetings (last 14 days) among the calls loaded so far.
+  const oldest = history.hasNextPage && items.length > 0 ? items[items.length - 1]!.started_at : "";
+  const rows = [
+    ...items.map((h) => ({ at: h.started_at, node: <HistoryRow key={`${h.type}:${h.id}`} item={h} /> })),
+    ...(platform.data?.items ?? []).filter((m) => m.starts_at >= oldest).map((m) => ({ at: m.starts_at, node: <PlatformMeetingRow key={`ext:${m.id}`} meeting={m} past /> })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
   return (
     <Section title="Recent">
       {history.isPending ? (
         <ListSkeleton rows={4} />
       ) : history.isError ? (
         <ErrorState compact title="Couldn't load your calls" info={history.error.message} onRetry={() => void history.refetch()} retrying={history.isFetching} />
-      ) : history.data.items.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState compact icon={<Video />} title="No calls yet" />
       ) : (
         <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
-          {history.data.items.map((h) => (
-            <HistoryRow key={`${h.type}:${h.id}`} item={h} />
-          ))}
+          {rows.map((r) => r.node)}
           <li>
             <LoadMore hasNextPage={history.hasNextPage} isFetchingNextPage={history.isFetchingNextPage} fetchNextPage={history.fetchNextPage} />
           </li>

@@ -18,7 +18,7 @@ import {
 import { IconButton, cn, useMediaQuery } from "@scaffoldapp/ui-web";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
-import { ColorDot, occurrenceClasses } from "./parts";
+import { ColorDot, occurrenceClasses, SourceMark, sourceSuffix } from "./parts";
 
 /** The month grid: up to 3 events per day, the rest behind "+N more" (opens the day). */
 export function MonthView({
@@ -82,6 +82,7 @@ export function MonthView({
                   key={calendarOccurrenceKey(o)}
                   type="button"
                   onClick={() => onOpen(o)}
+                  aria-label={`${o.all_day ? "All day" : formatCalendarTime(o.starts_at, zone)}, ${o.title}${sourceSuffix(o)}`}
                   className={cn(
                     "flex min-w-0 items-center gap-1 rounded-sm px-1 text-left type-caption focus-visible:outline-2 focus-visible:outline-ring",
                     o.all_day ? occurrenceClasses(o) : "text-fg hover:bg-sunken",
@@ -89,6 +90,7 @@ export function MonthView({
                 >
                   {!o.all_day ? <ColorDot color={o.color} /> : null}
                   {!o.all_day ? <span className="shrink-0 text-fg-muted tabular-nums">{formatCalendarTime(o.starts_at, zone).replace(":00", "")}</span> : null}
+                  <SourceMark o={o} />
                   <span className={cn("truncate", o.my_response === "declined" && "line-through")}>{o.title}</span>
                 </button>
               ))}

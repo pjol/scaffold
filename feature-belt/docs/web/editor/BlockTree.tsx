@@ -76,6 +76,7 @@ const BlockRow = memo(function BlockRow({ block: b, depth, number }: { block: Do
   const open = b.type === "toggle" ? ctx.isOpen(b.id) : true;
   const hasKids = (ctx.snap.children.get(b.id)?.length ?? 0) > 0;
   const nestable = ["paragraph", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"].includes(b.type);
+  const editable = ctx.editable && !ctx.isReadOnly(b.id);
   const rowRef = useCallback((el: HTMLDivElement | null) => ctx.registerRow(b.id, el), [ctx, b.id]);
 
   return (
@@ -89,11 +90,22 @@ const BlockRow = memo(function BlockRow({ block: b, depth, number }: { block: Do
         )}
         onMouseDown={(e) => ctx.onRowMouseDown(b, e)}
       >
-        {ctx.editable ? <Gutter block={b} /> : null}
+        {editable ? <Gutter block={b} /> : null}
         <div className="min-w-0 flex-1">
-          <BlockContent block={b} number={number} open={open} hasKids={hasKids} />
+          <BlockContent block={b} number={number} open={open} hasKids={hasKids} editable={editable} />
         </div>
-        {ctx.editable ? (
+        {ctx.editable && !editable ? (
+          <span className="flex shrink-0 items-center self-start pt-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/block:opacity-100 sm:group-focus-within/block:opacity-100 motion-reduce:transition-none">
+            <button
+              type="button"
+              className="rounded-sm px-1.5 py-0.5 type-caption text-fg-muted hover:bg-sunken hover:text-fg focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-tap"
+              onClick={(e) => e.currentTarget.dispatchEvent(new CustomEvent("docs:block-menu", { bubbles: true, detail: b.id }))}
+            >
+              Read-only
+            </button>
+          </span>
+        ) : null}
+        {editable ? (
           <span className="sm:hidden">
             <button
               type="button"
@@ -162,8 +174,8 @@ function Gutter({ block: b }: { block: DocsBlock }) {
       </button>
       <button
         type="button"
-        aria-label="Drag to move, or open block actions"
-        title="Drag to move · Click for actions"
+        aria-label={ctx.canMove ? "Drag to move, or open block actions" : "Block actions"}
+        title={ctx.canMove ? "Drag to move · Click for actions" : "Actions"}
         data-block-handle={b.id}
         className="flex size-6 cursor-grab touch-none items-center justify-center rounded-sm text-fg-subtle hover:bg-sunken hover:text-fg focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing [&_svg]:size-4"
         onPointerDown={(e) => ctx.startDrag(b, e)}
@@ -180,7 +192,7 @@ function Gutter({ block: b }: { block: DocsBlock }) {
   );
 }
 
-function BlockContent({ block: b, number, open, hasKids }: { block: DocsBlock; number: number | undefined; open: boolean; hasKids: boolean }) {
+function BlockContent({ block: b, number, open, hasKids, editable }: { block: DocsBlock; number: number | undefined; open: boolean; hasKids: boolean; editable: boolean }) {
   const ctx = useEditor();
   const [iconOpen, setIconOpen] = useState<HTMLElement | null>(null);
   if (!["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"].includes(b.type)) {
@@ -193,8 +205,8 @@ function BlockContent({ block: b, number, open, hasKids }: { block: DocsBlock; n
       ref={(h) => ctx.register(b.id, h)}
       spans={b.props.text ?? []}
       refs={ctx.refs}
-      editable={ctx.editable}
-      placeholder={ctx.editable ? PLACEHOLDER[type] : undefined}
+      editable={editable}
+      placeholder={editable ? PLACEHOLDER[type] : undefined}
       placeholderWhen={type.startsWith("heading") ? "always" : "focus"}
       decorations={ctx.decorations.get(b.id)}
       ariaLabel={type === "paragraph" ? "Text" : PLACEHOLDER[type]}
@@ -237,7 +249,7 @@ function BlockContent({ block: b, number, open, hasKids }: { block: DocsBlock; n
               role="checkbox"
               aria-checked={checked}
               aria-label={checked ? "Mark as not done" : "Mark as done"}
-              disabled={!ctx.editable}
+              disabled={!editable}
               className={cn(
                 "relative flex size-4 items-center justify-center rounded-xs border transition-colors before:absolute before:-inset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none [&_svg]:size-3",
                 checked ? "border-primary bg-primary text-primary-fg" : "border-border-strong bg-surface hover:bg-sunken",
@@ -275,7 +287,7 @@ function BlockContent({ block: b, number, open, hasKids }: { block: DocsBlock; n
           <button
             type="button"
             aria-label="Change icon"
-            disabled={!ctx.editable}
+            disabled={!editable}
             className="flex size-8 shrink-0 items-center justify-center rounded-sm type-body-lg hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
             onClick={(e) => setIconOpen(e.currentTarget)}
           >

@@ -45,15 +45,26 @@ import type {
   CrmTimelinePage,
   CrmView,
   CrmViewRequest,
+  CrmCompanyLink,
+  CrmImportDedupe,
+  CrmOwner,
+  CrmProvider,
+  CrmSourceImportResult,
+  CrmSourceMode,
+  CrmSources,
 } from "./types";
+import { CRM_SOURCE_APP } from "./types";
 
 /** Query keys. `crmKeys.all()` invalidates everything this feature caches. */
 export const crmKeys = {
   all: () => ["crm"] as const,
   org: (orgId: string) => ["crm", "org", orgId] as const,
   settings: (orgId: string) => ["crm", "org", orgId, "settings"] as const,
-  pipelines: (orgId: string) => ["crm", "org", orgId, "pipelines"] as const,
-  properties: (orgId: string, type: CrmObjectType) => ["crm", "org", orgId, "properties", type] as const,
+  pipelines: (orgId: string, source = CRM_SOURCE_APP) => ["crm", "org", orgId, "pipelines", source] as const,
+  properties: (orgId: string, type: CrmObjectType, source = CRM_SOURCE_APP) => ["crm", "org", orgId, "properties", type, source] as const,
+  sources: (orgId: string) => ["crm", "org", orgId, "sources"] as const,
+  owners: (orgId: string, source: string) => ["crm", "org", orgId, "owners", source] as const,
+  links: (companyId: string) => ["crm", "links", companyId] as const,
   tags: (orgId: string) => ["crm", "org", orgId, "tags"] as const,
   views: (orgId: string, type: CrmObjectType) => ["crm", "org", orgId, "views", type] as const,
   lists: (type: CrmObjectType) => ["crm", "list", type] as const,
@@ -62,11 +73,11 @@ export const crmKeys = {
   timeline: (type: CrmObjectType, id: string) => ["crm", "timeline", type, id] as const,
   stageHistory: (dealId: string) => ["crm", "stage-history", dealId] as const,
   tasks: (orgId: string) => ["crm", "tasks", orgId] as const,
-  taskSummary: (orgId: string) => ["crm", "tasks", orgId, "summary"] as const,
+  taskSummary: (orgId: string, source = CRM_SOURCE_APP) => ["crm", "tasks", orgId, "summary", source] as const,
   boards: (orgId: string) => ["crm", "board", orgId] as const,
   board: (orgId: string, pipelineId: string | undefined, params: CrmListParams) => ["crm", "board", orgId, pipelineId ?? "", params] as const,
-  dashboard: (orgId: string, pipelineId: string | undefined) => ["crm", "dashboard", orgId, pipelineId ?? ""] as const,
-  search: (orgId: string, q: string, types: string) => ["crm", "search", orgId, q, types] as const,
+  dashboard: (orgId: string, pipelineId: string | undefined, source = CRM_SOURCE_APP) => ["crm", "dashboard", orgId, pipelineId ?? "", source] as const,
+  search: (orgId: string, q: string, types: string, source = CRM_SOURCE_APP) => ["crm", "search", orgId, q, types, source] as const,
   duplicates: (orgId: string, key: string) => ["crm", "duplicates", orgId, key] as const,
   imports: (orgId: string) => ["crm", "org", orgId, "imports"] as const,
   importRun: (orgId: string, id: string) => ["crm", "import-run", orgId, id] as const,
@@ -93,10 +104,12 @@ export function useCrmSettings(orgId: string | null | undefined, options?: Query
   return useApiQuery(crmKeys.settings(orgId ?? ""), ({ signal }) => c.settings(orgId ?? "", { signal }), { retry: retryUnlessClientError, staleTime: 60_000, ...options }, !!orgId);
 }
 
-export function useCrmUpdateSettings(orgId: string): UseMutationResult<CrmSettings, ApiError, { record_access?: CrmRecordAccess; currency?: string }> {
+type CrmSettingsChange = { record_access?: CrmRecordAccess; currency?: string; source_mode?: CrmSourceMode; source_providers?: CrmProvider[] };
+
+export function useCrmUpdateSettings(orgId: string): UseMutationResult<CrmSettings, ApiError, CrmSettingsChange> {
   const c = useEndpoints(crmEndpoints);
   const qc = useQueryClient();
-  return useMutation<CrmSettings, ApiError, { record_access?: CrmRecordAccess; currency?: string }>({
+  return useMutation<CrmSettings, ApiError, CrmSettingsChange>({
     mutationFn: (body) => c.updateSettings(orgId, body),
     onSuccess: (s) => {
       qc.setQueryData(crmKeys.settings(orgId), s);
@@ -105,9 +118,15 @@ export function useCrmUpdateSettings(orgId: string): UseMutationResult<CrmSettin
   });
 }
 
-export function useCrmPipelines(orgId: string | null | undefined): UseQueryResult<CrmPipeline[], ApiError> {
+/** Pipelines of the app's CRM, or of a connected account (`source` = connection id). */
+export function useCrmPipelines(orgId: string | null | undefined, source: string = CRM_SOURCE_APP): UseQueryResult<CrmPipeline[], ApiError> {
   const c = useEndpoints(crmEndpoints);
-  return useApiQuery(crmKeys.pipelines(orgId ?? ""), ({ signal }) => c.pipelines(orgId ?? "", { signal }).then((r) => r.items), { staleTime: 60_000 }, !!orgId);
+  return useApiQuery(
+    crmKeys.pipelines(orgId ?? "", source),
+    ({ signal }) => c.pipelines(orgId ?? "", { signal, ...(source !== CRM_SOURCE_APP ? { source } : {}) }).then((r) => r.items),
+    { staleTime: 60_000, retry: retryUnlessClientError },
+    !!orgId,
+  );
 }
 
 function settingsMutation<TVars, TData>(qc: QueryClient, fn: (v: TVars) => Promise<TData>, keys: readonly (readonly unknown[])[]) {
@@ -139,10 +158,15 @@ export function useCrmDeletePipeline(orgId: string): UseMutationResult<void, Api
   return useMutation<void, ApiError, string>(settingsMutation(qc, (id: string) => c.deletePipeline(orgId, id), [crmKeys.pipelines(orgId)]));
 }
 
-/** Built-in then custom properties of one object type (columns, filters, forms). */
-export function useCrmProperties(orgId: string | null | undefined, type: CrmObjectType): UseQueryResult<CrmProperty[], ApiError> {
+/** Built-in then custom properties of one object type (columns, filters, forms); a connected account's come from its schema. */
+export function useCrmProperties(orgId: string | null | undefined, type: CrmObjectType, source: string = CRM_SOURCE_APP): UseQueryResult<CrmProperty[], ApiError> {
   const c = useEndpoints(crmEndpoints);
-  return useApiQuery(crmKeys.properties(orgId ?? "", type), ({ signal }) => c.properties(orgId ?? "", type, { signal }).then((r) => r.items), { staleTime: 5 * 60_000 }, !!orgId);
+  return useApiQuery(
+    crmKeys.properties(orgId ?? "", type, source),
+    ({ signal }) => c.properties(orgId ?? "", type, { signal, ...(source !== CRM_SOURCE_APP ? { source } : {}) }).then((r) => r.items),
+    { staleTime: 5 * 60_000, retry: retryUnlessClientError },
+    !!orgId,
+  );
 }
 
 export function useCrmCreateProperty(orgId: string): UseMutationResult<CrmProperty, ApiError, CrmPropertyRequest> {
@@ -270,11 +294,11 @@ function afterRecordWrite(qc: QueryClient, rec: CrmRecord) {
 }
 
 /** Create a record. A 409 `duplicate` error carries `details.matches` (CrmDuplicate[]); resend with allow_duplicate. */
-export function useCrmCreateRecord<T extends CrmObjectType>(orgId: string, type: T): UseMutationResult<CrmRecordOf[T], ApiError, Record<string, unknown>> {
+export function useCrmCreateRecord<T extends CrmObjectType>(orgId: string, type: T, source: string = CRM_SOURCE_APP): UseMutationResult<CrmRecordOf[T], ApiError, Record<string, unknown>> {
   const c = useEndpoints(crmEndpoints);
   const qc = useQueryClient();
   return useMutation<CrmRecordOf[T], ApiError, Record<string, unknown>>({
-    mutationFn: (body) => c.create(orgId, type, body),
+    mutationFn: (body) => c.create(orgId, type, body, source !== CRM_SOURCE_APP ? { source } : undefined),
     onSuccess: (rec) => afterRecordWrite(qc, rec),
   });
 }
@@ -399,13 +423,26 @@ export function useCrmDuplicates(
 }
 
 /** Search records by name, email, phone or domain (debounced; an empty query lists recently updated). */
-export function useCrmSearch(orgId: string | null | undefined, q: string, types?: CrmObjectType[], options?: { limit?: number; enabled?: boolean }): UseQueryResult<CrmSearchHit[], ApiError> {
+export function useCrmSearch(
+  orgId: string | null | undefined,
+  q: string,
+  types?: CrmObjectType[],
+  options?: { limit?: number; enabled?: boolean; source?: string },
+): UseQueryResult<CrmSearchHit[], ApiError> {
   const c = useEndpoints(crmEndpoints);
   const debounced = useDebouncedValue(q.trim(), 250);
   const t = (types ?? []).join(",");
+  const source = options?.source ?? CRM_SOURCE_APP;
   return useApiQuery<CrmSearchHit[]>(
-    crmKeys.search(orgId ?? "", debounced, t),
-    ({ signal }) => c.search(orgId ?? "", { q: debounced, ...(types ? { types } : {}), ...(options?.limit ? { limit: options.limit } : {}) }, { signal }).then((r) => r.items),
+    crmKeys.search(orgId ?? "", debounced, t, source),
+    ({ signal }) =>
+      c
+        .search(
+          orgId ?? "",
+          { q: debounced, ...(types ? { types } : {}), ...(options?.limit ? { limit: options.limit } : {}), ...(source !== CRM_SOURCE_APP ? { source } : {}) },
+          { signal },
+        )
+        .then((r) => r.items),
     { placeholderData: keepPreviousData, staleTime: 15_000 },
     !!orgId && (options?.enabled ?? true),
   );
@@ -531,27 +568,34 @@ export function useCrmTasks(
   bucket: CrmTaskBucket,
   assignee: "me" | "any" | (string & {}) = "me",
   options?: InfiniteOverrides<CrmActivity>,
+  source: string = CRM_SOURCE_APP,
 ): PagedQueryResult<CrmActivity> {
   const c = useEndpoints(crmEndpoints);
   const tz = crmTimeZone();
   return usePagedQuery<CrmActivity>(
-    [...crmKeys.tasks(orgId ?? ""), bucket, assignee, tz],
-    (cursor, signal) => c.tasks(orgId ?? "", { bucket, assignee, tz, cursor, limit: 50 }, { signal }),
+    [...crmKeys.tasks(orgId ?? ""), bucket, assignee, tz, source],
+    (cursor, signal) => c.tasks(orgId ?? "", { bucket, assignee, tz, cursor, limit: 50, ...(source !== CRM_SOURCE_APP ? { source } : {}) }, { signal }),
     options,
     !!orgId,
   );
 }
 
 /** Your open tasks by when they're due (nav badge, dashboard). */
-export function useCrmTaskSummary(orgId: string | null | undefined, options?: QueryOverrides<CrmTaskSummary>): UseQueryResult<CrmTaskSummary, ApiError> {
+export function useCrmTaskSummary(orgId: string | null | undefined, options?: QueryOverrides<CrmTaskSummary>, source: string = CRM_SOURCE_APP): UseQueryResult<CrmTaskSummary, ApiError> {
   const c = useEndpoints(crmEndpoints);
   const tz = crmTimeZone();
-  return useApiQuery(crmKeys.taskSummary(orgId ?? ""), ({ signal }) => c.taskSummary(orgId ?? "", tz, { signal }), { staleTime: 60_000, retry: retryUnlessClientError, ...options }, !!orgId);
+  return useApiQuery(
+    crmKeys.taskSummary(orgId ?? "", source),
+    ({ signal }) => c.taskSummary(orgId ?? "", tz, { signal, ...(source !== CRM_SOURCE_APP ? { source } : {}) }),
+    { staleTime: 60_000, retry: retryUnlessClientError, ...options },
+    !!orgId,
+  );
 }
 
 // ---- board, dashboard ---------------------------------------------------------------------
 
 /** A pipeline's board: per stage the visible count, totals and first cards. */
+/** `params.source` picks the app's board or a connected account's (a connection id). */
 export function useCrmBoard(orgId: string | null | undefined, pipelineId: string | undefined, params: CrmListParams = {}): UseQueryResult<CrmBoard, ApiError> {
   const c = useEndpoints(crmEndpoints);
   const tz = crmTimeZone();
@@ -563,10 +607,67 @@ export function useCrmBoard(orgId: string | null | undefined, pipelineId: string
   );
 }
 
-export function useCrmDashboard(orgId: string | null | undefined, pipelineId?: string): UseQueryResult<CrmDashboard, ApiError> {
+export function useCrmDashboard(orgId: string | null | undefined, pipelineId?: string, source: string = CRM_SOURCE_APP): UseQueryResult<CrmDashboard, ApiError> {
   const c = useEndpoints(crmEndpoints);
   const tz = crmTimeZone();
-  return useApiQuery(crmKeys.dashboard(orgId ?? "", pipelineId), ({ signal }) => c.dashboard(orgId ?? "", { pipeline_id: pipelineId, tz }, { signal }), { retry: retryUnlessClientError }, !!orgId);
+  return useApiQuery(
+    crmKeys.dashboard(orgId ?? "", pipelineId, source),
+    ({ signal }) => c.dashboard(orgId ?? "", { pipeline_id: pipelineId, tz, ...(source !== CRM_SOURCE_APP ? { source } : {}) }, { signal }),
+    { retry: retryUnlessClientError },
+    !!orgId,
+  );
+}
+
+// ---- connected CRMs ------------------------------------------------------------------------
+
+/** Where CRM records come from in this workspace, which accounts you connected, and what you could connect. */
+export function useCrmSources(orgId: string | null | undefined, options?: QueryOverrides<CrmSources>): UseQueryResult<CrmSources, ApiError> {
+  const c = useEndpoints(crmEndpoints);
+  return useApiQuery(crmKeys.sources(orgId ?? ""), ({ signal }) => c.sources(orgId ?? "", { signal }), { staleTime: 60_000, retry: retryUnlessClientError, ...options }, !!orgId);
+}
+
+/** A connected account's owners (assign owner, task assignee). */
+export function useCrmOwners(orgId: string | null | undefined, source: string | null | undefined): UseQueryResult<CrmOwner[], ApiError> {
+  const c = useEndpoints(crmEndpoints);
+  return useApiQuery(
+    crmKeys.owners(orgId ?? "", source ?? ""),
+    ({ signal }) => c.owners(orgId ?? "", source ?? "", { signal }).then((r) => r.items),
+    { staleTime: 5 * 60_000, retry: retryUnlessClientError },
+    !!orgId && !!source && source !== CRM_SOURCE_APP,
+  );
+}
+
+/** Copy connected records into the app's CRM once (crm.import); lists refresh after. */
+export function useCrmImportFromSource(orgId: string, source: string): UseMutationResult<CrmSourceImportResult, ApiError, { object_type: CrmObjectType; ids: string[]; dedupe?: CrmImportDedupe }> {
+  const c = useEndpoints(crmEndpoints);
+  const qc = useQueryClient();
+  return useMutation<CrmSourceImportResult, ApiError, { object_type: CrmObjectType; ids: string[]; dedupe?: CrmImportDedupe }>({
+    mutationFn: (b) => c.importFromSource(orgId, source, b),
+    onSuccess: (_r, b) => {
+      void qc.invalidateQueries({ queryKey: crmKeys.lists(b.object_type) });
+      void qc.invalidateQueries({ queryKey: crmKeys.boards(orgId) });
+      void qc.invalidateQueries({ queryKey: ["crm", "dashboard", orgId] });
+    },
+  });
+}
+
+/** A company's links to platform companies, each read with your own connection. */
+export function useCrmCompanyLinks(companyId: string | null | undefined, options?: QueryOverrides<CrmCompanyLink[]>): UseQueryResult<CrmCompanyLink[], ApiError> {
+  const c = useEndpoints(crmEndpoints);
+  return useApiQuery(crmKeys.links(companyId ?? ""), ({ signal }) => c.companyLinks(companyId ?? "", { signal }).then((r) => r.items), { retry: retryUnlessClientError, ...options }, !!companyId);
+}
+
+/** Link or unlink a company and a connected company (edit on the company). */
+export function useCrmLinkCompany(companyId: string): UseMutationResult<CrmCompanyLink | void, ApiError, { op: "link"; recordId: string } | { op: "unlink"; linkId: string }> {
+  const c = useEndpoints(crmEndpoints);
+  const qc = useQueryClient();
+  return useMutation<CrmCompanyLink | void, ApiError, { op: "link"; recordId: string } | { op: "unlink"; linkId: string }>({
+    mutationFn: (v) => (v.op === "link" ? c.linkCompany(companyId, v.recordId) : c.unlinkCompany(companyId, v.linkId)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: crmKeys.links(companyId) });
+      void qc.invalidateQueries({ queryKey: crmKeys.timeline("company", companyId) });
+    },
+  });
 }
 
 // ---- bulk, merge, import, export ---------------------------------------------------------

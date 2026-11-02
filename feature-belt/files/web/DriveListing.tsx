@@ -10,25 +10,43 @@ import {
   useFilesBatch,
   useFilesDrive,
   useFilesSearch,
+  useFilesSources,
   useTopic,
   type FilesItem,
   type FilesSort,
   type PagedQueryResult,
 } from "@scaffoldapp/shared";
-import { Button, EmptyState, ErrorState, IconButton, Input, Menu, MenuItem, MenuSeparator, SegmentedControl, SkeletonGroup, SkeletonRow, cn, toast } from "@scaffoldapp/ui-web";
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  IconButton,
+  Input,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  SegmentedControl,
+  SkeletonGroup,
+  SkeletonRow,
+  SourceFilter,
+  cn,
+  sourceFilterOptions,
+  toast,
+} from "@scaffoldapp/ui-web";
 import { ArrowDownUp, Check, Download, FileUp, FolderInput, FolderPlus, FolderUp, LayoutGrid, List, Plus, RotateCcw, Search, Star, Trash, Upload, Users, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { useUrlState } from "@/lib/url-state";
 import { useFilesActions } from "./actions";
+import { ConnectedSearchGroup } from "./ConnectedScreens";
 import { filesTypeIcon } from "./icons";
 import { ItemList } from "./ItemList";
 import { dragHasFiles, filesFromDrop, filesFromInput, useFilesUploads } from "./uploads";
 
 const VIEW_KEY = "scaffoldapp.files.view";
 
-function useViewMode(): ["list" | "grid", (v: "list" | "grid") => void] {
+export function useViewMode(): ["list" | "grid", (v: "list" | "grid") => void] {
   const [view, setView] = useState<"list" | "grid">("list");
   useEffect(() => {
     try {
@@ -95,7 +113,11 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
   const [q, setQ] = useUrlState("q", "");
   const [draft, setDraft] = useState(q);
   const debounced = useDebouncedValue(draft, 250);
-  const search = useFilesSearch(orgId, debounced);
+  const sources = useFilesSources(orgId);
+  const [sourceId, setSourceId] = useUrlState("source", "all");
+  const connectedSources = (sources.data?.sources ?? []).filter((x) => x.type === "connected" && x.status === "active");
+  const onlySource = connectedSources.find((x) => x.id === sourceId);
+  const search = useFilesSearch(orgId, onlySource ? "" : debounced);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dropping, setDropping] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -212,8 +234,9 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
       </Menu>
     ) : null;
 
-  const pending = searching ? search.isPending : query.isPending;
+  const pending = searching ? search.isPending && !onlySource : query.isPending;
   const error = searching ? search.error : query.error;
+  const withConnected = searching && sourceId === "all" && connectedSources.length > 0;
 
   return (
     <div
@@ -280,7 +303,18 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
         </div>
       )}
 
-      {pending ? (
+      {searching && connectedSources.length > 0 ? (
+        <SourceFilter
+          options={sourceFilterOptions({ appLabel: "Files", sources: sources.data?.sources ?? [] })}
+          value={onlySource || sourceId === "app" ? sourceId : "all"}
+          onChange={(id) => setSourceId(id === "all" ? null : id)}
+          label="Search in"
+        />
+      ) : null}
+
+      {searching && onlySource ? (
+        <ConnectedSearchGroup source={onlySource} q={debounced} orgId={orgId} limit={0} />
+      ) : pending ? (
         <SkeletonGroup label="Loading files" className="flex flex-col">
           <SkeletonRow />
           <SkeletonRow />
@@ -290,7 +324,9 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
       ) : error && items.length === 0 ? (
         <ErrorState title="Couldn't load these files" info={errorMessage(error, "")} onRetry={() => void (searching ? search.refetch() : query.refetch())} />
       ) : items.length === 0 ? (
-        searching ? (
+        withConnected ? (
+          <p className="type-caption text-fg-muted">No matches in Files.</p>
+        ) : searching ? (
           <EmptyState icon={<Search />} title={`Nothing matches “${debounced.trim()}”`} action={<Button variant="secondary" onClick={() => setDraft("")}>Clear search</Button>} />
         ) : (
           <EmptyState
@@ -333,6 +369,8 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
         </>
       )}
 
+      {withConnected ? connectedSources.map((src) => <ConnectedSearchGroup key={src.id} source={src} q={debounced} orgId={orgId} />) : null}
+
       {dropping ? (
         <div className="pointer-events-none absolute inset-0 z-(--app-z-raised) flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary-soft/80">
           <p className="flex items-center gap-2 type-title-sm text-primary-strong">
@@ -345,7 +383,7 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
   );
 }
 
-function SortMenu({ sort }: { sort: ReturnType<typeof useFilesSortParam> }) {
+export function SortMenu({ sort }: { sort: ReturnType<typeof useFilesSortParam> }) {
   const opts: { by: FilesSort; label: string }[] = [
     { by: "name", label: "Name" },
     { by: "updated", label: "Last modified" },

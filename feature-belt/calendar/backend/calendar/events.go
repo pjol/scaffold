@@ -48,6 +48,11 @@ type eventInput struct {
 	Reminders       *[]int           `json:"reminders"`
 	Attendees       *[]attendeeInput `json:"attendees"`
 	Conference      *string          `json:"conference"`
+	// ConferenceProvider picks the meeting provider for "add" (a
+	// ConferenceOption id; "" = the app's own), ConferenceConnectionID its
+	// account.
+	ConferenceProvider     string     `json:"conference_provider"`
+	ConferenceConnectionID string     `json:"conference_connection_id"`
 	SendUpdates     *bool            `json:"send_updates"`
 	Scope           string           `json:"scope"`
 	OccurrenceStart *time.Time       `json:"occurrence_start"`
@@ -79,6 +84,7 @@ type patch struct {
 	reminders                    *[]int
 	attendees                    *[]resolvedAttendee
 	conference                   string
+	confProvider, confConn       string
 	sendUpdates                  bool
 }
 
@@ -168,6 +174,13 @@ func (s *Service) parsePatch(ctx context.Context, callerID uuid.UUID, in eventIn
 		}
 		if p.conference == "add" && !VideoAvailable() {
 			return p, httpx.NewError(http.StatusConflict, "video_unavailable", "Video calls aren't set up in this app.")
+		}
+		if p.conference == "add" {
+			opt, ok := seamOption(ctx, callerID, uuid.Nil, in.ConferenceProvider, in.ConferenceConnectionID)
+			if !ok {
+				return p, httpx.NewError(http.StatusConflict, "video_unavailable", "That meeting provider isn't available. Connect it in Settings → Connections.")
+			}
+			p.confProvider, p.confConn = opt.ID, opt.ConnectionID
 		}
 	}
 	return p, nil
@@ -446,7 +459,7 @@ func (s *Service) createEvent(ctx context.Context, caller *auth.Identity, in eve
 	}
 	var conf *Conference
 	if p.conference == "add" {
-		if conf, err = s.createConference(ctx, e, attendees, nil); err != nil {
+		if conf, err = s.createConference(ctx, e, attendees, nil, p); err != nil {
 			return EventDetail{}, err
 		}
 		e.ConferenceURL, e.ConferenceID = &conf.JoinURL, &conf.ID
@@ -715,7 +728,7 @@ func (s *Service) updateEvent(ctx context.Context, caller *auth.Identity, id uui
 		if err != nil {
 			return EventDetail{}, err
 		}
-		if conf, err = s.createConference(ctx, target, nil, atts); err != nil {
+		if conf, err = s.createConference(ctx, target, nil, atts, p); err != nil {
 			return EventDetail{}, err
 		}
 	}
@@ -842,6 +855,14 @@ func (s *Service) updateSingle(ctx context.Context, tx pgx.Tx, r resolved, p pat
 			  block = tstzrange($2::timestamptz - (starts_at - lower(block)), $3::timestamptz + (upper(block) - ends_at)),
 			  updated_at = now()
 			WHERE event_id = $1 AND status = 'confirmed'`, row.ID, row.StartsAt, row.EndsAt); err != nil {
+			return change{}, err
+		}
+		b, err := scanBooking(tx.QueryRow(ctx, `SELECT `+bookingCols+` FROM calendar_bookings b WHERE b.event_id = $1 AND b.status = 'confirmed'`, row.ID))
+		if err == nil {
+			if err := enqueueCopyMove(ctx, tx, b, row.StartsAt, row.EndsAt, row.Timezone); err != nil {
+				return change{}, err
+			}
+		} else if !db.IsNoRows(err) {
 			return change{}, err
 		}
 	}
@@ -1438,15 +1459,17 @@ func (s *Service) eventICS(w http.ResponseWriter, r *http.Request) error {
 
 // createConference asks the provider for a room for e. Externals among
 // the guests make the room open to guests; otherwise it's internal.
-func (s *Service) createConference(ctx context.Context, e eventRow, want []resolvedAttendee, have []fullAttendee) (*Conference, error) {
+func (s *Service) createConference(ctx context.Context, e eventRow, want []resolvedAttendee, have []fullAttendee, p patch) (*Conference, error) {
 	c := conferencingProvider()
 	if c == nil {
 		return nil, httpx.NewError(http.StatusConflict, "video_unavailable", "Video calls aren't set up in this app.")
 	}
-	req := ConferenceRequest{EventID: e.ID, HostID: e.OwnerID, Title: e.Title, StartsAt: e.StartsAt, EndsAt: e.EndsAt, Audience: AudienceInternal}
+	req := ConferenceRequest{EventID: e.ID, HostID: e.OwnerID, Title: e.Title, StartsAt: e.StartsAt, EndsAt: e.EndsAt, Audience: AudienceInternal,
+		Provider: trimProvider(p.confProvider), ConnectionID: p.confConn}
 	for _, a := range want {
 		if a.userID == nil {
 			req.Audience = AudienceExternal
+			req.GuestEmails = append(req.GuestEmails, a.email)
 		} else {
 			req.ParticipantIDs = append(req.ParticipantIDs, *a.userID)
 		}
@@ -1454,6 +1477,7 @@ func (s *Service) createConference(ctx context.Context, e eventRow, want []resol
 	for _, a := range have {
 		if a.UserID == nil {
 			req.Audience = AudienceExternal
+			req.GuestEmails = append(req.GuestEmails, a.Email)
 		} else {
 			req.ParticipantIDs = append(req.ParticipantIDs, *a.UserID)
 		}
@@ -1462,7 +1486,11 @@ func (s *Service) createConference(ctx context.Context, e eventRow, want []resol
 	defer cancel()
 	conf, err := c.Create(cctx, req)
 	if err != nil {
-		slog.WarnContext(ctx, "calendar: conference create failed", "err", err)
+		slog.WarnContext(ctx, "calendar: conference create failed", "provider", req.Provider, "err", err)
+		var he *httpx.Error
+		if errors.As(err, &he) && he.Code != "" && he.Status < 500 {
+			return nil, he
+		}
 		return nil, httpx.NewError(http.StatusBadGateway, "video_failed", "Couldn't create the video call. Try again.")
 	}
 	return &conf, nil

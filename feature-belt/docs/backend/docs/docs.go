@@ -235,6 +235,9 @@ func (s *Service) MountUser(r chi.Router) {
 	w.With(auth.RateLimit(120, time.Minute)).Post("/docs/databases/{id}/views", h(s.createView))
 	w.With(auth.RateLimit(300, time.Minute)).Patch("/docs/views/{viewID}", h(s.updateView))
 	w.With(auth.RateLimit(120, time.Minute)).Delete("/docs/views/{viewID}", h(s.deleteView))
+
+	// Connected Notion and Google Docs (connected_routes.go).
+	s.mountConnected(r)
 }
 
 // Start runs trash and history clean-up and the snapshot taker.

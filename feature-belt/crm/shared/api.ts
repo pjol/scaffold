@@ -36,12 +36,20 @@ import type {
   CrmViewRequest,
   CrmDeal,
   CrmRecordAccess,
+  CrmCompanyLink,
+  CrmImportDedupe,
+  CrmOwner,
+  CrmSourceImportResult,
+  CrmSourceMode,
+  CrmProvider,
+  CrmSources,
 } from "./types";
 import { CRM_PATH } from "./types";
 
 /** Query params of a list (filters travel as JSON). */
 export function crmListQuery(p: CrmListParams & { cursor?: string | undefined }) {
   return {
+    source: p.source,
     filters: p.filters && p.filters.length > 0 ? JSON.stringify(p.filters) : undefined,
     q: p.q || undefined,
     sort: p.sort,
@@ -62,8 +70,8 @@ export function crmEndpoints(http: HttpClient) {
     list: <T extends CrmObjectType>(orgId: string, type: T, params: CrmListParams & { cursor?: string | undefined } = {}, o?: CallOptions) =>
       http.get<CrmRecordPage<CrmRecordOf[T]>>(`${org(orgId)}/${CRM_PATH[type]}`, { ...o, query: crmListQuery(params) }),
     /** Field values by property key, plus company_id (contacts), contact_ids / pipeline_id (deals) and allow_duplicate. 409 `duplicate` lists matches. */
-    create: <T extends CrmObjectType>(orgId: string, type: T, body: Record<string, unknown>, o?: CallOptions) =>
-      http.post<CrmRecordOf[T]>(`${org(orgId)}/${CRM_PATH[type]}`, body, o),
+    create: <T extends CrmObjectType>(orgId: string, type: T, body: Record<string, unknown>, o?: CallOptions & { source?: string | undefined }) =>
+      http.post<CrmRecordOf[T]>(`${org(orgId)}/${CRM_PATH[type]}`, body, { ...o, query: { source: o?.source } }),
     get: <T extends CrmObjectType>(type: T, id: string, o?: CallOptions) => http.get<CrmRecordDetail<CrmRecordOf[T]>>(rec(type, id), o),
     /** Changed fields by property key (null clears). */
     update: <T extends CrmObjectType>(type: T, id: string, body: Record<string, unknown>, o?: CallOptions) => http.patch<CrmRecordOf[T]>(rec(type, id), body, o),
@@ -75,8 +83,12 @@ export function crmEndpoints(http: HttpClient) {
         ...o,
         query: { object: params.object, emails: params.emails?.join(","), domain: params.domain, exclude: params.exclude },
       }),
-    search: (orgId: string, params: { q: string; types?: CrmObjectType[]; limit?: number }, o?: CallOptions) =>
-      http.get<{ items: CrmSearchHit[] }>(`${org(orgId)}/search`, { ...o, query: { q: params.q, types: params.types?.join(","), limit: params.limit } }),
+    /** `source`: a connection id searches that account; "all" adds every connected account to the app's own hits. */
+    search: (orgId: string, params: { q: string; types?: CrmObjectType[]; limit?: number; source?: string | undefined }, o?: CallOptions) =>
+      http.get<{ items: CrmSearchHit[] }>(`${org(orgId)}/search`, {
+        ...o,
+        query: { q: params.q, types: params.types?.join(","), limit: params.limit, source: params.source },
+      }),
 
     // ---- associations
     addContactCompany: (contactId: string, companyId: string, primary = false, o?: CallOptions) =>
@@ -94,25 +106,35 @@ export function crmEndpoints(http: HttpClient) {
     logActivity: (type: CrmObjectType, id: string, body: CrmActivityRequest, o?: CallOptions) => http.post<CrmActivity>(`${rec(type, id)}/activities`, body, o),
     updateActivity: (activityId: string, body: CrmActivityRequest, o?: CallOptions) => http.patch<CrmActivity>(`${C}/activities/${seg(activityId)}`, body, o),
     deleteActivity: (activityId: string, o?: CallOptions) => http.delete<void>(`${C}/activities/${seg(activityId)}`, o),
-    tasks: (orgId: string, params: { bucket?: CrmTaskBucket; assignee?: string; tz?: string; cursor?: string | undefined; limit?: number } = {}, o?: CallOptions) =>
-      http.get<Page<CrmActivity>>(`${org(orgId)}/tasks`, { ...o, query: params }),
-    taskSummary: (orgId: string, tz?: string, o?: CallOptions) => http.get<CrmTaskSummary>(`${org(orgId)}/tasks/summary`, { ...o, query: { tz } }),
+    tasks: (
+      orgId: string,
+      params: { bucket?: CrmTaskBucket; assignee?: string; tz?: string; cursor?: string | undefined; limit?: number; source?: string | undefined } = {},
+      o?: CallOptions,
+    ) => http.get<Page<CrmActivity>>(`${org(orgId)}/tasks`, { ...o, query: params }),
+    taskSummary: (orgId: string, tz?: string, o?: CallOptions & { source?: string | undefined }) =>
+      http.get<CrmTaskSummary>(`${org(orgId)}/tasks/summary`, { ...o, query: { tz, source: o?.source } }),
 
     // ---- board and dashboard
     board: (orgId: string, params: CrmListParams & { pipeline_id?: string | undefined } = {}, o?: CallOptions) =>
       http.get<CrmBoard>(`${org(orgId)}/board`, { ...o, query: { ...crmListQuery(params), pipeline_id: params.pipeline_id } }),
-    dashboard: (orgId: string, params: { pipeline_id?: string | undefined; tz?: string } = {}, o?: CallOptions) =>
+    dashboard: (orgId: string, params: { pipeline_id?: string | undefined; tz?: string; source?: string | undefined } = {}, o?: CallOptions) =>
       http.get<CrmDashboard>(`${org(orgId)}/dashboard`, { ...o, query: params }),
 
     // ---- settings
     settings: (orgId: string, o?: CallOptions) => http.get<CrmSettings>(`${org(orgId)}/settings`, o),
-    updateSettings: (orgId: string, body: { record_access?: CrmRecordAccess; currency?: string }, o?: CallOptions) => http.put<CrmSettings>(`${org(orgId)}/settings`, body, o),
-    pipelines: (orgId: string, o?: CallOptions) => http.get<{ items: CrmPipeline[] }>(`${org(orgId)}/pipelines`, o),
+    updateSettings: (
+      orgId: string,
+      body: { record_access?: CrmRecordAccess; currency?: string; source_mode?: CrmSourceMode; source_providers?: CrmProvider[] },
+      o?: CallOptions,
+    ) => http.put<CrmSettings>(`${org(orgId)}/settings`, body, o),
+    pipelines: (orgId: string, o?: CallOptions & { source?: string | undefined }) =>
+      http.get<{ items: CrmPipeline[] }>(`${org(orgId)}/pipelines`, { ...o, query: { source: o?.source } }),
     createPipeline: (orgId: string, body: CrmPipelineRequest, o?: CallOptions) => http.post<CrmPipeline>(`${org(orgId)}/pipelines`, body, o),
     updatePipeline: (orgId: string, pipelineId: string, body: CrmPipelineRequest, o?: CallOptions) =>
       http.patch<CrmPipeline>(`${org(orgId)}/pipelines/${seg(pipelineId)}`, body, o),
     deletePipeline: (orgId: string, pipelineId: string, o?: CallOptions) => http.delete<void>(`${org(orgId)}/pipelines/${seg(pipelineId)}`, o),
-    properties: (orgId: string, type: CrmObjectType, o?: CallOptions) => http.get<{ items: CrmProperty[] }>(`${org(orgId)}/properties`, { ...o, query: { object: type } }),
+    properties: (orgId: string, type: CrmObjectType, o?: CallOptions & { source?: string | undefined }) =>
+      http.get<{ items: CrmProperty[] }>(`${org(orgId)}/properties`, { ...o, query: { object: type, source: o?.source } }),
     createProperty: (orgId: string, body: CrmPropertyRequest, o?: CallOptions) => http.post<CrmProperty>(`${org(orgId)}/properties`, body, o),
     updateProperty: (orgId: string, propertyId: string, body: CrmPropertyRequest, o?: CallOptions) =>
       http.patch<CrmProperty>(`${org(orgId)}/properties/${seg(propertyId)}`, body, o),
@@ -128,6 +150,19 @@ export function crmEndpoints(http: HttpClient) {
     createView: (orgId: string, body: CrmViewRequest, o?: CallOptions) => http.post<CrmView>(`${org(orgId)}/views`, body, o),
     updateView: (orgId: string, viewId: string, body: CrmViewRequest, o?: CallOptions) => http.patch<CrmView>(`${org(orgId)}/views/${seg(viewId)}`, body, o),
     deleteView: (orgId: string, viewId: string, o?: CallOptions) => http.delete<void>(`${org(orgId)}/views/${seg(viewId)}`, o),
+
+    // ---- connected CRMs
+    /** Where CRM records come from in this workspace (the app, connected accounts) and what could still be connected. */
+    sources: (orgId: string, o?: CallOptions) => http.get<CrmSources>(`${C}/sources`, { ...o, query: { org_id: orgId } }),
+    /** The platform's owners (owner pickers, task assignees on connected records). */
+    owners: (orgId: string, sourceId: string, o?: CallOptions) => http.get<{ items: CrmOwner[] }>(`${org(orgId)}/sources/${seg(sourceId)}/owners`, o),
+    /** One-time copy of connected records into the app's CRM (crm.import), deduped by email and domain. */
+    importFromSource: (orgId: string, sourceId: string, body: { object_type: CrmObjectType; ids: string[]; dedupe?: CrmImportDedupe }, o?: CallOptions) =>
+      http.post<CrmSourceImportResult>(`${org(orgId)}/sources/${seg(sourceId)}/import`, body, { timeoutMs: 120_000, ...o }),
+    /** A company's links to platform companies, read with your own connection. */
+    companyLinks: (companyId: string, o?: CallOptions) => http.get<{ items: CrmCompanyLink[] }>(`${C}/companies/${seg(companyId)}/links`, o),
+    linkCompany: (companyId: string, recordId: string, o?: CallOptions) => http.post<CrmCompanyLink>(`${C}/companies/${seg(companyId)}/links`, { record_id: recordId }, o),
+    unlinkCompany: (companyId: string, linkId: string, o?: CallOptions) => http.delete<void>(`${C}/companies/${seg(companyId)}/links/${seg(linkId)}`, o),
 
     // ---- bulk, merge, import, export
     bulk: (orgId: string, body: CrmBulkRequest, o?: CallOptions) => http.post<CrmBulkResult>(`${org(orgId)}/bulk`, body, o),

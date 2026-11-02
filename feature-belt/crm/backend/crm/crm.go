@@ -172,11 +172,11 @@ func (s *Service) MountUser(r chi.Router) {
 	// Settings, pipelines, properties, tags.
 	org.Get("/crm/orgs/{orgID}/settings", httpx.Handler(s.getSettings))
 	settings.Put("/crm/orgs/{orgID}/settings", httpx.Handler(s.putSettings))
-	org.Get("/crm/orgs/{orgID}/pipelines", httpx.Handler(s.listPipelines))
+	org.Get("/crm/orgs/{orgID}/pipelines", httpx.Handler(s.xPipelines(s.listPipelines)))
 	settings.Post("/crm/orgs/{orgID}/pipelines", httpx.Handler(s.createPipeline))
 	settings.Patch("/crm/orgs/{orgID}/pipelines/{pipelineID}", httpx.Handler(s.updatePipeline))
 	settings.Delete("/crm/orgs/{orgID}/pipelines/{pipelineID}", httpx.Handler(s.deletePipeline))
-	org.Get("/crm/orgs/{orgID}/properties", httpx.Handler(s.listProperties))
+	org.Get("/crm/orgs/{orgID}/properties", httpx.Handler(s.xProperties(s.listProperties)))
 	settings.Post("/crm/orgs/{orgID}/properties", httpx.Handler(s.createProperty))
 	settings.Patch("/crm/orgs/{orgID}/properties/{propertyID}", httpx.Handler(s.updateProperty))
 	settings.Delete("/crm/orgs/{orgID}/properties/{propertyID}", httpx.Handler(s.deleteProperty))
@@ -194,34 +194,44 @@ func (s *Service) MountUser(r chi.Router) {
 	// Records.
 	for _, o := range objectTypes {
 		o := o
-		org.Get("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.listRecords(o)))
-		orgWrite.Post("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.createRecord(o)))
-		r.Get("/crm/"+o.path()+"/{id}", httpx.Handler(s.getRecord(o)))
-		write.Patch("/crm/"+o.path()+"/{id}", httpx.Handler(s.updateRecord(o)))
-		write.Delete("/crm/"+o.path()+"/{id}", httpx.Handler(s.deleteRecord(o)))
-		r.Get("/crm/"+o.path()+"/{id}/timeline", httpx.Handler(s.timeline(o)))
-		write.Post("/crm/"+o.path()+"/{id}/activities", httpx.Handler(s.createActivity(o)))
+		org.Get("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.xListRecords(o, s.listRecords(o))))
+		orgWrite.Post("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.xCreateRecord(o, s.createRecord(o))))
+		r.Get("/crm/"+o.path()+"/{id}", httpx.Handler(s.xGetRecord(o, s.getRecord(o))))
+		write.Patch("/crm/"+o.path()+"/{id}", httpx.Handler(s.xUpdateRecord(o, s.updateRecord(o))))
+		write.Delete("/crm/"+o.path()+"/{id}", httpx.Handler(s.xNotHere("id", "Delete connected records on their platform.", s.deleteRecord(o))))
+		r.Get("/crm/"+o.path()+"/{id}/timeline", httpx.Handler(s.xTimeline(o, s.timeline(o))))
+		write.Post("/crm/"+o.path()+"/{id}/activities", httpx.Handler(s.xCreateActivity(o, s.createActivity(o))))
 	}
-	write.Post("/crm/deals/{id}/stage", httpx.Handler(s.moveStage))
-	r.Get("/crm/deals/{id}/stages", httpx.Handler(s.stageHistory))
+	write.Post("/crm/deals/{id}/stage", httpx.Handler(s.xMoveStage(s.moveStage)))
+	r.Get("/crm/deals/{id}/stages", httpx.Handler(s.xStageHistory(s.stageHistory)))
 
 	// Associations.
-	write.Post("/crm/contacts/{id}/companies", httpx.Handler(s.addContactCompany))
-	write.Put("/crm/contacts/{id}/companies/{companyID}/primary", httpx.Handler(s.setPrimaryCompany))
-	write.Delete("/crm/contacts/{id}/companies/{companyID}", httpx.Handler(s.removeContactCompany))
-	write.Post("/crm/deals/{id}/contacts", httpx.Handler(s.addDealContact))
-	write.Delete("/crm/deals/{id}/contacts/{contactID}", httpx.Handler(s.removeDealContact))
+	notHere := "Change a connected record's links on its platform."
+	write.Post("/crm/contacts/{id}/companies", httpx.Handler(s.xNotHere("id", notHere, s.addContactCompany)))
+	write.Put("/crm/contacts/{id}/companies/{companyID}/primary", httpx.Handler(s.xNotHere("id", notHere, s.setPrimaryCompany)))
+	write.Delete("/crm/contacts/{id}/companies/{companyID}", httpx.Handler(s.xNotHere("id", notHere, s.removeContactCompany)))
+	write.Post("/crm/deals/{id}/contacts", httpx.Handler(s.xNotHere("id", notHere, s.addDealContact)))
+	write.Delete("/crm/deals/{id}/contacts/{contactID}", httpx.Handler(s.xNotHere("id", notHere, s.removeDealContact)))
 
 	// Activities and tasks.
-	write.Patch("/crm/activities/{activityID}", httpx.Handler(s.updateActivity))
-	write.Delete("/crm/activities/{activityID}", httpx.Handler(s.deleteActivity))
-	org.Get("/crm/orgs/{orgID}/tasks", httpx.Handler(s.listTasks))
-	org.Get("/crm/orgs/{orgID}/tasks/summary", httpx.Handler(s.taskSummary))
+	write.Patch("/crm/activities/{activityID}", httpx.Handler(s.xUpdateActivity(s.updateActivity)))
+	write.Delete("/crm/activities/{activityID}", httpx.Handler(s.xNotHere("activityID", "Delete connected activities on their platform.", s.deleteActivity)))
+	org.Get("/crm/orgs/{orgID}/tasks", httpx.Handler(s.xTasks(s.listTasks)))
+	org.Get("/crm/orgs/{orgID}/tasks/summary", httpx.Handler(s.xTaskSummary(s.taskSummary)))
 
 	// Board, dashboard, search, duplicates.
-	org.Get("/crm/orgs/{orgID}/board", httpx.Handler(s.board))
-	org.Get("/crm/orgs/{orgID}/dashboard", httpx.Handler(s.dashboard))
-	org.Get("/crm/orgs/{orgID}/search", httpx.Handler(s.searchRoute))
+	org.Get("/crm/orgs/{orgID}/board", httpx.Handler(s.xBoard(s.board)))
+	org.Get("/crm/orgs/{orgID}/dashboard", httpx.Handler(s.xDashboard(s.dashboard)))
+	org.Get("/crm/orgs/{orgID}/search", httpx.Handler(s.xSearch(s.searchRoute)))
+
+	// Connected CRMs: sources, platform owners, import, company links.
+	r.Get("/crm/sources", httpx.Handler(s.getSources))
+	org.Get("/crm/orgs/{orgID}/sources/{sourceID}/owners", httpx.Handler(s.sourceOwners))
+	org.With(auth.RequireActive, access.RequirePermission(PermImport), auth.RateLimit(importsPerHour*3, time.Hour)).
+		Post("/crm/orgs/{orgID}/sources/{sourceID}/import", httpx.Handler(s.importFromSource))
+	r.Get("/crm/companies/{id}/links", httpx.Handler(s.listLinks))
+	write.Post("/crm/companies/{id}/links", httpx.Handler(s.createLink))
+	write.Delete("/crm/companies/{id}/links/{linkID}", httpx.Handler(s.deleteLink))
 	org.Get("/crm/orgs/{orgID}/duplicates", httpx.Handler(s.duplicates))
 
 	// Bulk, merge, import, export.

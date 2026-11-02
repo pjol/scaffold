@@ -77,3 +77,11 @@ export { PhotoLightbox, type PhotoLightboxProps, type GalleryPhoto } from "./com
 // legal
 export { LegalDocument, formatEffectiveDate, type LegalDocumentProps, type LegalDocumentData, type LegalSection, type LegalBlock } from "./components/LegalDocument";
 export { ConsentForm, type ConsentFormProps, type ConsentFormValue } from "./components/ConsentForm";
+
+// connected sources (provider marks: Simple Icons, CC0; monograms where none)
+export { ProviderIcon, type ProviderIconProps } from "./sources/ProviderIcon";
+export { SourceBadge, type SourceBadgeProps, type SourceBadgeSource } from "./sources/SourceBadge";
+export { SourceFilter, sourceFilterOptions, type SourceFilterProps, type SourceFilterOption, type SourceFilterSource, type SourceFilterOptionsInput } from "./sources/SourceFilter";
+export { ConnectPrompt, type ConnectPromptProps, type ConnectPromptOffer } from "./sources/ConnectPrompt";
+export { ConnectedSection, connectedSectionItems, type ConnectedSectionProps, type ConnectedSectionItem } from "./sources/ConnectedSection";
+export { sourcePlatformName, sourceProductName, sourceAccessibleLabel, sourceMark, SOURCE_MARKS, SOURCE_MONOGRAMS, SOURCE_PLATFORM_NAMES, SOURCE_PRODUCT_NAMES, type SourceStatus } from "./sources/marks";

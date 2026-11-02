@@ -106,6 +106,7 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`DELETE FROM files_recents WHERE user_id = $1`,
 		`DELETE FROM files_uploads WHERE user_id = $1`,
 		`DELETE FROM files_archives WHERE user_id = $1`,
+		`DELETE FROM files_connected_downloads WHERE user_id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err

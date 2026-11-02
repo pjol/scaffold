@@ -22,6 +22,7 @@ import {
   useFilesRestoreVersion,
   useFilesSearch,
   useFilesSection,
+  useFilesShortcut,
   useFilesStar,
   useFilesText,
   useFilesVersions,
@@ -30,7 +31,7 @@ import {
   type FilesSection,
   type PagedQueryResult,
 } from "@scaffoldapp/shared";
-import { Badge, Banner, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Screen, Sheet, Skeleton, SkeletonRow, Text, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Badge, Banner, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, Sheet, Skeleton, SkeletonRow, SourceBadge, Text, toast, useTheme } from "@scaffoldapp/ui-native";
 import { Image } from "expo-image";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import {
@@ -59,10 +60,11 @@ import {
   type LucideIcon,
 } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, RefreshControl, ScrollView, View } from "react-native";
+import { Linking, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
 import { filesOpenInBrowser, filesPickDocuments, filesPickPhotos, filesSaveOrShare, filesUploadLocal, type FilesLocalFile } from "./actions";
+import { FilesConnectedHome } from "./ConnectedScreens";
 import { filesIconTone, filesItemIcon } from "./icons";
 import { FILES_MONO, FilesMarkdown } from "./Markdown";
 import { MoveSheet, NewFolderSheet, RenameSheet } from "./sheets";
@@ -187,6 +189,8 @@ function ItemRow({ item, sheets }: { item: FilesItem; sheets: ReturnType<typeof 
         <Text weight={500} numberOfLines={1} style={{ flex: 1 }}>
           {item.name}
         </Text>
+        <SourceBadge source={item.source} iconOnly />
+        {item.shortcut ? <ProviderIcon provider={item.shortcut.provider} product={item.shortcut.product} size={14} title="Shortcut" /> : null}
         {item.starred ? <Star size={14} color={theme.colors.warningStrong} fill={theme.colors.warningStrong} accessibilityLabel="Starred" /> : null}
         <Text role="caption" tone="muted">
           {relative(item.trashed_at ?? item.updated_at)}
@@ -336,6 +340,7 @@ export function FilesHomeScreen() {
         ) : null}
       </View>
       {searching ? <ItemList query={searchQuery} empty={`Nothing matches “${debounced.trim()}”`} sheets={sheets} search /> : <ItemList query={query} empty={EMPTY[section]} sheets={sheets} />}
+      {!searching && section === "my" ? <FilesConnectedHome orgId={org?.id ?? null} /> : null}
       <Sheet open={picking} onClose={() => setPicking(false)} title="Drive">
         <ListGroup>
           {FILES_SECTIONS.map((s) => {
@@ -399,9 +404,42 @@ export function FilesItemScreen() {
   return (
     <>
       <Stack.Screen options={{ title: item.name, ...(menu ? { headerRight: menu } : {}) }} />
-      {item.type === "folder" ? <FolderBody item={item} sheets={sheets} /> : <FileBody item={item} />}
+      {item.type === "folder" ? <FolderBody item={item} sheets={sheets} /> : item.type === "link" ? <ShortcutBody item={item} /> : <FileBody item={item} />}
       {sheets.element}
     </>
+  );
+}
+
+/** A shortcut to a connected item: opens with your own connection, or says what to do. */
+function ShortcutBody({ item }: { item: FilesItem }) {
+  const target = useFilesShortcut(item.trashed_at ? null : item.id);
+  const t = target.data;
+  useEffect(() => {
+    if (t?.status === "ok" && t.link) router.replace(t.link.slice(1) as never);
+  }, [t]);
+  const icon = t ? <ProviderIcon provider={t.provider} product={t.product} size={32} /> : undefined;
+  return (
+    <Screen edges={["bottom"]}>
+      {target.isPending || t?.status === "ok" ? (
+        <Skeleton height={240} />
+      ) : target.isError ? (
+        <ErrorState title="Couldn't open this shortcut" info={errorMessage(target.error)} onRetry={() => void target.refetch()} retrying={target.isRefetching} />
+      ) : t?.status === "not_connected" || t?.status === "needs_reauth" ? (
+        <EmptyState
+          {...(icon ? { icon } : {})}
+          title={t.status === "not_connected" ? `Connect ${t.product_label} to open` : `Reconnect ${t.product_label} to open`}
+          action={t.connect_url ? <Button onPress={() => router.push(t.connect_url!.slice(1) as never)}>{t.status === "not_connected" ? `Connect ${t.product_label}` : "Reconnect"}</Button> : undefined}
+        />
+      ) : t?.status === "no_access" ? (
+        <EmptyState
+          {...(icon ? { icon } : {})}
+          title={`Ask for access in ${t.product_label}`}
+          action={t.web_url ? <Button leftIcon={ExternalLink} onPress={() => void Linking.openURL(t.web_url!)}>Ask for access</Button> : undefined}
+        />
+      ) : (
+        <EmptyState title={t?.message ?? "This shortcut can't open right now"} action={<Button variant="secondary" onPress={() => void target.refetch()}>Try again</Button>} />
+      )}
+    </Screen>
   );
 }
 

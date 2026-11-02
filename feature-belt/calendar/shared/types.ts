@@ -1,5 +1,7 @@
 /** Calendar DTOs. Field names match the Go JSON exactly (snake_case). Times are UTC ISO strings. */
 
+import type { ConnectionOffer, SourceProvider, SourceRef } from "../sources";
+
 export type CalendarColor = "primary" | "accent" | "success" | "warning" | "danger" | "info" | "neutral";
 export const CALENDAR_COLORS: readonly CalendarColor[] = ["primary", "accent", "success", "warning", "danger", "info", "neutral"];
 
@@ -55,6 +57,10 @@ export interface CalendarOccurrence {
   owner: CalendarPerson;
   attendee_count: number;
   booking_id: string | null;
+  /** Set on events from a connected calendar (`CalendarConnectedOccurrence`); the app's own carry none. */
+  source?: SourceRef | null;
+  /** Connected events: the meeting link's provider (google_meet, teams, zoom, app). */
+  conference_provider?: string;
 }
 
 export interface CalendarRecurrence {
@@ -109,6 +115,9 @@ export interface CalendarEventInput {
   reminders?: number[];
   attendees?: CalendarAttendeeInput[];
   conference?: "add" | "remove";
+  /** With conference "add": a `CalendarConferenceOption` id ("app" = the app's own call). */
+  conference_provider?: string;
+  conference_connection_id?: string;
   /** Default true: guests hear about the change. */
   send_updates?: boolean;
   scope?: CalendarScope;
@@ -266,6 +275,11 @@ export interface CalendarBookingLink {
   upcoming_count: number;
   created_at: string;
   updated_at: string;
+  /** The connected calendar bookings are also written to (null = only this app's calendar). */
+  add_to: CalendarCalendarRef | null;
+  /** Meeting provider for video bookings ("app" default, google_meet, teams, zoom). */
+  conference_provider: string;
+  conference_connection_id: string | null;
 }
 
 export type CalendarBookingLinkInput = Partial<
@@ -405,11 +419,148 @@ export interface CalendarMembersOnly {
 
 /** `calendar.changed` on `user:<id>`: refetch that part of the calendar. */
 export interface CalendarChangedEvent {
-  scope: "events" | "bookings" | "links" | "subscriptions";
+  scope: "events" | "bookings" | "links" | "subscriptions" | "connected";
 }
 
 declare module "../types" {
   interface RealtimeEventMap {
     "calendar.changed": CalendarChangedEvent;
   }
+}
+
+// ─────────────────────────────────────────────────────── connected calendars ──
+
+/** Meeting providers: "app" is the app's own call; the others open in their own apps. */
+export type CalendarConferenceProvider = "app" | "google_meet" | "teams" | "zoom" | (string & {});
+
+/** One meeting provider a person can pick for "Video call" on a target calendar. */
+export interface CalendarConferenceOption {
+  id: CalendarConferenceProvider;
+  label: string;
+  /** Connections registry id (google, microsoft, zoom); absent for the app's own. */
+  platform?: SourceProvider;
+  connection_id?: string;
+  account?: string;
+  status?: "active" | "needs_reauth" | "blocked";
+  fix_url?: string;
+  /** Made by the target calendar's platform (Meet on Google events, Teams on Outlook events). */
+  native?: boolean;
+}
+
+/** One of the person's connected calendars ("<connection>/<calendar>"). */
+export interface CalendarCalendarRef {
+  connection_id: string;
+  calendar_id: string;
+}
+
+export interface CalendarConnectedCalendar {
+  id: string;
+  name: string;
+  color: CalendarColor;
+  hidden: boolean;
+  /** Its busy time counts for booking links and find-time. */
+  busy: boolean;
+  primary: boolean;
+  /** The account may add events and the connection allows changes. */
+  can_write: boolean;
+  access_role: string;
+  timezone: string;
+  /** Meeting links the platform makes on this calendar's events. */
+  conferencing: CalendarConferenceOption[];
+}
+
+export interface CalendarSourceError {
+  source_id: string;
+  calendar_id?: string;
+  code: string;
+  message: string;
+  fix_url?: string;
+}
+
+/** A place Calendar shows events from (shared `FeatureSource` plus calendars). */
+export interface CalendarSource {
+  id: string;
+  type: "app" | "connected";
+  provider?: SourceProvider;
+  product?: string;
+  account?: string;
+  label: string;
+  status?: "active" | "needs_reauth" | "blocked";
+  capability?: string;
+  fix_url?: string;
+  can_write: boolean;
+  /** Grants changes when can_write is false. */
+  write_url?: string;
+  calendars: CalendarConnectedCalendar[];
+  error?: CalendarSourceError | null;
+}
+
+/** `GET /v1/calendar/sources` (shared `FeatureSources` plus meeting providers for the app's own events). */
+export interface CalendarSources {
+  sources: CalendarSource[];
+  offers: ConnectionOffer[];
+  conferencing: CalendarConferenceOption[];
+}
+
+/** An event from a connected calendar, drawn by the same views. `event_id` is "<connection>:<calendar>:<event>". */
+export interface CalendarConnectedOccurrence extends CalendarOccurrence {
+  source: Extract<SourceRef, { type: "connected" }>;
+  conference_provider: string;
+  connection_id: string;
+  calendar_id: string;
+  calendar_name: string;
+  external_id: string;
+  series_id: string;
+  web_url: string;
+  can_edit: boolean;
+  can_respond: boolean;
+}
+
+export interface CalendarConnectedRange {
+  items: CalendarConnectedOccurrence[];
+  errors: CalendarSourceError[];
+}
+
+export interface CalendarConnectedAttendee {
+  email: string;
+  name: string;
+  response: CalendarResponse;
+  organizer: boolean;
+  self: boolean;
+  optional: boolean;
+}
+
+export interface CalendarConnectedEventDetail extends CalendarConnectedOccurrence {
+  description: string;
+  attendees: CalendarConnectedAttendee[];
+  organizer: CalendarConnectedAttendee;
+}
+
+/** Create/update body for a connected event; the platform invites guests as it normally does. */
+export interface CalendarConnectedEventInput {
+  title?: string;
+  description?: string;
+  location?: string;
+  starts_at?: string;
+  ends_at?: string;
+  start_date?: string;
+  end_date?: string;
+  timezone?: string;
+  all_day?: boolean;
+  recurrence?: CalendarEventInput["recurrence"];
+  show_as?: CalendarShowAs;
+  attendees?: CalendarAttendeeInput[];
+  conference?: "add" | "remove";
+  conference_provider?: string;
+  conference_connection_id?: string;
+  send_updates?: boolean;
+  /** A series: "this" occurrence (default) or "all". */
+  scope?: "this" | "all";
+}
+
+/** A connected event's place: connection, calendar and the platform's event id. */
+export interface CalendarConnectedRef {
+  connection_id: string;
+  calendar_id: string;
+  event_id: string;
 }

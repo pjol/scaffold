@@ -29,6 +29,7 @@ export function LogSheet({
   open,
   onClose,
   initialKind = "note",
+  platform = null,
 }: {
   type: CrmObjectType;
   id: string;
@@ -36,6 +37,8 @@ export function LogSheet({
   open: boolean;
   onClose: () => void;
   initialKind?: Kind;
+  /** A connected record's platform ("HubSpot"): notes, calls and tasks go there. */
+  platform?: string | null;
 }) {
   const theme = useTheme();
   const log = useCrmLogActivity(type, id);
@@ -65,11 +68,12 @@ export function LogSheet({
         ...(kind === "call" || kind === "email" ? { direction: "outbound" as const } : {}),
       };
     }
-    req.also_on = alsoOn.map((r) => ({ type: r.type, id: r.id }));
+    if (!platform) req.also_on = alsoOn.map((r) => ({ type: r.type, id: r.id }));
     setError(null);
     log.mutate(req, {
       onSuccess: (a) => {
-        toast.success(kind === "task" ? "Task added" : `${CRM_ACTIVITY_LABEL[kind]} logged`);
+        const where = platform ? ` in ${platform}` : "";
+        toast.success(kind === "task" ? `Task added${where}` : `${CRM_ACTIVITY_LABEL[kind]} logged${where}`);
         if (a.unreachable?.length) toast.info(`${a.unreachable.join(", ")} can't see this record, so wasn't notified.`);
         setBody("");
         setSubject("");
@@ -85,7 +89,7 @@ export function LogSheet({
     <Sheet
       open={open}
       onClose={onClose}
-      title="Log activity"
+      title={platform ? `Log in ${platform}` : "Log activity"}
       snapPoints={["85%"]}
       footer={
         <Button fullWidth loading={log.isPending} onPress={submit}>
@@ -104,7 +108,7 @@ export function LogSheet({
           options={[
             { value: "note", label: "Note" },
             { value: "call", label: "Call" },
-            { value: "meeting", label: "Meet" },
+            ...(platform ? [] : [{ value: "meeting" as const, label: "Meet" }]),
             { value: "task", label: "Task" },
           ]}
         />

@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, hasErrorCode, reposRelativeTime, reposShortSha, useOpenReposPull, useReposCompare, useReposPeople, type ApiError, type ReposComparison, type ReposPerson } from "@scaffoldapp/shared";
+import { errorMessage, hasErrorCode, reposPullNoun, reposRelativeTime, reposShortSha, reposSupports, useOpenReposPull, useReposCompare, useReposPeople, type ApiError, type ReposComparison, type ReposPerson } from "@scaffoldapp/shared";
 import { Badge, Banner, Button, Card, Checkbox, EmptyState, ErrorState, Field, Input, TextArea, toast } from "@scaffoldapp/ui-web";
 import { ArrowLeft, Check, GitCompareArrows, GitPullRequest, Search, X } from "lucide-react";
 import Link from "next/link";
@@ -174,11 +174,11 @@ function OpenPullForm({ cmp, startOpen }: { cmp: ReposComparison; startOpen: boo
               Cancel
             </Button>
             <Button type="submit" loading={open.isPending} disabled={!title.trim()}>
-              Open pull request
+              Open {reposPullNoun(repo).toLowerCase()}
             </Button>
           </div>
         </div>
-        <ReviewerPicker repoId={repo.id} value={reviewers} onChange={setReviewers} />
+        {reposSupports(repo, "reviewers") ? <ReviewerPicker repoId={repo.id} value={reviewers} onChange={setReviewers} /> : null}
       </form>
     </Card>
   );

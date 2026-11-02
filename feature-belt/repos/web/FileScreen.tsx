@@ -6,6 +6,7 @@ import {
   reposFormatBytes,
   reposRelativeTime,
   reposShortSha,
+  reposSupports,
   useReposBlame,
   useReposBlob,
   useReposCommits,
@@ -140,7 +141,7 @@ export function FileScreen() {
                   fullWidth={false}
                   value={view}
                   onValueChange={setView}
-                  options={[...(isMarkdown ? [{ value: "preview" as View, label: "Preview" }] : []), { value: "code", label: "Code" }, { value: "blame", label: "Blame" }]}
+                  options={[...(isMarkdown ? [{ value: "preview" as View, label: "Preview" }] : []), { value: "code", label: "Code" }, ...(reposSupports(repo, "blame") ? [{ value: "blame" as View, label: "Blame" }] : [])]}
                 />
               ) : null}
               <div className="ml-auto flex items-center gap-1">

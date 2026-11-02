@@ -38,7 +38,7 @@ const itemColumns = `
 	i.created_at, i.updated_at, i.trashed_at, i.trashed_by, tu.display_name, tu.avatar_url, i.public_disabled_at IS NOT NULL, a.lvl,
 	EXISTS (SELECT 1 FROM files_stars st WHERE st.user_id = $1 AND st.item_id = i.id),
 	l.has_link OR EXISTS (SELECT 1 FROM access_grants g WHERE g.resource_kind = 'files.item' AND g.resource_id = i.id),
-	l.has_link`
+	l.has_link, lk.provider, lk.product, lk.mime_type, lk.folder`
 
 // itemJoins add the people and the public-link flag.
 const itemJoins = `
@@ -47,7 +47,8 @@ const itemJoins = `
 	LEFT JOIN users tu ON tu.id = i.trashed_by
 	CROSS JOIN LATERAL (SELECT EXISTS (
 		SELECT 1 FROM access_links k WHERE k.resource_kind = 'files.item' AND k.resource_id = i.id
-		  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())) AS has_link) l`
+		  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())) AS has_link) l
+	LEFT JOIN files_links lk ON lk.item_id = i.id`
 
 // levelJoin computes the caller's level per row (bounded lists).
 const levelJoin = ` CROSS JOIN LATERAL (SELECT access_level($1, 'files.item', i.id, $2) AS lvl) a`
@@ -63,10 +64,13 @@ func scanItem(row pgx.Row, extra ...any) (*Item, error) {
 		createdName, updatedName, trashedName       *string
 		createdAvatar, updatedAvatar, trashedAvatar *string
 		lvl                                         int
+		scProvider, scProduct, scMime               *string
+		scFolder                                    *bool
 	)
 	dest := []any{&it.ID, &it.OrgID, &it.ParentID, &it.Type, &it.Name, &it.Drive, &it.OwnerID, &it.MimeType, &it.Size, &it.TextLike,
 		&it.VersionID, &it.VersionCount, &createdBy, &createdName, &createdAvatar, &updatedBy, &updatedName, &updatedAvatar,
-		&it.CreatedAt, &it.UpdatedAt, &it.TrashedAt, &trashedBy, &trashedName, &trashedAvatar, &it.PublicDisabled, &lvl, &it.Starred, &it.Shared, &it.PublicLink}
+		&it.CreatedAt, &it.UpdatedAt, &it.TrashedAt, &trashedBy, &trashedName, &trashedAvatar, &it.PublicDisabled, &lvl, &it.Starred, &it.Shared, &it.PublicLink,
+		&scProvider, &scProduct, &scMime, &scFolder}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -74,6 +78,9 @@ func scanItem(row pgx.Row, extra ...any) (*Item, error) {
 	it.CreatedBy = person(createdBy, createdName, createdAvatar)
 	it.UpdatedBy = person(updatedBy, updatedName, updatedAvatar)
 	it.TrashedBy = person(trashedBy, trashedName, trashedAvatar)
+	if scProvider != nil {
+		it.Shortcut = &ShortcutInfo{Provider: *scProvider, Product: derefStr(scProduct), MimeType: derefStr(scMime), Folder: scFolder != nil && *scFolder}
+	}
 	finishItem(&it)
 	return &it, nil
 }

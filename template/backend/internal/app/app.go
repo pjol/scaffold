@@ -187,6 +187,10 @@ type SearchResult struct {
 	// ("Riverside Climbing Club · #general"). Clients hide the org part when
 	// the search is scoped to that org. Optional.
 	Context string `json:"context,omitempty"`
+	// Source is set on hits that come live from a person's connected
+	// platform account (ConnectedSource(conn, product, url)); nil for the
+	// app's own content. Clients badge and filter by it.
+	Source *SourceRef `json:"source,omitempty"`
 }
 
 // SearchContext joins the non-empty parts of a SearchResult.Context with

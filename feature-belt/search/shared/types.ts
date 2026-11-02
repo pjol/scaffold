@@ -1,5 +1,7 @@
 /** Search feature DTOs: snake_case, mirroring backend/internal/search and app.SearchResult. */
 
+import type { SourceRef } from "../sources";
+
 /** Shortest query the API searches (backend `search.MinQueryChars`). */
 export const SEARCH_MIN_QUERY_CHARS = 2;
 
@@ -21,6 +23,15 @@ export interface SearchResult {
   org_id?: string;
   /** Where it lives: the org's name first when `org_id` is set, then its container ("Acme · #general"). */
   context?: string;
+  /** Set on hits that come live from a connected platform account; absent for the app's own content. */
+  source?: SourceRef;
+}
+
+/** Hits per source before the source filter: `app`, then `provider:<id>` per connected platform. */
+export interface SearchSourceCount {
+  id: string;
+  provider?: string;
+  count: number;
 }
 
 /** How one feature answered: `timeout` and `error` make the response partial. */
@@ -38,6 +49,8 @@ export interface SearchResponse {
   providers: SearchProviderStatus[];
   /** True when a feature failed or timed out; items may be missing its hits. */
   partial: boolean;
+  /** Hit counts per source (the app's own and each connected platform), for filter chips. */
+  sources?: SearchSourceCount[];
 }
 
 export interface SearchParams {
@@ -48,6 +61,8 @@ export interface SearchParams {
   limit?: number;
   /** Only this org's hits (and ones in no org); omit for every org. */
   orgId?: string;
+  /** Only hits from one source: `app`, `connected`, `provider:<id>` or a connection id. */
+  source?: string;
 }
 
 /** Hits of one kind, in result order. */

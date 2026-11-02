@@ -1,7 +1,14 @@
 import type { CallOptions, HttpClient } from "../api/http";
 import { seg } from "../api/query-string";
+import type { FeatureSources } from "../sources";
 import type { Page } from "../types";
 import type {
+  ReposChecks,
+  ReposConnectedPage,
+  ReposConnectedSort,
+  ReposCreateLinkRequest,
+  ReposImportConnectedRequest,
+  ReposLink,
   ReposBlameRange,
   ReposBlob,
   ReposComment,
@@ -64,6 +71,23 @@ export function reposEndpoints(http: HttpClient) {
     update: (id: string, body: ReposUpdateRequest, o?: CallOptions) => http.patch<ReposRepo>(repo(id), body, o),
     gitInfo: (o?: CallOptions) => http.get<ReposGitInfo>(`${R}/git`, o),
     people: (id: string, q: string, o?: CallOptions) => http.get<{ items: ReposPerson[] }>(`${repo(id)}/people`, { ...o, query: { q: q || undefined } }),
+
+    // ---- connected platforms
+    /** The app's own repositories, each connected GitHub/GitLab account, and what could be connected. */
+    sources: (orgId: string | undefined, o?: CallOptions) => http.get<FeatureSources>(`${R}/sources`, { ...o, query: { org_id: orgId } }),
+    connected: (
+      connectionId: string,
+      params: PageParams & { q?: string; sort?: ReposConnectedSort; owner?: string; orgId?: string | undefined } = {},
+      o?: CallOptions,
+    ) =>
+      http.get<ReposConnectedPage>(`${R}/connections/${seg(connectionId)}/repos`, {
+        ...o,
+        query: { cursor: params.cursor, q: params.q || undefined, sort: params.sort, owner: params.owner || undefined, org_id: params.orgId },
+      }),
+    importConnected: (body: ReposImportConnectedRequest, o?: CallOptions) => http.post<ReposRepo>(`${R}/connected/import`, body, { ...o, timeoutMs: 330_000 }),
+    createLink: (body: ReposCreateLinkRequest, o?: CallOptions) => http.post<ReposLink>(`${R}/links`, body, o),
+    link: (linkId: string, o?: CallOptions) => http.get<ReposLink>(`${R}/links/${seg(linkId)}`, o),
+    checks: (id: string, sha: string, o?: CallOptions) => http.get<ReposChecks>(`${repo(id)}/commits/${seg(sha)}/checks`, o),
 
     // ---- protection
     protections: (id: string, o?: CallOptions) => http.get<{ items: ReposProtection[] }>(`${repo(id)}/protections`, o),

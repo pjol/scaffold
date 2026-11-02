@@ -15,6 +15,8 @@ import (
 const (
 	TypeFolder = "folder"
 	TypeFile   = "file"
+	// TypeLink is a shortcut to an item on a connected platform (files_links).
+	TypeLink = "link"
 )
 
 // Drives an item can live in.
@@ -73,6 +75,8 @@ type Item struct {
 	TypeInfo       *TypeInfo  `json:"type_info"`
 	Link           string     `json:"link"`      // app path that opens it
 	ThumbURL       *string    `json:"thumb_url"` // images, when the list asked for thumbs
+	// Shortcut says what a link item points at (null for everything else).
+	Shortcut *ShortcutInfo `json:"shortcut"`
 }
 
 // IsFolder reports whether the item holds other items.

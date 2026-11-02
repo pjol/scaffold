@@ -32,6 +32,11 @@ type Property struct {
 	Type         string   `json:"type"`
 	Options      []Option `json:"options,omitempty"`       // select, multi_select, status
 	NumberFormat string   `json:"number_format,omitempty"` // number, percent, dollar, euro, pound
+	// ReadOnly: shown but not changed here (a connected database's
+	// formulas, rollups, relations, people…). Never set on the app's own.
+	ReadOnly bool `json:"read_only,omitempty"`
+	// Source is the platform's property type for a connected database.
+	Source string `json:"-"`
 }
 
 // Option is a select, multi-select or status choice. Status options belong
@@ -200,6 +205,7 @@ func validateSchema(in []Property) ([]Property, error) {
 	out := make([]Property, 0, len(in))
 	for _, p := range in {
 		p.Name = strings.TrimSpace(cleanText(p.Name))
+		p.ReadOnly, p.Source = false, ""
 		if p.ID == "" {
 			p.ID = shortID()
 		}

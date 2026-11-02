@@ -1,4 +1,5 @@
 import type { AccessLevel } from "../access/types";
+import type { ConnectionOffer, FeatureSource, SourceRef } from "../sources";
 
 /** The three record types. */
 export type CrmObjectType = "company" | "contact" | "deal";
@@ -73,6 +74,11 @@ export interface CrmRecordBase {
   updated_at: string;
   last_activity_at: string | null;
   my_level: CrmLevel;
+  /**
+   * Where the record lives: absent for the app's own; a connected HubSpot or Salesforce
+   * account otherwise (read live with your own connection; its id is an xref, see `crmIsConnectedId`).
+   */
+  source?: SourceRef | null;
 }
 
 export interface CrmCompany extends CrmRecordBase {
@@ -134,6 +140,8 @@ export interface CrmRecordPage<T extends CrmRecord = CrmRecord> {
   items: T[];
   next_cursor: string | null;
   total: number | null;
+  /** `source=all`: sources left out of this page (filters they can't take, a connection that failed). */
+  skipped_sources?: CrmSkippedSource[];
 }
 
 export interface CrmAssocCompany {
@@ -268,6 +276,8 @@ export interface CrmListParams {
   dir?: CrmSortDir;
   tz?: string;
   limit?: number;
+  /** "app" (default where the workspace shows the app's records), "all", or a connection id. */
+  source?: string;
 }
 
 export interface CrmView {
@@ -304,6 +314,10 @@ export interface CrmSettings {
   org_id: string;
   record_access: CrmRecordAccess;
   currency: string;
+  /** The app's own CRM, connected CRMs, or both side by side. */
+  source_mode: CrmSourceMode;
+  /** Platforms people may connect to the CRM. */
+  source_providers: CrmProvider[];
   updated_at: string;
   /** What you may do here. */
   can: { manage_settings: boolean; export: boolean; import: boolean; delete: boolean };
@@ -390,6 +404,8 @@ export interface CrmActivity {
   can_edit: boolean;
   /** On create/edit: people mentioned who can't see the record (not notified). */
   unreachable?: string[];
+  /** Connected activities: the platform they live on. */
+  source?: SourceRef | null;
 }
 
 export interface CrmActivityRequest {
@@ -499,6 +515,9 @@ export interface CrmBoard {
   pipeline: CrmPipeline;
   columns: CrmBoardColumn[];
   open_totals: CrmMoneyTotal[];
+  /** Connected boards: sums cover the first 1,000 deals (counts stay exact). */
+  partial?: boolean;
+  source?: SourceRef | null;
 }
 
 export interface CrmDashboard {
@@ -510,6 +529,7 @@ export interface CrmDashboard {
   lost_this_month: { count: number; totals: CrmMoneyTotal[] };
   activity_this_week: { user: CrmUserRef; notes: number; calls: number; emails: number; meetings: number; tasks_done: number; total: number }[];
   my_tasks: CrmTaskSummary;
+  source?: SourceRef | null;
 }
 
 export interface CrmSearchHit {
@@ -521,6 +541,7 @@ export interface CrmSearchHit {
   detail: string;
   score: number;
   updated_at: string;
+  source?: SourceRef | null;
 }
 
 export interface CrmDuplicate extends CrmRecordRef {
@@ -609,6 +630,95 @@ export interface CrmImport {
   created_by: CrmUserRef | null;
   created_at: string;
   finished_at: string | null;
+}
+
+// ---- connected CRMs (HubSpot, Salesforce) ------------------------------------------
+
+export type CrmSourceMode = "app" | "connected" | "both";
+export type CrmProvider = "hubspot" | "salesforce";
+export const CRM_PROVIDERS: readonly CrmProvider[] = ["hubspot", "salesforce"];
+
+/** Capability keys (Settings → Connections). */
+export const CRM_CAPABILITIES = {
+  hubspot: { read: "crm.hubspot.read", write: "crm.hubspot.write" },
+  salesforce: { read: "crm.salesforce.read", write: "crm.salesforce.write" },
+} as const;
+
+/** Source ids lists, boards and dashboards take besides a connection id. */
+export const CRM_SOURCE_APP = "app";
+export const CRM_SOURCE_ALL = "all";
+
+/** One source with whether it can be edited from here. */
+export interface CrmFeatureSource extends FeatureSource {
+  writable: boolean;
+  /** Opens the account on the platform. */
+  url?: string;
+}
+
+/** `GET /v1/crm/sources`: the shared FeatureSources plus the workspace's mode. */
+export interface CrmSources {
+  sources: CrmFeatureSource[];
+  offers: ConnectionOffer[];
+  mode: CrmSourceMode;
+  providers: CrmProvider[];
+}
+
+export interface CrmSkippedSource {
+  id: string;
+  label: string;
+  code: string;
+  message: string;
+}
+
+/** A platform owner (owner pickers and assignees on connected records). */
+export interface CrmOwner extends CrmUserRef {
+  email?: string;
+}
+
+/** One of your companies linked to a platform company; the platform side is read with your own connection. */
+export interface CrmCompanyLink {
+  id: string;
+  provider: CrmProvider;
+  account_id: string;
+  external_id: string;
+  created_at: string;
+  /** For you: ok, no_connection (connect it to see), not_visible (your account can't see it), error, off. */
+  status: "ok" | "no_connection" | "not_visible" | "error" | "off";
+  message?: string;
+  source?: SourceRef | null;
+  record?: CrmCompany;
+  deals: CrmAssocDeal[];
+  contacts: CrmAssocContact[];
+  timeline: CrmActivity[];
+  can_remove: boolean;
+  capability?: string;
+}
+
+export type CrmImportDedupe = "update" | "skip" | "create";
+
+export interface CrmSourceImportResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  rows: { source_id: string; action: "created" | "updated" | "skipped"; record?: CrmRecordRef }[];
+  errors: { source_id: string; message: string }[];
+}
+
+/** True for a connected record's id (`<connection id>~<platform id>`); the app's own ids are UUIDs. */
+export function crmIsConnectedId(id: string): boolean {
+  return id.includes("~");
+}
+
+/** The connection a connected record id belongs to, else null. */
+export function crmConnectionOfId(id: string): string | null {
+  const at = id.indexOf("~");
+  return at > 0 ? id.slice(0, at) : null;
+}
+
+/** The source id for a record: its connection, or "app". */
+export function crmSourceIdOf(row: { id: string; source?: SourceRef | null }): string {
+  if (row.source && row.source.type === "connected") return row.source.connection_id;
+  return crmConnectionOfId(row.id) ?? CRM_SOURCE_APP;
 }
 
 /** Org permission keys. */

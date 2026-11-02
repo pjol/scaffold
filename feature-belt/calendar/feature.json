@@ -1,8 +1,8 @@
 {
   "name": "calendar",
   "title": "Calendar",
-  "version": "1.1.3",
-  "summary": "Personal calendars with recurring events, invitations and RSVPs, reminders, busy time from other calendars, colleagues' free/busy, and booking links (members-only or public) with race-safe bookings.",
+  "version": "1.2.0",
+  "summary": "Personal calendars with recurring events, invitations and RSVPs, reminders, busy time from other calendars, colleagues' free/busy, booking links (members-only or public) with race-safe bookings, and connected Google and Outlook calendars shown and edited natively.",
   "requires": [
     "orgs",
     "notifications"
@@ -145,6 +145,7 @@
     "Wire video calls: implement calendar.Conferencing (Create/Update/Cancel) over your meetings feature and call calendar.SetConferencing from the stitching file (e.g. internal/api/feature_zz_stitch.go init or the calls feature's New). Honour ConferenceRequest.Audience: external = guests may join without an account; internal = members of OrgID (booking links) or the host and ParticipantIDs (events). Without it, video calls aren't offered.",
     "Set PUBLIC_WEB_URL: booking pages (/book/<slug>), manage links (/book/manage/<token>) and guest RSVP links (/calendar/rsvp/<token>) in emails are built from it. /book/(.*) and /calendar/rsvp/<token> are wired into web/proxy.ts public paths.",
     "Generate CALENDAR_SECRET_KEY (openssl rand -base64 32) for every non-development environment; it encrypts subscribed calendars' secret addresses and signs RSVP and manage links. Rotating it breaks links in emails already sent and makes stored subscriptions unreadable (people re-add them).",
+    "Connected platforms: with the connectors feature (2.0+) people connect Google Calendar and Outlook (capabilities calendar.google.read/write, calendar.microsoft.read/write; connectors owns the OAuth apps). For Zoom and Teams in \"Video call\", implement calendar.ConferenceOptions on your Conferencing (e.g. over calls.Providers) and route ConferenceRequest.Provider (calls.CreateProviderMeeting / UpdateProviderMeeting / CancelProviderMeeting).",
     "Decide who appears in the guest picker and colleague free/busy (default: people who share an organization with you) and who may create internal booking links (default: any member of the org).",
     "Name booking links in your product's copy (scheduling page, appointment page) and decide whether the calendar is a main nav item (default) or a Home tile only.",
     "Mobile: add a Calendar tab if scheduling is a primary destination (default: a Home entry); booking pages themselves are web pages shared by URL (EXPO_PUBLIC_WEB_URL).",

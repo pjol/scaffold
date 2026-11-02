@@ -22,7 +22,13 @@ import (
 // agent scope) and every list uses the same access-filtered queries. Writes
 // are single, reviewable changes with Target and Preview; there are no
 // delete, sharing or publishing tools.
+// Tools are the docs agent tools: the app's own pages (reads also take a
+// connected source) and the connected-platform writes (connected_tools.go).
 func (s *Service) Tools() []app.Tool {
+	return append(s.withSources(s.appTools()), s.connectedTools()...)
+}
+
+func (s *Service) appTools() []app.Tool {
 	pageTarget := func(field string) func(json.RawMessage) (string, string) {
 		return func(input json.RawMessage) (string, string) {
 			var m map[string]any

@@ -1,6 +1,19 @@
 "use client";
 
-import { ApiError, errorMessage, filesEndpoints, filesFormatSize, filesSplitPath, filesUpload, useApi, type FilesItem, type FilesPutFn } from "@scaffoldapp/shared";
+import {
+  ApiError,
+  errorMessage,
+  filesConnectedUpload,
+  filesEndpoints,
+  filesFormatSize,
+  filesSplitPath,
+  filesUpload,
+  useApi,
+  type FilesChunkPutFn,
+  type FilesConnectedItem,
+  type FilesItem,
+  type FilesPutFn,
+} from "@scaffoldapp/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, IconButton, cn, toast } from "@scaffoldapp/ui-web";
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, RotateCcw, X } from "lucide-react";
@@ -24,10 +37,19 @@ interface Task {
   orgId: string;
   parentId: string | null;
   itemId?: string;
+  /** A connected drive instead of the app's: bytes go straight to the platform in resumable chunks. */
+  connected?: { connectionId: string; parentRef?: string; itemRef?: string; orgId?: string | null };
   state: TaskState;
   sent: number;
   error?: string;
   result?: FilesItem;
+}
+
+/** Where a connected upload goes. */
+export interface FilesConnectedTarget {
+  connectionId: string;
+  parentRef: string;
+  orgId?: string | null;
 }
 
 interface UploadsContext {
@@ -36,6 +58,10 @@ interface UploadsContext {
   add: (orgId: string, parentId: string | null, picked: FilesPicked[]) => void;
   /** Upload a file as the new version of an existing one. */
   addVersion: (item: FilesItem, file: File) => void;
+  /** Upload loose files into a connected folder. */
+  addConnected: (target: FilesConnectedTarget, picked: FilesPicked[]) => void;
+  /** Replace a connected file's contents. */
+  addConnectedVersion: (item: FilesConnectedItem, file: File, orgId?: string | null) => void;
   maxBytes: number | null;
   setMaxBytes: (n: number | null) => void;
 }
@@ -55,6 +81,23 @@ const xhrPut: FilesPutFn = (url, headers, body, { signal, onProgress }) =>
       xhr.status >= 200 && xhr.status < 300
         ? resolve()
         : reject(new ApiError({ status: xhr.status, code: xhr.status >= 500 ? "internal" : "invalid_request", message: "Upload failed. Try again." }));
+    xhr.onerror = () => reject(new ApiError({ status: 0, code: "network_error", message: "Upload failed. Check your connection and try again." }));
+    xhr.onabort = () => reject(new ApiError({ status: 0, code: "aborted", message: "Upload canceled." }));
+    if (signal) {
+      if (signal.aborted) xhr.abort();
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    xhr.send(body);
+  });
+
+/** Sends one chunk with XMLHttpRequest (progress) and returns the platform's answer, whatever its status. */
+const xhrChunk: FilesChunkPutFn = (url, headers, body, { signal, onProgress }) =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => onProgress?.(e.loaded, e.total);
+    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
     xhr.onerror = () => reject(new ApiError({ status: 0, code: "network_error", message: "Upload failed. Check your connection and try again." }));
     xhr.onabort = () => reject(new ApiError({ status: 0, code: "aborted", message: "Upload canceled." }));
     if (signal) {
@@ -114,6 +157,23 @@ export function FilesUploadsProvider({ children }: { children: ReactNode }) {
       controllers.current.set(t.id, controller);
       patch(t.id, { state: "uploading", sent: 0, error: undefined });
       try {
+        if (t.connected) {
+          const c = t.connected;
+          await filesConnectedUpload(api.http, {
+            connectionId: c.connectionId,
+            ...(c.orgId ? { orgId: c.orgId } : {}),
+            ...(c.parentRef ? { parentRef: c.parentRef } : {}),
+            ...(c.itemRef ? { itemRef: c.itemRef } : {}),
+            name: t.name,
+            body: t.file,
+            signal: controller.signal,
+            put: xhrChunk,
+            onProgress: (sent) => patch(t.id, { sent }),
+          });
+          patch(t.id, { state: "done", sent: t.file.size });
+          void qc.invalidateQueries({ queryKey: ["files", "connected", c.connectionId] });
+          return;
+        }
         const parentId = await ensureFolder(t);
         const result = await filesUpload(api.http, {
           orgId: t.orgId,
@@ -180,7 +240,51 @@ export function FilesUploadsProvider({ children }: { children: ReactNode }) {
     [maxBytes],
   );
 
-  const value = useMemo<UploadsContext>(() => ({ tasks, add, addVersion, maxBytes, setMaxBytes }), [tasks, add, addVersion, maxBytes]);
+  const addConnected = useCallback((target: FilesConnectedTarget, picked: FilesPicked[]) => {
+    const batch = nextId();
+    const fresh: Task[] = [];
+    for (const p of picked) {
+      const name = p.file.name;
+      if (!name || name === ".DS_Store" || name === "Thumbs.db" || p.path.includes("/")) continue;
+      fresh.push({
+        id: nextId(),
+        batch,
+        file: p.file,
+        name,
+        folders: [],
+        orgId: target.orgId ?? "",
+        parentId: null,
+        connected: { connectionId: target.connectionId, parentRef: target.parentRef, orgId: target.orgId ?? null },
+        state: "queued",
+        sent: 0,
+      });
+    }
+    if (picked.some((p) => p.path.includes("/"))) toast.info("Folders upload to connected drives one file at a time: choose the files instead.");
+    if (fresh.length) setTasks((list) => [...list, ...fresh]);
+  }, []);
+
+  const addConnectedVersion = useCallback((item: FilesConnectedItem, file: File, orgId?: string | null) => {
+    setTasks((list) => [
+      ...list,
+      {
+        id: nextId(),
+        batch: nextId(),
+        file,
+        name: item.name,
+        folders: [],
+        orgId: orgId ?? "",
+        parentId: null,
+        connected: { connectionId: item.connection_id, itemRef: item.ref, orgId: orgId ?? null },
+        state: "queued",
+        sent: 0,
+      },
+    ]);
+  }, []);
+
+  const value = useMemo<UploadsContext>(
+    () => ({ tasks, add, addVersion, addConnected, addConnectedVersion, maxBytes, setMaxBytes }),
+    [tasks, add, addVersion, addConnected, addConnectedVersion, maxBytes],
+  );
   const cancel = (id: string) => {
     const c = controllers.current.get(id);
     if (c) c.abort();

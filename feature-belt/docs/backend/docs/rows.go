@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"scaffoldapp/backend/internal/access"
+	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/httpx"
 )
@@ -28,6 +29,10 @@ type Row struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	MyLevel   access.Level   `json:"my_level"`
+	// Connected rows: where the row comes from, its platform id and page.
+	Source *app.SourceRef `json:"source,omitempty"`
+	Ref    string         `json:"ref,omitempty"`
+	URL    string         `json:"url,omitempty"`
 }
 
 // RowPage is one page of a view's rows, with names for person values.

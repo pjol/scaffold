@@ -17,6 +17,8 @@ import (
 // their name from attribution columns. Shared pages stay with their org:
 // with the owner gone, org owners and admins manage them.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	// Connected docs keep only per-person memory (editing sessions, caches).
+	forgetConnectedUser(userID)
 	rows, err := tx.Query(ctx, `
 		WITH RECURSIVE roots AS (
 			SELECT p.id FROM docs_pages p JOIN access_resources ar ON ar.kind = 'docs.page' AND ar.id = p.id

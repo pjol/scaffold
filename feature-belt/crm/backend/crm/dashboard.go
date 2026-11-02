@@ -12,6 +12,7 @@ import (
 
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 )
 
@@ -327,7 +328,10 @@ func likeEscape(q string) string {
 
 // Search is the app.SearchProvider: records in every org where the caller
 // uses the CRM (or the one the search is scoped to, app.SearchOrg), with the
-// same visibility as the lists. Context is the org, then "CRM".
+// same visibility as the lists. Context is the org, then "CRM". Workspaces
+// with connected CRMs add the caller's HubSpot and Salesforce hits, searched
+// live with their own connection and time-boxed (Context: the org, then
+// "<platform> · <account>"; Source set).
 func (s *Service) Search(ctx context.Context, caller *auth.Identity, query string, limit int) ([]app.SearchResult, error) {
 	q := strings.TrimSpace(query)
 	if q == "" {
@@ -340,12 +344,26 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 	if scope, ok := app.SearchOrg(ctx); ok {
 		orgIDs = slices.DeleteFunc(orgIDs, func(id uuid.UUID) bool { return id != scope })
 	}
-	hits, err := s.search(ctx, caller.UserID, orgIDs, q, objectTypes, limit)
+	appOrgs := []uuid.UUID{}
+	modes := map[uuid.UUID]sourceSettings{}
+	for _, id := range orgIDs {
+		st, err := s.sourceSettings(ctx, id)
+		if db.IsNoRows(err) {
+			st = sourceSettings{Mode: SourceModeApp}
+		} else if err != nil {
+			return nil, err
+		}
+		modes[id] = st
+		if st.allowsApp() {
+			appOrgs = append(appOrgs, id)
+		}
+	}
+	hits, err := s.search(ctx, caller.UserID, appOrgs, q, objectTypes, limit)
 	if err != nil {
 		return nil, err
 	}
 	names := map[uuid.UUID]string{}
-	if len(hits) > 0 {
+	if len(orgIDs) > 0 {
 		rows, err := s.d.Pool.Query(ctx, `SELECT id, name FROM orgs WHERE id = ANY ($1)`, orgIDs)
 		if err != nil {
 			return nil, err
@@ -369,6 +387,31 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 		out = append(out, app.SearchResult{Kind: h.Type.kind(), ID: h.ID.String(), Title: h.Title, Snippet: h.Detail,
 			Link: h.Type.link(h.ID), Icon: h.Type.icon(), Score: h.Score, At: h.At,
 			OrgID: h.OrgID.String(), Context: app.SearchContext(names[h.OrgID], "CRM")})
+	}
+	seen := map[string]bool{}
+	for _, orgID := range orgIDs {
+		st := modes[orgID]
+		if !st.allowsConnected() {
+			continue
+		}
+		xhits := s.connectedSearch(ctx, caller.UserID, orgID, st, q, objectTypes, limit)
+		xhits, err := s.agentFilterHits(ctx, caller, xhits)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range xhits {
+			if seen[h.ID] {
+				continue
+			}
+			seen[h.ID] = true
+			label := providerLabel(h.Source.Provider)
+			if h.Source.Account != "" {
+				label += " · " + h.Source.Account
+			}
+			out = append(out, app.SearchResult{Kind: h.Type.kind(), ID: h.ID, Title: h.Title, Snippet: h.Detail,
+				Link: "/crm/" + h.Type.path() + "/" + h.ID, Icon: h.Type.icon(), Score: h.Score, At: h.At,
+				OrgID: orgID.String(), Context: app.SearchContext(names[orgID], label), Source: h.Source})
+		}
 	}
 	return out, nil
 }

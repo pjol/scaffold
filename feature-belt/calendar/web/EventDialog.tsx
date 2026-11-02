@@ -14,15 +14,27 @@ import {
   errorMessage,
   formatCalendarDay,
   formatCalendarTime,
+  calendarConferenceOptions,
+  calendarFindCalendar,
+  calendarProviderLabel,
+  calendarWritableCalendars,
   orgsNoun,
+  sourceProductLabel,
   useCalendarFindTime,
+  useCalendarSources,
+  useCreateCalendarConnectedEvent,
+  useUpdateCalendarConnectedEvent,
   useCalendarFreeBusy,
   useCalendarPeople,
   useCalendarSettings,
   useCreateCalendarEvent,
   useDebouncedValue,
   useUpdateCalendarEvent,
+  type CalendarCalendarRef,
   type CalendarColor,
+  type CalendarConferenceOption,
+  type CalendarConnectedEventDetail,
+  type CalendarConnectedEventInput,
   type CalendarEventDetail,
   type CalendarEventInput,
   type CalendarPerson,
@@ -31,10 +43,11 @@ import {
   type CalendarShowAs,
   type CalendarVisibility,
 } from "@scaffoldapp/shared";
-import { Button, Checkbox, Chip, Dialog, Field, IconButton, Input, SegmentedControl, Select, Switch, TextArea, cn, toast } from "@scaffoldapp/ui-web";
+import { Button, Checkbox, Chip, Dialog, Field, IconButton, Input, ProviderIcon, SegmentedControl, Select, SourceBadge, Switch, TextArea, cn, toast } from "@scaffoldapp/ui-web";
 import { Check, Globe, Mail, Plus, Video, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AppAvatar } from "@/components/shell/AppAvatar";
+import { APP_NAME } from "@/lib/app";
 import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ZoneSelect } from "./parts";
 
 const CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"] as const;
@@ -68,15 +81,40 @@ interface FormState {
   color: CalendarColor;
   reminders: number[];
   sendUpdates: boolean;
+  /** "app", or a connected calendar as calendarKey(ref). */
+  calendar: string;
+  /** Meeting provider for "add": a CalendarConferenceOption id and its account. */
+  provider: string;
+  providerConn: string;
 }
+
+const calendarKey = (r: CalendarCalendarRef) => `${r.connection_id}|${r.calendar_id}`;
+const calendarRefOf = (key: string): CalendarCalendarRef | null => {
+  const i = key.indexOf("|");
+  return i > 0 ? { connection_id: key.slice(0, i), calendar_id: key.slice(i + 1) } : null;
+};
+const optionKey = (o: Pick<CalendarConferenceOption, "id" | "connection_id">) => `${o.id}|${o.connection_id ?? ""}`;
 
 /**
  * What opens the dialog: a new event over a time range (optionally prefilled, from a
  * new-event link), or an existing event's occurrence.
  */
 export type EventDialogTarget =
-  | { mode: "new"; startsAt: string; endsAt: string; allDay?: boolean; title?: string; description?: string; people?: CalendarPerson[]; emails?: string[]; video?: boolean }
-  | { mode: "edit"; event: CalendarEventDetail };
+  | {
+      mode: "new";
+      startsAt: string;
+      endsAt: string;
+      allDay?: boolean;
+      title?: string;
+      description?: string;
+      people?: CalendarPerson[];
+      emails?: string[];
+      video?: boolean;
+      /** Start in one of the person's connected calendars. */
+      calendar?: CalendarCalendarRef | null;
+    }
+  | { mode: "edit"; event: CalendarEventDetail }
+  | { mode: "edit-connected"; event: CalendarConnectedEventDetail };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const hhmm = (m: number) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
@@ -105,6 +143,40 @@ function repeatOf(r: CalendarRecurrence | null, startDate: string): Repeat {
 }
 
 function initialState(target: EventDialogTarget, zone: string, defaults: number[], videoAvailable: boolean): FormState {
+  if (target.mode === "edit-connected") {
+    const e = target.event;
+    const tz = e.timezone || zone;
+    const startDate = e.all_day && e.start_date ? e.start_date : calendarDateKey(e.starts_at, tz);
+    const endDate = e.all_day && e.end_date ? e.end_date : calendarDateKey(e.ends_at, tz);
+    return {
+      title: e.title,
+      description: e.description,
+      location: e.location === e.conference_url ? "" : e.location,
+      allDay: e.all_day,
+      startDate,
+      startTime: hhmm(calendarMinutesOfDay(e.starts_at, tz)),
+      endDate,
+      endTime: hhmm(calendarMinutesOfDay(e.ends_at, tz)),
+      timezone: tz,
+      repeat: "none",
+      customFreq: "weekly",
+      interval: "1",
+      byDay: [CODES[calendarWeekday(startDate)]!],
+      ends: "never",
+      until: calendarAddDays(startDate, 90),
+      count: "10",
+      guests: e.attendees.filter((a) => !a.self && !a.organizer).map((a): Guest => ({ kind: "email", email: a.email, name: a.name })),
+      conference: "keep",
+      showAs: e.show_as,
+      visibility: "busy",
+      color: e.color,
+      reminders: [],
+      sendUpdates: true,
+      calendar: calendarKey({ connection_id: e.connection_id, calendar_id: e.calendar_id }),
+      provider: "",
+      providerConn: "",
+    };
+  }
   if (target.mode === "edit") {
     const e = target.event;
     const tz = e.timezone || zone;
@@ -135,6 +207,9 @@ function initialState(target: EventDialogTarget, zone: string, defaults: number[
       color: e.color,
       reminders: e.reminders,
       sendUpdates: true,
+      calendar: "app",
+      provider: "",
+      providerConn: "",
     };
   }
   const startDate = calendarDateKey(target.startsAt, zone);
@@ -167,6 +242,9 @@ function initialState(target: EventDialogTarget, zone: string, defaults: number[
     color: "primary",
     reminders: target.allDay ? [] : defaults,
     sendUpdates: true,
+    calendar: target.calendar ? calendarKey(target.calendar) : "app",
+    provider: "",
+    providerConn: "",
   };
 }
 
@@ -198,6 +276,7 @@ const REMINDER_CHOICES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 /** Create or edit an event. Saving a change to a recurring event asks which occurrences change. */
 export function EventDialog({ target, zone, onClose, onSaved }: { target: EventDialogTarget; zone: string; onClose: () => void; onSaved?: (e: CalendarEventDetail) => void }) {
   const settings = useCalendarSettings();
+  const sources = useCalendarSources();
   const [f, setF] = useState<FormState>(() => initialState(target, zone, settings.data?.default_reminders ?? [10], settings.data?.video_available ?? false));
   const [errors, setErrors] = useState<Partial<Record<"title" | "time" | "guests" | "repeat", string>>>({});
   const [scopeOpen, setScopeOpen] = useState(false);
@@ -205,9 +284,21 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
   const [more, setMore] = useState(false);
   const create = useCreateCalendarEvent();
   const update = useUpdateCalendarEvent();
+  const createConnected = useCreateCalendarConnectedEvent();
+  const updateConnected = useUpdateCalendarConnectedEvent();
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
   const editing = target.mode === "edit" ? target.event : null;
-  const recurring = !!editing?.recurrence;
+  const editingConnected = target.mode === "edit-connected" ? target.event : null;
+  const recurring = !!editing?.recurrence || !!editingConnected?.recurring;
+  // Where the event lives: the app's own calendar, or a connected one (Google, Outlook).
+  const writable = calendarWritableCalendars(sources.data);
+  const targetRef = calendarRefOf(f.calendar);
+  const targetCal = calendarFindCalendar(sources.data, targetRef);
+  const connectedTarget = !!targetRef;
+  const product = targetCal ? sourceProductLabel(targetCal.source.provider ?? "", targetCal.source.product) : editingConnected ? sourceProductLabel(editingConnected.source.provider, editingConnected.source.product) : APP_NAME;
+  const providers = calendarConferenceOptions(sources.data, targetRef);
+  const videoAvailable = providers.length > 0 || (!connectedTarget && (settings.data?.video_available ?? false));
+  const chosenProvider = providers.find((o) => optionKey(o) === `${f.provider}|${f.providerConn}`) ?? providers[0];
   const hasExternal = f.guests.some((g) => g.kind === "email");
   const dayNum = Number(f.startDate.slice(8));
   const nth = nthOfMonth(f.startDate);
@@ -218,6 +309,32 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
     const s = calendarFromWall(f.startDate, toMin(f.startTime), f.timezone);
     const e = calendarFromWall(f.endDate, toMin(f.endTime), f.timezone);
     return e > s ? { startsAt: s, endsAt: e } : null;
+  };
+
+  const connectedBody = (scope: CalendarScope | null): CalendarConnectedEventInput | null => {
+    const b = body(scope);
+    if (!b) return null;
+    const out: CalendarConnectedEventInput = {
+      title: b.title!,
+      description: b.description ?? "",
+      location: b.location ?? "",
+      all_day: b.all_day!,
+      timezone: b.timezone!,
+      show_as: f.showAs,
+      ...(b.start_date ? { start_date: b.start_date, end_date: b.end_date! } : { starts_at: b.starts_at!, ends_at: b.ends_at! }),
+      ...(b.conference ? { conference: b.conference } : {}),
+      ...(b.conference_provider ? { conference_provider: b.conference_provider } : {}),
+      ...(b.conference_connection_id ? { conference_connection_id: b.conference_connection_id } : {}),
+    };
+    if (!editingConnected) {
+      if (b.recurrence) out.recurrence = b.recurrence;
+      out.attendees = b.attendees ?? [];
+    } else {
+      if (scope === "all") out.scope = "all";
+      out.send_updates = f.sendUpdates;
+      out.attendees = f.guests.map((g) => (g.kind === "user" ? { user_id: g.person.id } : { email: g.email, name: g.name }));
+    }
+    return out;
   };
 
   const body = (scope: CalendarScope | null): CalendarEventInput | null => {
@@ -248,6 +365,10 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
       b.ends_at = t.endsAt;
     }
     if (f.conference !== "keep") b.conference = f.conference;
+    if (f.conference === "add" && chosenProvider) {
+      b.conference_provider = chosenProvider.id;
+      if (chosenProvider.connection_id && !chosenProvider.native) b.conference_connection_id = chosenProvider.connection_id;
+    }
     if (scope !== "this") {
       b.recurrence = recurrenceOf(f);
       b.attendees = f.guests.map((g) => (g.kind === "user" ? { user_id: g.person.id } : { email: g.email, name: g.name }));
@@ -261,6 +382,22 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
   };
 
   const save = async (scope: CalendarScope | null) => {
+    if (connectedTarget) {
+      const cb = connectedBody(scope);
+      if (!cb || !targetRef) return;
+      try {
+        if (editingConnected) {
+          await updateConnected.mutateAsync({ ref: { connection_id: editingConnected.connection_id, calendar_id: editingConnected.calendar_id, event_id: editingConnected.external_id }, body: cb });
+        } else {
+          await createConnected.mutateAsync({ calendar: targetRef, body: cb });
+        }
+        toast.success(editingConnected ? `Saved in ${product}` : `Added to ${product}`);
+        onClose();
+      } catch (e) {
+        toast.error(errorMessage(e, "Couldn't save the event. Try again."));
+      }
+      return;
+    }
     const b = body(scope);
     if (!b) return;
     try {
@@ -287,17 +424,17 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
         open
         onOpenChange={(o) => !o && onClose()}
         size="lg"
-        title={editing ? "Edit event" : "New event"}
+        title={editing || editingConnected ? "Edit event" : "New event"}
         footer={
           <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-            {editing && f.guests.length > 0 ? (
+            {(editing || editingConnected) && f.guests.length > 0 ? (
               <Checkbox className="sm:mr-auto" checked={f.sendUpdates} onCheckedChange={(v) => set("sendUpdates", v)} label="Tell guests about changes" />
             ) : null}
             <Button variant="ghost" size="auto" onClick={onClose}>
               Cancel
             </Button>
-            <Button size="auto" loading={create.isPending || update.isPending} onClick={submit}>
-              {editing ? "Save" : "Add event"}
+            <Button size="auto" loading={create.isPending || update.isPending || createConnected.isPending || updateConnected.isPending} onClick={submit}>
+              {editing || editingConnected ? "Save" : "Add event"}
             </Button>
           </div>
         }
@@ -312,6 +449,30 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
           <Field label="Title" error={errors.title} required>
             <Input value={f.title} onChange={(e) => set("title", e.target.value)} autoFocus maxLength={200} placeholder="Add a title" />
           </Field>
+
+          {editingConnected ? (
+            <Field label="Calendar">
+              <span className="flex min-h-control items-center gap-2 type-body text-fg">
+                <SourceBadge source={editingConnected.source} showAccount />
+                <span className="min-w-0 truncate text-fg-muted">{editingConnected.calendar_name}</span>
+              </span>
+            </Field>
+          ) : !editing && writable.length > 0 ? (
+            <Field label="Calendar" info={`Events in a connected calendar are saved there, and ${product === APP_NAME ? "that platform" : product} sends the invitations.`}>
+              <Select
+                value={f.calendar}
+                onValueChange={(v) => setF((s) => ({ ...s, calendar: v, provider: "", providerConn: "" }))}
+                options={[
+                  { value: "app", label: `${APP_NAME} calendar` },
+                  ...writable.map((w) => ({
+                    value: calendarKey({ connection_id: w.source.id, calendar_id: w.calendar.id }),
+                    label: `${w.calendar.primary && w.calendar.name === w.source.account ? sourceProductLabel(w.source.provider ?? "", w.source.product) : w.calendar.name} · ${w.source.account}`,
+                    icon: <ProviderIcon provider={w.source.provider ?? ""} product={w.source.product ?? null} size={16} />,
+                  })),
+                ]}
+              />
+            </Field>
+          ) : null}
 
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between gap-3">
@@ -366,6 +527,7 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
             ) : null}
           </div>
 
+          {editingConnected ? null : (
           <div className="flex flex-col gap-3">
             <Field label="Repeat" error={errors.repeat}>
               <Select
@@ -444,8 +606,9 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
               </div>
             ) : null}
           </div>
+          )}
 
-          <GuestPicker guests={f.guests} onChange={(g) => set("guests", g)} />
+          <GuestPicker guests={f.guests} onChange={(g) => set("guests", g)} platform={connectedTarget ? product : null} />
           {userGuests.length > 0 && !f.allDay ? (
             <GuestAvailability
               people={userGuests.map((g) => g.person)}
@@ -462,11 +625,18 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
               <Input value={f.location} onChange={(e) => set("location", e.target.value)} maxLength={500} placeholder="Room, address or link" />
             </Field>
             <VideoRow
-              available={settings.data?.video_available ?? false}
-              current={editing?.conference_url ?? null}
+              available={videoAvailable}
+              current={editing?.conference_url ?? editingConnected?.conference_url ?? null}
+              currentProvider={editingConnected?.conference_provider ?? null}
               action={f.conference}
               onChange={(a) => set("conference", a)}
               external={hasExternal}
+              providers={providers}
+              provider={chosenProvider ? optionKey(chosenProvider) : ""}
+              onProvider={(key) => {
+                const o = providers.find((x) => optionKey(x) === key);
+                if (o) setF((s) => ({ ...s, provider: o.id, providerConn: o.connection_id ?? "" }));
+              }}
             />
           </div>
 
@@ -480,10 +650,14 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
                 <Field label="Show as" info="Free time stays bookable on your booking links.">
                   <SegmentedControl value={f.showAs} onValueChange={(v) => set("showAs", v)} options={[{ value: "busy", label: "Busy" }, { value: "free", label: "Free" }]} />
                 </Field>
-                <Field label="Colleagues see" info={`People in your ${orgsNoun("many")} checking your availability see either just “Busy” or this event's title.`}>
-                  <SegmentedControl value={f.visibility} onValueChange={(v) => set("visibility", v)} options={[{ value: "busy", label: "Busy" }, { value: "details", label: "Title" }]} />
-                </Field>
+                {connectedTarget ? null : (
+                  <Field label="Colleagues see" info={`People in your ${orgsNoun("many")} checking your availability see either just “Busy” or this event's title.`}>
+                    <SegmentedControl value={f.visibility} onValueChange={(v) => set("visibility", v)} options={[{ value: "busy", label: "Busy" }, { value: "details", label: "Title" }]} />
+                  </Field>
+                )}
               </div>
+              {connectedTarget ? null : (
+              <>
               <Field label="Color">
                 <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Color">
                   {CALENDAR_COLORS.map((c) => (
@@ -522,6 +696,8 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
                   ) : null}
                 </div>
               </Field>
+              </>
+              )}
             </div>
           ) : (
             <Button variant="ghost" size="auto" className="self-start" onClick={() => setMore(true)}>
@@ -535,32 +711,81 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
         onOpenChange={setScopeOpen}
         title="Save recurring event"
         confirmLabel="Save"
-        allowThis={!(f.repeat !== repeatOf(editing?.recurrence ?? null, f.startDate)) && f.guests.length === (editing?.attendees.length ?? 0)}
+        allowThis={!!editingConnected || (!(f.repeat !== repeatOf(editing?.recurrence ?? null, f.startDate)) && f.guests.length === (editing?.attendees.length ?? 0))}
+        allowFollowing={!editingConnected}
         onConfirm={(scope) => save(scope)}
       />
     </>
   );
 }
 
-function VideoRow({ available, current, action, onChange, external }: { available: boolean; current: string | null; action: "keep" | "add" | "remove"; onChange: (a: "keep" | "add" | "remove") => void; external: boolean }) {
+function VideoRow({
+  available,
+  current,
+  currentProvider,
+  action,
+  onChange,
+  external,
+  providers,
+  provider,
+  onProvider,
+}: {
+  available: boolean;
+  current: string | null;
+  currentProvider: string | null;
+  action: "keep" | "add" | "remove";
+  onChange: (a: "keep" | "add" | "remove") => void;
+  external: boolean;
+  providers: CalendarConferenceOption[];
+  provider: string;
+  onProvider: (key: string) => void;
+}) {
   const has = (current && action !== "remove") || action === "add";
   if (!available && !current) return null;
+  const chosen = providers.find((o) => `${o.id}|${o.connection_id ?? ""}` === provider);
+  const embedded = !chosen || chosen.id === "app";
   return (
     <div className="flex min-h-control flex-wrap items-center gap-2">
       <Video className="size-5 text-fg-muted" aria-hidden />
-      {has ? (
+      {action === "add" ? (
         <>
-          <span className="min-w-0 flex-1 truncate type-label text-fg">{action === "add" ? "A video call link is added when you save" : current}</span>
-          <Button variant="ghost" size="sm" onClick={() => onChange(current ? "remove" : "keep")}>
+          {providers.length > 1 ? (
+            <Select
+              aria-label="Video call provider"
+              className="min-w-0 flex-1 sm:max-w-80"
+              value={provider}
+              onValueChange={onProvider}
+              options={providers.map((o) => ({
+                value: `${o.id}|${o.connection_id ?? ""}`,
+                label: o.account && !o.native ? `${o.label} · ${o.account}` : o.label,
+                disabled: o.status === "needs_reauth",
+                ...(o.platform ? { icon: <ProviderIcon provider={o.platform} product={o.id === "google_meet" ? "meet" : o.id === "teams" ? "teams" : null} size={16} /> } : {}),
+              }))}
+            />
+          ) : (
+            <span className="min-w-0 flex-1 truncate type-label text-fg">{`A ${chosen?.label ?? "video call"} link is added when you save`}</span>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => onChange("keep")}>
+            Remove
+          </Button>
+        </>
+      ) : has ? (
+        <>
+          <span className="min-w-0 flex-1 truncate type-label text-fg">
+            {currentProvider && currentProvider !== "app" ? `${calendarProviderLabel(currentProvider)}: ` : ""}
+            {current}
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => onChange("remove")}>
             Remove
           </Button>
         </>
       ) : (
-        <Button variant="secondary" size="sm" onClick={() => onChange(current ? "keep" : "add")} disabled={!available}>
+        <Button variant="secondary" size="sm" onClick={() => onChange("add")} disabled={!available}>
           Add video call
         </Button>
       )}
-      {has && external ? <span className="w-full type-caption text-fg-muted">{`Guests outside your ${orgsNoun("many")} can join without an account.`}</span> : null}
+      {action === "add" && !embedded ? <span className="w-full type-caption text-fg-muted">{`Opens in ${chosen?.label}, not in this app.`}</span> : null}
+      {has && external && embedded ? <span className="w-full type-caption text-fg-muted">{`Guests outside your ${orgsNoun("many")} can join without an account.`}</span> : null}
     </div>
   );
 }
@@ -568,7 +793,7 @@ function VideoRow({ available, current, action, onChange, external }: { availabl
 const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 
 /** Colleagues from your organizations (search) and anyone by email. */
-function GuestPicker({ guests, onChange }: { guests: Guest[]; onChange: (g: Guest[]) => void }) {
+function GuestPicker({ guests, onChange, platform }: { guests: Guest[]; onChange: (g: Guest[]) => void; platform?: string | null }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const debounced = useDebouncedValue(q.trim(), 200);
@@ -585,7 +810,10 @@ function GuestPicker({ guests, onChange }: { guests: Guest[]; onChange: (g: Gues
   };
 
   return (
-    <Field label="Guests" info="Colleagues get an invitation in the app. Anyone else gets an email with a calendar invite and a link to reply.">
+    <Field
+      label="Guests"
+      info={platform ? `${platform} sends the invitations, to colleagues and anyone else, as it normally does.` : "Colleagues get an invitation in the app. Anyone else gets an email with a calendar invite and a link to reply."}
+    >
       <div className="flex flex-col gap-2">
         <div className="relative">
           <Input
@@ -737,6 +965,7 @@ export function ScopeDialog({
   confirmLabel,
   tone = "primary",
   allowThis = true,
+  allowFollowing = true,
   onConfirm,
 }: {
   open: boolean;
@@ -745,13 +974,15 @@ export function ScopeDialog({
   confirmLabel: string;
   tone?: "primary" | "danger";
   allowThis?: boolean;
+  /** Connected calendars change one event or the whole series only. */
+  allowFollowing?: boolean;
   onConfirm: (scope: CalendarScope) => Promise<void> | void;
 }) {
-  const [scope, setScope] = useState<CalendarScope>(allowThis ? "this" : "following");
+  const [scope, setScope] = useState<CalendarScope>(allowThis ? "this" : allowFollowing ? "following" : "all");
   const [busy, setBusy] = useState(false);
   const options: { value: CalendarScope; label: string }[] = [
     ...(allowThis ? [{ value: "this" as const, label: "This event" }] : []),
-    { value: "following", label: "This and following events" },
+    ...(allowFollowing ? [{ value: "following" as const, label: "This and following events" }] : []),
     { value: "all", label: "All events" },
   ];
   return (
