@@ -54,6 +54,8 @@ Flags are parsed before `.env.dev` is read and win over it. Unknown flags are er
 
 `w` open web · `a` open admin · `i` iOS simulator · `d` Android emulator · `l` tail a log (pick a service) · `r` rebuild + restart backend · `R` restart web · `s` re-run seed · `g` grant admin by email (search, confirm) · `t` print a dev token for any user (for curl) · `m` open the mail sink folder · `p` psql shell · `c` `scaffold doctor` + stale-binary check · `q` quit (tears down). Feature hooks add their items.
 
+Layout (`menu_print`): the URLs as an aligned block, then one item per line with the key in a bold column, in groups with a blank line between them (open, services, data, then each hook's items under the hook's name), `q` last. Items for a service that isn't running are left out. Never pack several items onto one line.
+
 ## Helper scripts
 
 `scripts/` holds one folder per convenience script, each with exactly one script and one honest `.md` (usage + what it does). `scripts/lib.sh` is shared plumbing, sourced only, and includes `require_local_stack` (refuses to run unless the API URL is localhost and `/readyz` answers). Ship at least:
@@ -70,3 +72,4 @@ If a script's `.md` drifts from what it does, fix the `.md`; if the script broke
 - Every wait has a timeout, an early exit when the process dies, and a log tail on failure.
 - Idempotent: re-running reuses the cluster, database, deps and builds when current.
 - Keep `dev-up.md` (beside the script) accurate: flags, ports, menu, what it writes.
+- Watch free disk. When the disk fills, Turbopack fails to write its cache (`logs/web.log`: "Failed to compact database … No space left on device"). The server bundle then goes stale: new code renders on the client only and hydration fails on it. Free space, then touch the changed file or restart web (`R`); `web/.next` is a cache. Tell the user before deleting anything of theirs to make room.

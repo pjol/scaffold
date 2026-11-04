@@ -78,6 +78,9 @@ export { PhotoLightbox, type PhotoLightboxProps, type GalleryPhoto } from "./com
 export { LegalDocument, formatEffectiveDate, type LegalDocumentProps, type LegalDocumentData, type LegalSection, type LegalBlock } from "./components/LegalDocument";
 export { ConsentForm, type ConsentFormProps, type ConsentFormValue } from "./components/ConsentForm";
 
+// real logos (one-colour marks tinted by the surface; full-colour logos as images)
+export { BrandMark, type BrandMarkProps } from "./components/BrandMark";
+
 // connected sources (provider marks: Simple Icons, CC0; monograms where none)
 export { ProviderIcon, type ProviderIconProps } from "./sources/ProviderIcon";
 export { SourceBadge, type SourceBadgeProps, type SourceBadgeSource } from "./sources/SourceBadge";

@@ -17,6 +17,7 @@ Versions verified 2026-10-30. Upgrade deliberately (one layer at a time, after r
 | Tooling | pnpm 10 workspace (`node-linker=hoisted` for Metro), TypeScript 6, Node 22 | |
 | AI | Anthropic (default) or OpenAI over HTTP behind the assistant's provider interface | anthropic-sdk-go v2 / openai-go v3 when an SDK is wanted |
 | MCP | official Go SDK `github.com/modelcontextprotocol/go-sdk` | 1.8 |
+| 3D (web, when used; not in the template) | three + @react-three/fiber + drei + @react-three/postprocessing (3d.md) | three 0.186, R3F 9.8, drei 10.7, postprocessing 3.2.2 / 6.39.6 |
 
 ## Repository layout
 
@@ -67,4 +68,4 @@ scaffold doctor                              # manifest, migrations ledger, anch
 
 ## Verification
 
-Before calling work done: the backend gate, `pnpm typecheck`, `pnpm check` and `scaffold doctor` pass, and the change was exercised on the dev-up stack on web and mobile (light + dark, 375 px + desktop). Testing is human-in-the-loop on the running stack; add unit tests only for pure logic where cheap. Never add an e2e harness unless asked.
+Before calling work done: the backend gate, `pnpm typecheck`, `pnpm check` and `scaffold doctor` pass, and the change was exercised on the dev-up stack on web and mobile (light + dark, 375 px + desktop). Testing is human-in-the-loop on the running stack; add unit tests only for pure logic where cheap. Never add an e2e harness unless asked. Randomised product logic (odds, drop schedules, shuffles) takes its random source as a parameter; simulate a few thousand runs and check the distribution before shipping.

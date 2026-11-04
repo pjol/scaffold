@@ -9,7 +9,8 @@ import { AUTH_MODE } from "./src/lib/env";
  * involved and every request passes through.
  *
  * Public paths: sign-in, legal documents, the account-deletion page (Play's web URL),
- * support and the favicon. Each entry is a regular-expression source matched against the
+ * support, the favicon and the logos in public/brand/ (the matcher below skips most
+ * static files, but not SVGs). Each entry is a regular-expression source matched against the
  * whole pathname (escape dots). Features with public pages add one line each above the
  * anchor comment at the end of the list, e.g. `"/invites/(.*)",`.
  */
@@ -19,6 +20,7 @@ const PUBLIC_PATHS: readonly string[] = [
   "/delete-account",
   "/support",
   "/mark\\.svg",
+  "/brand/(.*)",
   // scaffold:public-paths
 ];
 const PUBLIC = PUBLIC_PATHS.map((p) => new RegExp(`^${p}$`));

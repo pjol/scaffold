@@ -30,7 +30,7 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 - `AUTH_MODE` (`src/lib/env.ts`): `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` set → Clerk (`ClerkProvider` themed by `clerkAppearance(palette, mode)` + `ClerkBridge` → `AuthSessionProvider`). No key and `isDevAuthEnabled(NEXT_PUBLIC_AUTH_DEV, NODE_ENV, NEXT_PUBLIC_APP_ENV)` → `DevAuthProvider` (identity in localStorage `<slug>.dev-identity`). Neither → nobody is signed in and /sign-in says "Sign-in isn't configured". Clerk is never mounted without a key.
 - Screens only call `useAuthSession()`; sign out through `useSignOut()` (clears the query cache, navigates).
 - One API client per app (`createWebApiClient`, `NEXT_PUBLIC_API_URL`, platform `web`); its `getToken` waits up to 2.5 s for auth to load so the first request never caches a 401. One realtime client per signed-in identity; `bindVisibilityLifecycle` reconnects when the tab returns. Switching identity or signing out resets user queries (`resetQueries`, never `removeQueries` under mounted screens).
-- `proxy.ts` sends signed-out visitors of app routes to /sign-in (Clerk only). `PUBLIC_PATHS` lists the public ones as regex sources matched against the whole path; a feature with public pages adds one line above `// scaffold:public-paths` (`"/invites/(.*)",`). The API stays the authority.
+- `proxy.ts` sends signed-out visitors of app routes to /sign-in (Clerk only). `PUBLIC_PATHS` lists the public ones as regex sources matched against the whole path; a feature with public pages adds one line above `// scaffold:public-paths` (`"/invites/(.*)",`). The matcher skips images, fonts and documents but not `.svg` or `.glb`, so folders of those served from `public/` need an entry: `/brand/(.*)` (logos, design.md) ships in the list; 3D models add `/models/(.*)`. The API stays the authority.
 
 ## Routing and gates
 
@@ -103,5 +103,7 @@ Content from a person's connected platform account (shared `SourceRef` on rows, 
 Route files and layouts are server components (metadata, static params); screens are client components because they read session-bound data. Static routes prerender (`○`); only `/sign-in` and dynamic ids render on demand. Keep heavy client code out of the root layout, import icons individually from `lucide-react`, and lazy-load large optional widgets (`next/dynamic`). The palette's fonts are the only web fonts.
 
 ## Verification
+
+Visual work that needs isolated checks (3D figures, generated art, item icons) gets a development-only route under `app/<group>/dev/<thing>/` whose page calls `notFound()` in production.
 
 `pnpm typecheck`, `pnpm check`, `pnpm --filter @<slug>/web build` pass; `scaffold doctor` is clean (anchors, env declarations in `types/env.d.ts` + `scaffold.json`, no raw colours or banned words). Then on the dev-up stack (or backend + `next dev`): sign in as a member and as the admin, save the profile, switch appearance, export, open delete, accept consent as a new email, change a user's status and see it in the audit log; screenshots at 375 and 1440 in light and dark against the design.md checklist; the browser console stays clean.

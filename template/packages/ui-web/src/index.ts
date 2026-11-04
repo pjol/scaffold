@@ -85,6 +85,9 @@ export { SideNav, type SideNavProps } from "./shell/SideNav";
 export { BottomNav, type BottomNavProps } from "./shell/BottomNav";
 export { isNavItemActive, badgeText, type ShellNavItem, type LinkComponent } from "./shell/nav";
 
+// real logos (one-colour marks recoloured by the surface; full-colour logos as images)
+export { BrandMark, type BrandMarkProps } from "./components/BrandMark";
+
 // connected sources (provider marks: Simple Icons, CC0; monograms where none)
 export { ProviderIcon, type ProviderIconProps } from "./sources/ProviderIcon";
 export { SourceBadge, type SourceBadgeProps, type SourceBadgeSource } from "./sources/SourceBadge";

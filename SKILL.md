@@ -1,6 +1,6 @@
 ---
 name: scaffold
-description: "Root of the app-building skill tree and toolset: concrete (the Go/Next.js/Expo/Postgres/Clerk/S3 foundation, design system and process, env, dev-up, docs, compliance) plus feature-belt (copyable modules: chat, feed, places/maps, events, payments, wallets, AI assistant, notifications, moderation, orgs, support, identity, MCP/OAuth agent access, access/teams/sharing, presence, connectors, files, git repos, docs, CRM, calls, calendar/booking, channels, AI agent scopes, search), driven by the scaffold CLI (also available over MCP and HTTP). Use when starting a new app, adding a feature to an existing scaffold project, reviewing a project against the foundation, or improving the scaffold itself."
+description: "Root of the app-building skill tree and toolset: concrete (the Go/Next.js/Expo/Postgres/Clerk/S3 foundation, design system and process, 3D figures, animated scenes and real logos, env, dev-up, docs, compliance) plus feature-belt (copyable modules: chat, feed, places/maps, events, payments, wallets, AI assistant, notifications, moderation, orgs, support, identity, MCP/OAuth agent access, access/teams/sharing, presence, connectors, files, git repos, docs, CRM, calls, calendar/booking, channels, AI agent scopes, search), driven by the scaffold CLI (also available over MCP and HTTP). Use when starting a new app, adding a feature to an existing scaffold project, reviewing a project against the foundation, or improving the scaffold itself."
 ---
 
 # Scaffold

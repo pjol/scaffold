@@ -23,7 +23,7 @@ If `hook_<name>_prepare` returns non-zero, the boot stops and everything started
 | `wait_for <url> <label> <timeout_s> [pid] [log] [ready\|up]` | Polls until the URL answers: `up` (default) means any HTTP status below 500, `ready` means 200. Returns 0 when it answers, 2 if the pid died first, 1 on timeout. Prints the log tail on failure. |
 | `hook_env <backend\|web\|mobile> <KEY> <value>` | **prepare only.** Writes KEY into that tier's generated file (`backend/.env`, `web/.env.local`, `mobile/.env`), above everything else, `.env.dev` and flags included. Values travel through a 0600 file, never a command line; no newlines or tabs. Declare KEY for the tier in `scaffold.json`. An undeclared key is still written, but warns. |
 | `hook_port <6-9>` | Prints `PORT_BASE + offset`: the block's spare ports. Fails, with a note on stderr, if a process this project didn't start holds it. dev-up never kills it, so a busy port means picking another `DEV_PORT_BASE`. |
-| `menu_add <key> <label> <function>` | Adds a menu item. Keys are one character. The built-ins `w a i d l r R s g t m p c q` are refused. |
+| `menu_add <key> <label> <function>` | Adds a menu item, listed under the hook's name (a leading `<name>: ` in the label is dropped there). Keys are one character. The built-ins `w a i d l r R s g t m p c q` are refused. |
 | `env_get <file> <KEY>` | Reads a value from a generated env file. Use it when a command needs a secret, then pass it to that one command; never `export` it. |
 | `psql_dev [args…]` | psql on the dev database (`_started` only: Postgres isn't up during prepare). Feed SQL on stdin and use `-v name=value` / `:'name'` for anything user-supplied. |
 | `confirm <question>` | Asks y/N. `--yes` answers yes; without a terminal it refuses. |

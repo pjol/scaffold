@@ -68,7 +68,7 @@ func goModTidy(ctx context.Context, dir string) error {
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("go not on PATH")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute) // a cold module cache with many features takes minutes
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 	cmd.Dir = dir

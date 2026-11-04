@@ -802,11 +802,12 @@ backend_up() {
 #   hook_<name>_started  after the backend is ready; may menu_add items
 # hooks/README.md is the reference.
 
-HOOK_NAMES=() HOOK_PHASE=""
-MENU_KEYS=() MENU_LABELS=() MENU_FUNCS=()
+HOOK_NAMES=() HOOK_PHASE="" HOOK_CURRENT=""
+MENU_KEYS=() MENU_LABELS=() MENU_FUNCS=() MENU_GROUPS=()
 HOOK_ENV_FILE="$RUN_DIR/hook-env.tsv"
 
-# menu_add <key> <label> <function> — a hook's menu item.
+# menu_add <key> <label> <function> — a hook's menu item, listed under the
+# hook's name (a leading "<name>: " in the label is dropped there).
 menu_add() {
   local key="$1" label="$2" fn="$3" k
   case "$key" in
@@ -816,7 +817,7 @@ menu_add() {
   for k in ${MENU_KEYS[@]+"${MENU_KEYS[@]}"}; do
     [[ "$k" == "$key" ]] && { c_yellow "  menu_add: key '$key' already added"; return 1; }
   done
-  MENU_KEYS+=("$key"); MENU_LABELS+=("$label"); MENU_FUNCS+=("$fn")
+  MENU_KEYS+=("$key"); MENU_LABELS+=("$label"); MENU_FUNCS+=("$fn"); MENU_GROUPS+=("${HOOK_CURRENT:-more}")
 }
 
 # hook_env <backend|web|mobile> <KEY> <value> — written into that tier's
@@ -874,13 +875,14 @@ run_hook_phase() {
     declare -F "$fn" >/dev/null || continue
     n=$((n + 1))
     c_dim "  $fn"
+    HOOK_CURRENT="$name"
     if ! "$fn"; then
       HOOK_PHASE=""
       [[ "$phase" == "prepare" && "$DEVUP_MODE" == "boot" ]] && die "  $fn failed: fix scripts/dev-up/hooks/$name.sh"
       c_yellow "  $fn returned non-zero"
     fi
   done
-  HOOK_PHASE=""
+  HOOK_PHASE="" HOOK_CURRENT=""
   [[ "$n" -gt 0 || "$phase" != "started" || "$DEVUP_MODE" != "boot" ]] || c_dim "  no hook_<name>_started functions"
   return 0
 }
@@ -1230,23 +1232,59 @@ menu_doctor() {
   run_shielded "$ROOT/scripts/preflight/preflight.sh" || true
 }
 
+# The menu: one item per line, grouped, keys in a bold column; items whose
+# service isn't running are left out. Hook items follow under each hook's name.
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then MENU_BOLD=$'\033[1m' MENU_RESET=$'\033[0m'; else MENU_BOLD="" MENU_RESET=""; fi
+menu_item() { printf '    %s%s%s  %s\n' "$MENU_BOLD" "$1" "$MENU_RESET" "$2"; }
+menu_url() { printf '  %-6s %s\n' "$1" "$2"; }
+
+menu_print() {
+  local web="${RUN_WEB:-0}" backend="${RUN_BACKEND:-0}" mobile="${RUN_MOBILE:-0}" g i seen=" "
+  echo
+  if [[ "$DEVUP_MODE" == "boot" ]]; then
+    c_blue "$APP_NAME dev: running"
+  else
+    c_blue "$APP_NAME dev menu"
+  fi
+  [[ "$web" -eq 1 ]] && { menu_url web "$WEB_URL"; menu_url admin "$WEB_URL/admin"; }
+  [[ "$backend" -eq 1 ]] && menu_url api "$API_URL"
+  [[ "$mobile" -eq 1 ]] && menu_url metro "http://localhost:$METRO_PORT"
+  if [[ "$web" -eq 1 || "$mobile" -eq 1 ]]; then
+    echo; c_dim "  open"
+    [[ "$web" -eq 1 ]] && { menu_item w "web"; menu_item a "admin"; }
+    [[ "$mobile" -eq 1 ]] && { menu_item i "iOS simulator"; menu_item d "Android emulator"; }
+  fi
+  echo; c_dim "  services"
+  menu_item l "logs"
+  [[ "$backend" -eq 1 ]] && menu_item r "rebuild + restart backend"
+  [[ "$web" -eq 1 ]] && menu_item R "restart web"
+  menu_item c "doctor + preflight"
+  echo; c_dim "  data"
+  menu_item s "seed"
+  menu_item g "grant admin"
+  menu_item t "dev token"
+  menu_item m "mail sink"
+  menu_item p "psql"
+  for g in ${MENU_GROUPS[@]+"${MENU_GROUPS[@]}"}; do
+    [[ "$seen" == *" $g "* ]] && continue
+    seen+="$g "
+    echo; c_dim "  $g"
+    for i in "${!MENU_KEYS[@]}"; do
+      [[ "${MENU_GROUPS[$i]}" == "$g" ]] && menu_item "${MENU_KEYS[$i]}" "${MENU_LABELS[$i]#"$g: "}"
+    done
+  done
+  echo
+  if [[ "$DEVUP_MODE" == "boot" ]]; then
+    menu_item q "quit (stops everything; Ctrl-C too)"
+  else
+    menu_item q "leave (the stack keeps running)"
+  fi
+}
+
 menu_loop() {
   local sel i hit
   while :; do
-    echo
-    if [[ "$DEVUP_MODE" == "boot" ]]; then
-      c_blue "$APP_NAME dev: running (q or Ctrl-C stops everything)"
-    else
-      c_blue "$APP_NAME dev menu (q leaves the stack running)"
-    fi
-    [[ "${RUN_WEB:-0}" -eq 1 ]] && echo "  web $WEB_URL   admin $WEB_URL/admin"
-    [[ "${RUN_BACKEND:-0}" -eq 1 ]] && echo "  api $API_URL"
-    [[ "${RUN_MOBILE:-0}" -eq 1 ]] && echo "  metro http://localhost:$METRO_PORT"
-    echo "  w web  a admin  i iOS sim  d Android emu  l logs  r rebuild+restart backend  R restart web"
-    echo "  s seed  g grant admin  t dev token  m mail sink  p psql  c doctor+preflight  q quit"
-    for i in ${MENU_KEYS[@]+"${!MENU_KEYS[@]}"}; do
-      echo "  ${MENU_KEYS[$i]} ${MENU_LABELS[$i]}"
-    done
+    menu_print
     printf '> '
     sel=""
     read -r sel || sel="q"

@@ -12,6 +12,8 @@ All styling comes from `packages/tokens` (root-level definitions shared by web a
 6. **Not AI-looking.** No three-card feature rows, no left-border accent bars, no gradient text, no glow/neon, no emoji in chrome, no fake stats or decorative data, no pill-everything. Shadows only on floating layers.
 7. **Mobile first.** Every web screen works one-handed at 375 px; every mobile screen at the largest Dynamic Type size.
 
+A deliberately themed area (a game skin, a branded microsite) may break named house rules: uppercase, glows, a banned word that is the theme's own vocabulary. Keep it to one directory, keep its raw colours in that directory's theme file, and list each exception under Project rules in the project's CLAUDE.md. Everything outside the area follows the rules.
+
 ## Colour
 
 Semantic roles per palette and mode (`--app-*` CSS variables, Tailwind classes, `theme.colors` on native):
@@ -98,11 +100,20 @@ Tracking tightens as size grows (−0.01 → −0.03em). Never below 12/16 for c
 
 Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or surface step; shadows (`elevation`) only on menus, popovers, dialogs, sheets and toasts. Layers come from `zIndex` (tokens): menus and selects open on the popover layer, above dialogs and sheets, so they work inside them.
 
+## Logos and imagery
+
+- Anything real (a company, product, tool, school) is shown by its real logo, never a redrawn lookalike, a letter in a circle or an emoji. Download each file once into `web/public/brand/` (mobile: `mobile/assets/brand/`); never hotlink. One registry per app, `src/lib/brands.ts`: `{ <id>: { src, mask } }`.
+- `mask: true` for one-colour marks (most Simple Icons, any single-colour SVG or PNG with alpha). `BrandMark` (ui-web, ui-native) paints them with the surface's colour: `currentColor` by default, or a token, gradient or metal fill on a badge, so they follow palette and mode. Full-colour logos (`mask: false`) show as they are, on a plate when the surface is busy; never recolour or redraw one.
+- In chrome (chips, menus, lists) marks are one colour. Full colour only where the logo is the content (a client list, a profile's employers). Connected platforms use `ProviderIcon`.
+- A sheen over a mark (foil, holo; themed areas only) is a second `BrandMark` with the same `src`, a gradient `fill` and a `mix-blend-mode` (`screen` for foil, `color-dodge` for holo).
+- One row per file in `design/brand/README.md`: id, entity, licence, source URL. Simple Icons are CC0 except where their metadata says otherwise (Solidity CC BY 4.0, Rust CC BY-SA 4.0): credit those on the site. Other marks are trademarks, used only to identify what they name.
+- Imagery shows the real thing: the product's own screens, real photos (with the subject's consent), renders of the app's own models. Stock or generated images never stand in for a real person, place or product.
+
 ## Motion
 
 - Web: `motion` (`motion/react`) with springs from tokens (`snappy`, `gentle`, `bouncy`, `sheet`, `press`) via `motionSpring()`; CSS transitions use `--ease-spring-*`. Native: Reanimated 4 with `reanimatedSpring()` (mass always explicit).
 - Animate: enter/exit (`Presence`, fade + 8 px slide), list insertions (`Stagger`), layout changes (`layout`), press feedback (scale 0.97), live numbers (`AnimatedNumber`), state swaps (`SwapText`), success moments (`Celebrate`, sparingly).
-- Durations 90 / 160 / 240 / 380 / 560 ms; stagger 45 ms; nothing over 600 ms on interaction.
+- Durations 90 / 160 / 240 / 380 / 560 ms; stagger 45 ms; nothing over 600 ms on interaction. Showpiece sequences the person starts and can skip (an opening, a reel, a reveal) follow scenes.md.
 - **OriginKit** (originkit.dev, animated React + Tailwind components, copied in as source): fetch per project with the owner's `ORIGINKIT_API_KEY` (`npx originkit@latest add <slug>` or its MCP), save to `web/src/components/motion/originkit/<name>.tsx`, switch `framer-motion` imports to `motion/react`, replace colours with tokens, wire `useReducedMotion`. Its license forbids vendoring components into templates, so the scaffold never contains them. Web only; native uses Reanimated equivalents.
 
 ## Layout and navigation
@@ -117,7 +128,7 @@ Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or 
 
 ## Components and states
 
-Use the ui packages before writing new primitives: Button, IconButton, Field/Input/TextArea/Select/Switch/Checkbox/SegmentedControl, Card, ListRow, Avatar, Badge, Chip, Tabs, Dialog/ConfirmDialog, Sheet, Menu, Toast, Tooltip/InfoTip, Skeleton*, EmptyState, ErrorState, Spinner, AnimatedNumber, Presence/Stagger/SwapText, AppShell/TopBar/SideNav/BottomNav (web), Screen/TabBar (native), LegalDocument, ConsentForm. A new primitive goes into the ui package, uses tokens only, and has no subtitle prop.
+Use the ui packages before writing new primitives: Button, IconButton, Field/Input/TextArea/Select/Switch/Checkbox/SegmentedControl, Card, ListRow, Avatar, BrandMark, Badge, Chip, Tabs, Dialog/ConfirmDialog, Sheet, Menu, Toast, Tooltip/InfoTip, Skeleton*, EmptyState, ErrorState, Spinner, AnimatedNumber, Presence/Stagger/SwapText, AppShell/TopBar/SideNav/BottomNav (web), Screen/TabBar (native), LegalDocument, ConsentForm. A new primitive goes into the ui package, uses tokens only, and has no subtitle prop.
 
 ## Accessibility
 

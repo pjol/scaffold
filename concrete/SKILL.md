@@ -1,6 +1,6 @@
 ---
 name: concrete
-description: "The foundation every app is built on: Go 1.27 backend (chi, pgxpool, Postgres, S3, router-level auth, module contract), Next.js 16 web, Expo mobile, Clerk auth with a dev bypass, root-level design tokens (spacing system, type, colour, motion, OriginKit), the iterative 3-option design process, meaning-first writing, standardized env naming with ENV.md, the comprehensive dev-up script, the project doc set, and store/privacy compliance (account deletion, consent, UGC). Use when creating, reviewing or modifying any app on this stack, or before any backend, UI, copy, env, dev-tooling or compliance work in one."
+description: "The foundation every app is built on: Go 1.27 backend (chi, pgxpool, Postgres, S3, router-level auth, module contract), Next.js 16 web, Expo mobile, Clerk auth with a dev bypass, root-level design tokens (spacing system, type, colour, motion, OriginKit), the iterative 3-option design process, 3D figures and objects on the web (three/R3F: loading and fallbacks, characters as data, rigged kits, finishes, accessories, render recipes, generated characters, icon capture), showpiece scenes (beat sheets, reels, effects, synthesised sound), real logos recoloured by the surface, meaning-first writing, standardized env naming with ENV.md, the comprehensive dev-up script, the project doc set, and store/privacy compliance (account deletion, consent, UGC). Use when creating, reviewing or modifying any app on this stack, or before any backend, UI, copy, env, dev-tooling or compliance work in one."
 ---
 
 # Concrete
@@ -30,6 +30,9 @@ The fixed foundation. `../template/` is the foundation as running code; these fi
 | Web screens | `web.md`, `design.md`, `writing.md` |
 | Mobile screens, builds, store | `mobile.md`, `design.md`, `writing.md`, `compliance.md` |
 | Visual identity / restyle | `design-process.md`, `design.md` |
+| 3D figures, characters, objects (web) | `3d.md`, `web.md` |
+| Showpiece sequences: openings, reels, reveals, effects, sound (web) | `scenes.md`, `3d.md` |
+| Logos of real organisations and products | `design.md` (Logos and imagery) |
 | Env vars | `env.md` |
 | Local stack, scripts | `dev-up.md` |
 | Project docs, branch scopes, hours | `docs-set.md` |

@@ -127,7 +127,7 @@ A process started with the generated file also gets `env -u` for every key in it
 | `c` | `scaffold doctor` (if on `PATH`) + `scripts/preflight/preflight.sh` (stale binary, env freshness) |
 | `q` | quit: tears the stack down (in `dev-up.sh menu`: leaves it running) |
 
-Feature hooks add their own keys with `menu_add` in `hook_<name>_started`.
+The menu prints one item per line in groups (open, services, data), leaves out keys for services that aren't running, and lists each feature hook's keys (`menu_add` in `hook_<name>_started`) under the hook's name.
 
 ## Dev identities
 
