@@ -30,8 +30,17 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		ON CONFLICT DO NOTHING`, userID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM identity_verifications WHERE user_id = $1`, userID)
-	return err
+	for _, q := range []string{
+		`DELETE FROM identity_verifications WHERE user_id = $1`,
+		`DELETE FROM identity_badges WHERE user_id = $1`,
+		`DELETE FROM identity_badge_applications WHERE user_id = $1`,
+		`DELETE FROM identity_domains WHERE user_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, userID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type exportAttempt struct {
@@ -46,7 +55,19 @@ type exportAttempt struct {
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
-// ExportAccount returns the current status and every attempt.
+type exportBadge struct {
+	Kind          string     `json:"kind"`
+	Label         string     `json:"label"`
+	Category      *string    `json:"category"`
+	Source        string     `json:"source"`
+	GrantedAt     time.Time  `json:"granted_at"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	RevokedAt     *time.Time `json:"revoked_at"`
+	RevokedReason string     `json:"revoked_reason"`
+}
+
+// ExportAccount returns the current status, every attempt, and every badge,
+// badge application and domain proof (ended ones included).
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
 	st, err := s.loadStatus(ctx, s.d.Pool, userID)
 	if err != nil {
@@ -61,7 +82,32 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": st, "attempts": attempts}, nil
+	brows, err := s.d.Pool.Query(ctx, `SELECT kind, label, category, source, granted_at, expires_at, revoked_at, revoked_reason
+		FROM identity_badges WHERE user_id = $1 ORDER BY granted_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	badges, err := pgx.CollectRows(brows, pgx.RowToStructByPos[exportBadge])
+	if err != nil {
+		return nil, err
+	}
+	apps, err := applicationsOf(ctx, s.d.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	domains, err := domainsOf(ctx, s.d.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": st, "attempts": attempts, "badges": nonNilSlice(badges),
+		"badge_applications": apps, "domains": domains}, nil
+}
+
+func nonNilSlice[T any](v []T) []T {
+	if v == nil {
+		return []T{}
+	}
+	return v
 }
 
 // ---- housekeeping ----------------------------------------------------------------
@@ -72,10 +118,12 @@ const abandonAfter = 24 * time.Hour
 
 // housekeeping runs every 10 minutes on one instance: delete review photos of
 // decided attempts, expire manual attempts abandoned before submission (and
-// their uploads), lapse verifications past their expiry, and redact provider
-// inquiries owed after account deletions.
+// their uploads), lapse verifications past their expiry, redact provider
+// inquiries owed after account deletions, end badges past their expiry, and
+// show paid badges withheld until their holders became eligible.
 func (s *Service) housekeeping(ctx context.Context) error {
-	return errors.Join(s.purgeDocuments(ctx), s.expireAbandoned(ctx), s.expire(ctx), s.redact(ctx))
+	return errors.Join(s.purgeDocuments(ctx), s.expireAbandoned(ctx), s.expire(ctx), s.redact(ctx),
+		s.expireBadges(ctx), s.grantWithheldPaid(ctx))
 }
 
 // purgeDocuments deletes the review photos of decided attempts, then clears
@@ -226,6 +274,18 @@ func (s *Service) Tools() []app.Tool {
 			}
 			return s.loadStatus(ctx, s.d.Pool, caller.UserID)
 		},
+	}, {
+		Name: "identity_badges",
+		Description: "The caller's verification badges (official, org, notable, paid) with their expiry, whether they can get " +
+			"the paid badge and what's missing, their badge applications with staff notes, and their domain proofs with the DNS TXT record to add.",
+		InputSchema: json.RawMessage(`{"type": "object", "properties": {}, "additionalProperties": false}`),
+		ReadOnly:    true,
+		Handler: func(ctx context.Context, caller *auth.Identity, _ json.RawMessage) (any, error) {
+			if caller == nil {
+				return nil, errors.New("sign in to read badges")
+			}
+			return s.badgesStatus(ctx, s.d.Pool, caller.UserID)
+		},
 	}}
 }
 
@@ -233,10 +293,15 @@ func (s *Service) Tools() []app.Tool {
 
 // SeedDev marks Jordan verified and Priya rejected through manual review (no
 // photos are kept after a decision, so none are seeded). Sam and the admin
-// start with no verification to try the flow.
+// start with no verification to try the flow. Badges: the admin holds the
+// official badge, Jordan an org badge from an approved application with a
+// proved domain, and Priya's notable application waits in the queue.
 func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 	if len(users) < 4 {
 		return nil
+	}
+	if err := s.seedBadges(ctx, users); err != nil {
+		return err
 	}
 	admin, jordan, priya := users[0], users[2], users[3]
 	seed := []struct {
@@ -254,6 +319,64 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 				INSERT INTO identity_verifications (id, user_id, provider, status, reason, submitted_at, decided_at, reviewed_by)
 				VALUES ($1, $2, 'manual', $3, $4, now() - interval '2 days', now() - interval '1 day', $5)
 				ON CONFLICT (id) DO NOTHING`, id, r.user, r.status, strings.TrimSpace(r.reason), admin); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// seedBadges adds the development badges (idempotent: fixed ids, no updates).
+func (s *Service) seedBadges(ctx context.Context, users []uuid.UUID) error {
+	admin, jordan, priya := users[0], users[2], users[3]
+	var org, notable *Category
+	for i := range s.badges.categories {
+		c := &s.badges.categories[i]
+		if c.Kind == BadgeOrg && org == nil {
+			org = c
+		}
+		if c.Kind == BadgeNotable && notable == nil {
+			notable = c
+		}
+	}
+	id := func(name string) uuid.UUID {
+		return uuid.NewSHA1(uuid.NameSpaceURL, []byte("scaffold-dev-identity-badge:"+name))
+	}
+	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO identity_badges (user_id, kind, label, source, granted_by, granted_at)
+			VALUES ($1, 'official', 'Scaffold App team', 'admin', $1, now() - interval '90 days')
+			ON CONFLICT (user_id, kind) DO NOTHING`, admin); err != nil {
+			return err
+		}
+		if org != nil {
+			ev := `[{"kind": "domain", "ref": "riversidebikes.example", "verified": true},
+				{"kind": "url", "ref": "https://maps.example/riverside-bikes", "verified": false}]`
+			if _, err := tx.Exec(ctx, `INSERT INTO identity_domains (user_id, domain, token, verified_at, checked_at)
+				VALUES ($1, 'riversidebikes.example', 'devtoken0riverside', now() - interval '40 days', now() - interval '40 days')
+				ON CONFLICT (user_id, domain) DO NOTHING`, jordan); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO identity_badge_applications (id, user_id, category, display_label, status, evidence,
+				  note, reviewer_note, reviewed_by, submitted_at, decided_at, created_at)
+				VALUES ($1, $2, $3, 'Riverside Bikes', 'approved', $4, 'I run the shop with my sister.', '', $5,
+				  now() - interval '40 days', now() - interval '38 days', now() - interval '40 days')
+				ON CONFLICT DO NOTHING`, id("jordan-org"), jordan, org.Key, ev, admin); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO identity_badges (user_id, kind, label, category, source, application_id,
+				  granted_by, granted_at, expires_at)
+				VALUES ($1, 'org', 'Riverside Bikes', $2, 'review', $3, $4, now() - interval '38 days', now() + interval '327 days')
+				ON CONFLICT (user_id, kind) DO NOTHING`, jordan, org.Key, id("jordan-org"), admin); err != nil {
+				return err
+			}
+		}
+		if notable != nil {
+			ev := `[{"kind": "url", "ref": "https://video.example/@priyacooks", "verified": false},
+				{"kind": "text", "ref": "Weekly cooking show, 120k subscribers.", "verified": false}]`
+			if _, err := tx.Exec(ctx, `INSERT INTO identity_badge_applications (id, user_id, category, display_label, evidence, note,
+				  submitted_at, created_at)
+				VALUES ($1, $2, $3, 'Priya Cooks', $4, 'Happy to send anything else you need.', now() - interval '2 days', now() - interval '2 days')
+				ON CONFLICT DO NOTHING`, id("priya-notable"), priya, notable.Key, ev); err != nil {
 				return err
 			}
 		}

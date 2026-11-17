@@ -58,6 +58,7 @@ type Observation struct {
 type PricePoint struct {
 	FeedID   uuid.UUID
 	Key      string
+	Kind     string  // FeedSingle or FeedBasket
 	Price    float64 // 0 = none yet
 	Target   float64
 	Status   string
@@ -740,7 +741,7 @@ func (s *Service) publishLocked(now time.Time, step bool) []PricePoint {
 	var changed []priceDTO
 	pts := make([]PricePoint, 0, len(s.order))
 	for _, f := range s.order {
-		pp := PricePoint{FeedID: f.id, Key: f.key, At: now, Decimals: f.decimals, Status: f.status(now)}
+		pp := PricePoint{FeedID: f.id, Key: f.key, Kind: f.kind, At: now, Decimals: f.decimals, Status: f.status(now)}
 		if f.kind == FeedSingle {
 			if f.price > 0 {
 				pp.Price, pp.Target = roundTo(f.price, f.decimals), roundTo(f.target, f.decimals)
@@ -805,35 +806,71 @@ func (s *Service) publishLocked(now time.Time, step bool) []PricePoint {
 }
 
 // Current returns a feed's latest published price by key: from memory on the
-// leading instance, from the database elsewhere.
+// leading instance, from the database elsewhere (and for a feed the leader
+// hasn't published yet). ok is false for an unknown key.
 func (s *Service) Current(ctx context.Context, key string) (PricePoint, bool, error) {
-	s.mu.RLock()
-	if s.leading {
-		if f := s.byKey[key]; f != nil {
-			pp, ok := s.prices[f.id]
-			s.mu.RUnlock()
-			return pp, ok, nil
-		}
-	}
-	s.mu.RUnlock()
-	var pp PricePoint
-	var price, target *float64
-	err := s.d.Pool.QueryRow(ctx, `SELECT f.id, f.key, f.decimals, st.price::float8, st.target::float8, coalesce(st.status, 'seed'), coalesce(st.updated_at, f.created_at)
- FROM oracle_feeds f LEFT JOIN oracle_feed_state st ON st.feed_id = f.id WHERE f.key = $1`, key).
-		Scan(&pp.FeedID, &pp.Key, &pp.Decimals, &price, &target, &pp.Status, &pp.At)
-	if db.IsNoRows(err) {
-		return PricePoint{}, false, nil
-	}
+	m, err := s.CurrentMany(ctx, []string{key})
 	if err != nil {
 		return PricePoint{}, false, err
 	}
-	if price != nil {
-		pp.Price = *price
+	pp, ok := m[key]
+	return pp, ok, nil
+}
+
+// CurrentMany is Current for several keys in one read; unknown keys are left
+// out of the map. A feed with no published price yet has Price 0 and status
+// seed (off when disabled).
+func (s *Service) CurrentMany(ctx context.Context, keys []string) (map[string]PricePoint, error) {
+	out := make(map[string]PricePoint, len(keys))
+	var missing []string
+	s.mu.RLock()
+	for _, k := range keys {
+		if s.leading {
+			if f := s.byKey[k]; f != nil {
+				if pp, ok := s.prices[f.id]; ok {
+					out[k] = pp
+					continue
+				}
+			}
+		}
+		missing = append(missing, k)
 	}
-	if target != nil {
-		pp.Target = *target
+	s.mu.RUnlock()
+	if len(missing) == 0 {
+		return out, nil
 	}
-	return pp, true, nil
+	rows, err := s.d.Pool.Query(ctx, `SELECT f.id, f.key, f.kind, f.decimals, st.price::float8, st.target::float8,
+ CASE WHEN NOT f.enabled THEN 'off' ELSE coalesce(st.status, 'seed') END, coalesce(st.updated_at, f.created_at)
+ FROM oracle_feeds f LEFT JOIN oracle_feed_state st ON st.feed_id = f.id WHERE f.key = ANY($1)`, missing)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pp PricePoint
+		var price, target *float64
+		if err := rows.Scan(&pp.FeedID, &pp.Key, &pp.Kind, &pp.Decimals, &price, &target, &pp.Status, &pp.At); err != nil {
+			return nil, err
+		}
+		if price != nil {
+			pp.Price = *price
+		}
+		if target != nil {
+			pp.Target = *target
+		}
+		out[pp.Key] = pp
+	}
+	return out, rows.Err()
+}
+
+// Reload asks this instance to re-read the feed catalog now instead of at
+// its next 5 s check (it only matters on the leader). Call it after the
+// transaction that changed feeds commits; it never blocks.
+func (s *Service) Reload() {
+	select {
+	case s.reload <- struct{}{}:
+	default:
+	}
 }
 
 // ---- formatting ----

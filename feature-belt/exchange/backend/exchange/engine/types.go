@@ -4,11 +4,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Account kinds. Users trade; bot and mm are the optional simulation's
-// accounts (shown as simulated); backstop and fee are system accounts that are
-// never liquidated or ranked.
+// Account kinds. Users trade; sub is one of a person's extra accounts (a copy
+// trade's account, for example: OwnerID names the person, Label its purpose);
+// bot and mm are the optional simulation's accounts (shown as simulated);
+// backstop and fee are system accounts that are never liquidated or ranked.
 const (
 	KindUser     = "user"
+	KindSub      = "sub"      // a person's sub-account (never ranked or counted as a separate person)
 	KindBot      = "bot"      // simulated trader
 	KindMM       = "mm"       // simulated market maker
 	KindBackstop = "backstop" // takes over positions an account can no longer carry
@@ -65,6 +67,8 @@ const (
 	LedgerFunding     = "funding"
 	LedgerLiquidation = "liquidation"
 	LedgerAdjustment  = "adjustment"
+	LedgerTransfer    = "transfer"     // between a person's main account and one of their sub-accounts
+	LedgerProfitShare = "profit_share" // from a sub-account to another person's main account (Transfer)
 )
 
 // MarketSpec is one listed perpetual, as the app's catalog defines it.
@@ -98,9 +102,10 @@ func (s MarketSpec) FeedKey() string {
 // Account is a trader's cross-margin account.
 type Account struct {
 	ID           string
-	UserID       string // users.id for kind user ("" for system and simulated accounts)
+	UserID       string // users.id for kind user ("" for sub, system and simulated accounts)
+	OwnerID      string // users.id of the person a sub-account belongs to ("" otherwise, and once they delete their account)
 	Kind         string
-	Label        string
+	Label        string // system accounts: their name; sub-accounts: their purpose ("copy:<id>")
 	Status       string
 	CreatedMs    int64
 	Balance      decimal.Decimal
@@ -124,7 +129,16 @@ func (a *Account) IsSystem() bool {
 func (a *Account) IsSim() bool { return a.Kind == KindBot || a.Kind == KindMM }
 
 // keepsHistory reports accounts whose fills and ledger are persisted.
-func (a *Account) keepsHistory() bool { return a.Kind == KindUser }
+func (a *Account) keepsHistory() bool { return a.Kind == KindUser || a.Kind == KindSub }
+
+// Person is the user behind an account: a main account's user, a
+// sub-account's owner, "" for system and simulated accounts.
+func (a *Account) Person() string {
+	if a.Kind == KindSub {
+		return a.OwnerID
+	}
+	return a.UserID
+}
 
 type Position struct {
 	Symbol           string
@@ -182,6 +196,11 @@ type Order struct {
 	UpdatedMs    int64
 	Ephemeral    bool // market-maker quotes: memory only
 	Liquidation  bool
+	Source       string // who placed it (Source*, or a module's name)
+	ClientRef    string // the caller's reference (PlaceOpts.ClientRef); "" = none
+	// avoid: accounts whose resting orders this order never trades with while
+	// it matches (PlaceOpts.AvoidMakers). Memory only.
+	avoid map[string]bool
 }
 
 func (o *Order) Remaining() decimal.Decimal { return o.Sz.Sub(o.Filled) }

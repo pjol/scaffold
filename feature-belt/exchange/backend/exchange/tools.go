@@ -293,7 +293,7 @@ func (s *Service) toolPlace(_ context.Context, caller *auth.Identity, raw json.R
 	if err != nil {
 		return nil, err
 	}
-	o, fills, err := eng.PlaceOrder(acct, req)
+	o, fills, err := eng.PlaceOrderWith(acct, req, engine.PlaceOpts{Source: engine.SourceAgent})
 	if err != nil {
 		return nil, apiErr(err)
 	}
@@ -356,7 +356,7 @@ func (s *Service) toolClose(_ context.Context, caller *auth.Identity, raw json.R
 	if err != nil {
 		return nil, err
 	}
-	o, fills, err := eng.ClosePosition(acct, in.Symbol, in.Sz)
+	o, fills, err := eng.ClosePositionWith(acct, in.Symbol, in.Sz, engine.PlaceOpts{Source: engine.SourceAgent})
 	if err != nil {
 		return nil, apiErr(err)
 	}

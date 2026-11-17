@@ -14,10 +14,12 @@ import (
 	"scaffoldapp/backend/internal/jobs"
 )
 
-// Start runs the reconcile job (hourly: missed webhooks, stuck checkouts,
+// Start runs the lapse sweep (every 5 minutes: entitlement ends no sync
+// reported), the reconcile job (hourly: missed webhooks, stuck checkouts,
 // cancellations owed after account deletion) and the retention job (daily:
 // provider customers of deleted accounts once the retention period ends).
 func (s *Service) Start(ctx context.Context) {
+	go jobs.Every(ctx, s.d.Pool, "payments.lapses", 5*time.Minute, s.sweepLapses)
 	if s.gw == nil {
 		return
 	}
@@ -126,15 +128,19 @@ func (s *Service) backfillInvoices(ctx context.Context, providerSubID string) er
 	if err != nil || len(invs) == 0 {
 		return err
 	}
-	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		var fx effects
+	var fx effects
+	if err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		for i := range invs {
 			if err := s.syncInvoice(ctx, tx, EventInvoicePaid, &invs[i], nil, &fx); err != nil {
 				return err
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.flush(ctx, &fx)
+	return nil
 }
 
 // cancelAtProvider cancels immediately and syncs the result.
@@ -143,7 +149,7 @@ func (s *Service) cancelAtProvider(ctx context.Context, id uuid.UUID, providerID
 	if err != nil {
 		return err
 	}
-	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := s.syncSubscription(ctx, tx, sub, subHint{})
 		return err
 	})
@@ -151,14 +157,12 @@ func (s *Service) cancelAtProvider(ctx context.Context, id uuid.UUID, providerID
 
 // markSubscriptionGone ends a subscription the provider no longer knows.
 func (s *Service) markSubscriptionGone(ctx context.Context, id uuid.UUID) error {
-	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE payment_subscriptions SET status = 'canceled', cancel_pending = false,
 			ended_at = COALESCE(ended_at, now()), synced_at = now(), updated_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE payment_entitlements SET active_until = now(), updated_at = now()
-			WHERE source = 'subscription' AND source_id = $1 AND (active_until IS NULL OR active_until > now())`, id)
-		return err
+		return revokeSource(ctx, tx, "subscription", id, "", time.Now().UTC())
 	})
 }
 

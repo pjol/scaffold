@@ -14,7 +14,9 @@ import (
 //   - reports and cases about the user's content stay as safety records with
 //     the user's text and media scrubbed from every snapshot, and open cases
 //     about them close (the content is gone with the account);
-//   - every block involving the user is removed.
+//   - every block involving the user is removed;
+//   - screening decisions on their content stay without the author, the
+//     text hash or the matched text, and their strikes are deleted.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `UPDATE moderation_reports SET reporter_id = NULL, updated_at = now() WHERE reporter_id = $1`, userID); err != nil {
 		return err
@@ -36,12 +38,28 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		WHERE author_id = $1`, userID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM moderation_blocks WHERE blocker_id = $1 OR blocked_id = $1`, userID)
+	if _, err := tx.Exec(ctx, `DELETE FROM moderation_blocks WHERE blocker_id = $1 OR blocked_id = $1`, userID); err != nil {
+		return err
+	}
+	// Screening decisions stay as records of what the rules and the model
+	// did, without the author, the text hash or the matched text.
+	if _, err := tx.Exec(ctx, `
+		UPDATE moderation_decisions SET author_id = NULL, text_hash = NULL,
+		  hits = COALESCE((SELECT jsonb_agg(h - 'detail') FROM jsonb_array_elements(hits) h), '[]'::jsonb)
+		WHERE author_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE moderation_strikes SET created_by = NULL WHERE created_by = $1`, userID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM moderation_strikes WHERE user_id = $1`, userID)
 	return err
 }
 
-// ExportAccount returns the reports the user filed and the people they
-// blocked. Reported content is other people's data and is not included.
+// ExportAccount returns the reports the user filed, the people they
+// blocked, their strikes and the screening decisions that labelled, held or
+// removed their content. Reported content is other people's data and is not
+// included.
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
 	type report struct {
 		TargetKind string    `json:"target_kind"`
@@ -85,5 +103,45 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if blocks == nil {
 		blocks = []block{}
 	}
-	return map[string]any{"reports": reports, "blocks": blocks}, nil
+	type strike struct {
+		Action    string    `json:"action"`
+		Category  string    `json:"category"`
+		CreatedAt time.Time `json:"created_at"`
+		Revoked   bool      `json:"revoked"`
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT action, COALESCE(category, ''), created_at, revoked_at IS NOT NULL
+		FROM moderation_strikes WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	strikes, err := pgx.CollectRows(rows, pgx.RowToStructByPos[strike])
+	if err != nil {
+		return nil, err
+	}
+	if strikes == nil {
+		strikes = []strike{}
+	}
+	type screened struct {
+		TargetKind string    `json:"target_kind"`
+		TargetID   string    `json:"target_id"`
+		Action     string    `json:"action"`
+		Labels     []string  `json:"labels"`
+		Reasons    []string  `json:"reasons"`
+		CreatedAt  time.Time `json:"created_at"`
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT target_kind, target_id, action, labels,
+		  ARRAY(SELECT DISTINCT h->>'reason' FROM jsonb_array_elements(hits) h WHERE COALESCE(h->>'reason', '') <> ''),
+		  created_at
+		FROM moderation_decisions WHERE author_id = $1 AND action <> 'allow' ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	screening, err := pgx.CollectRows(rows, pgx.RowToStructByPos[screened])
+	if err != nil {
+		return nil, err
+	}
+	if screening == nil {
+		screening = []screened{}
+	}
+	return map[string]any{"reports": reports, "blocks": blocks, "strikes": strikes, "screening": screening}, nil
 }

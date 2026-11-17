@@ -261,6 +261,10 @@ func (e *Engine) noteTrader(a *Account, now int64) {
 	if a.IsSystem() {
 		return
 	}
+	if a.Kind == KindSub { // not a separate trader: its owner (or the leader it copies) is
+		a.LastTradeMs = now
+		return
+	}
 	if a.LastTradeMs <= now-24*60*60*1000 {
 		e.traders24h++
 		if a.IsSim() {
@@ -281,7 +285,7 @@ func (e *Engine) recountTraders(now int64) {
 	since := now - 24*60*60*1000
 	n, sim := 0, 0
 	for _, a := range e.accounts {
-		if !a.IsSystem() && a.LastTradeMs > since {
+		if !a.IsSystem() && a.Kind != KindSub && a.LastTradeMs > since {
 			n++
 			if a.IsSim() {
 				sim++

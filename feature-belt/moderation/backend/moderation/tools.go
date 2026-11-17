@@ -11,8 +11,8 @@ import (
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Tools exposes the caller's blocks and reports and, for staff, the queue
-// summary, all read-only. Blocking, unblocking and filing reports stay in
+// Tools exposes the caller's blocks, reports and standing (strikes, held and
+// removed content) and, for staff, the queue summary, all read-only. Blocking, unblocking and filing reports stay in
 // the app, where the person decides: a block changes who may reach them and
 // whose content they see, which AI agents never change.
 func (s *Service) Tools() []app.Tool {
@@ -37,8 +37,25 @@ func (s *Service) Tools() []app.Tool {
 			},
 		},
 		{
+			Name:        "moderation_my_standing",
+			Description: "The user's moderation strikes, whether they can post right now, and their posts or comments that are held for review or were removed, with the reasons.",
+			InputSchema: limitSchema,
+			ReadOnly:    true,
+			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
+				st, err := loadStanding(ctx, s.d.Pool, caller.UserID)
+				if err != nil {
+					return nil, err
+				}
+				items, err := myContent(ctx, s.d.Pool, caller.UserID, nil, uuid.Nil, toolLimit(input))
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"standing": st, "content": items}, nil
+			},
+		},
+		{
 			Name:        "moderation_queue_summary",
-			Description: "Staff only: open moderation cases, how many are past the 24-hour target, and recent closing times.",
+			Description: "Staff only: open moderation cases, how many are past the 24-hour target, how many screening held, recent closing times, and the decision model's health.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, _ json.RawMessage) (any, error) {

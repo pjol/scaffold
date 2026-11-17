@@ -1,18 +1,23 @@
 // Package moderation is the safety layer every user-generated-content
 // feature requires: reports on any registered content kind or a person,
-// blocks in both directions, a pre-post content filter, and the staff queue
-// that works the reports. Other features use only contract.go.
+// blocks in both directions, a pre-post content filter (Check), screening
+// with rules and an optional decision model (Screen, Record), strikes, and
+// the staff queue that works reports and held items. Other features use
+// contract.go, screen.go's Screen/Record and strikes.go's Strikes,
+// CheckPosting and RestrictedUntil.
 package moderation
 
 import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
@@ -64,7 +69,36 @@ func New(d *app.Deps) *Service {
 	default:
 		config.Problem("MODERATION_PROVIDER must be none or openai (got %q)", p)
 	}
-	checker.Store(newFilter(config.List("MODERATION_BLOCKED_TERMS", ""), provider))
+	terms := config.List("MODERATION_BLOCKED_TERMS", "")
+	checker.Store(newFilter(terms, provider))
+
+	// Screening (Screen): rules, the optional classifier above, the optional
+	// decision model, the strike ladder.
+	brandDomains := config.List("MODERATION_BRAND_DOMAINS", "")
+	if u, err := url.Parse(d.Cfg.PublicWebURL); err == nil && u.Hostname() != "" && !config.IsLocalURL(d.Cfg.PublicWebURL) {
+		brandDomains = append(brandDomains, u.Hostname())
+	}
+	ladder, err := parseLadder(config.String("MODERATION_STRIKE_LIMITS", "3:24h,5:168h"))
+	if err != nil {
+		config.Problem("MODERATION_STRIKE_LIMITS: %v", err)
+		ladder = defaultLadder
+	}
+	timeout := config.Duration("MODERATION_DECISION_TIMEOUT", 3*time.Second)
+	if timeout <= 0 || timeout > 30*time.Second {
+		config.Problem("MODERATION_DECISION_TIMEOUT must be between 1ms and 30s (got %s)", timeout)
+		timeout = 3 * time.Second
+	}
+	screening.Store(&screenConfig{
+		rules:        NewRules(terms, config.List("MODERATION_LINK_DENYLIST", ""), NewBrands(brandDomains...), appName),
+		provider:     provider,
+		thresholds:   DefaultThresholds,
+		ladder:       ladder,
+		modelTimeout: timeout,
+		broker:       d.Broker,
+	})
+	if dm := newDeciderFromEnv(timeout); dm != nil {
+		UseDecider(dm)
+	}
 
 	// Safety tools work for everyone signed in, including people who haven't
 	// accepted updated terms yet: blocking a harasser can't wait.
@@ -81,6 +115,8 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/moderation/blocks/ids", httpx.Handler(s.blockedIDs))
 	r.With(auth.RateLimit(blocksPerHour, time.Hour)).Post("/moderation/blocks", httpx.Handler(s.block))
 	r.Delete("/moderation/blocks/{user_id}", httpx.Handler(s.unblock))
+	r.Get("/moderation/content", httpx.Handler(s.myContent))
+	r.Get("/moderation/standing", httpx.Handler(s.standing))
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
@@ -88,6 +124,37 @@ func (s *Service) MountAdmin(r chi.Router) {
 	r.Get("/moderation/cases", httpx.Handler(s.listCases))
 	r.Get("/moderation/cases/{id}", httpx.Handler(s.getCase))
 	r.Post("/moderation/cases/{id}/actions", httpx.Handler(s.actOnCase))
+	r.With(auth.RequireAdminRole("admin")).Post("/moderation/decision-model/reset", httpx.Handler(s.resetDecisionModel))
+}
+
+// newDeciderFromEnv builds the HTTP decision model from MODERATION_DECISION_*,
+// or nil when MODERATION_DECISION_URL is unset (rules only).
+func newDeciderFromEnv(timeout time.Duration) Decider {
+	endpoint := strings.TrimSpace(config.String("MODERATION_DECISION_URL", ""))
+	key := config.String("MODERATION_DECISION_API_KEY", "")
+	model := config.String("MODERATION_DECISION_MODEL", "")
+	rps := config.Int("MODERATION_DECISION_MAX_RPS", 5)
+	capUSD, err := decimal.NewFromString(strings.TrimSpace(config.String("MODERATION_DECISION_DAILY_USD", "5")))
+	if err != nil || capUSD.IsNegative() {
+		config.Problem("MODERATION_DECISION_DAILY_USD must be a number of dollars, 0 or more (0 = no cap)")
+		capUSD = decimal.NewFromInt(5)
+	}
+	if rps <= 0 {
+		config.Problem("MODERATION_DECISION_MAX_RPS must be a positive number (got %d)", rps)
+		rps = 5
+	}
+	if endpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		config.Problem("MODERATION_DECISION_URL must be an http(s) URL (got %q)", endpoint)
+		return nil
+	}
+	if key == "" {
+		config.Problem("MODERATION_DECISION_API_KEY is required when MODERATION_DECISION_URL is set")
+		return nil
+	}
+	return newHTTPDecider(endpoint, key, model, rps, timeout, capUSD)
 }
 
 // send delivers a notification best-effort.

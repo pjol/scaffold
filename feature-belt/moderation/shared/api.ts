@@ -9,6 +9,9 @@ import type {
   CreateReportRequest,
   ModerationCase,
   ModerationCaseListParams,
+  ModerationContentItem,
+  ModerationDecisionModelHealth,
+  ModerationStanding,
   ModerationSummary,
   MyReport,
 } from "./types";
@@ -32,6 +35,11 @@ export function moderationEndpoints(http: HttpClient) {
     block: (userId: string, o?: CallOptions) => http.post<BlockedUser>(`${M}/blocks`, { user_id: userId }, o),
     /** `DELETE /v1/moderation/blocks/{user_id}` (idempotent). */
     unblock: (userId: string, o?: CallOptions) => http.delete<void>(`${M}/blocks/${seg(userId)}`, o),
+    /** `GET /v1/moderation/content`: your content screening held or staff removed, newest first. */
+    content: (params: { cursor?: string | undefined; limit?: number } = {}, o?: CallOptions) =>
+      http.get<Page<ModerationContentItem>>(`${M}/content`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    /** `GET /v1/moderation/standing`: your strikes and whether you can post. */
+    standing: (o?: CallOptions) => http.get<ModerationStanding>(`${M}/standing`, o),
     admin: {
       /** `GET /v1/admin/moderation/summary`. */
       summary: (o?: CallOptions) => http.get<ModerationSummary>(`${A}/summary`, o),
@@ -45,6 +53,8 @@ export function moderationEndpoints(http: HttpClient) {
       case: (id: string, o?: CallOptions) => http.get<CaseDetail>(`${A}/cases/${seg(id)}`, o),
       /** `POST /v1/admin/moderation/cases/{id}/actions`: closes the case. Audited. */
       act: (id: string, body: CaseActionRequest, o?: CallOptions) => http.post<CaseDetail>(`${A}/cases/${seg(id)}/actions`, body, o),
+      /** `POST /v1/admin/moderation/decision-model/reset` (admin): back on after a refused key or no credit. Audited. */
+      resetDecisionModel: (o?: CallOptions) => http.post<ModerationDecisionModelHealth>(`${A}/decision-model/reset`, {}, o),
     },
   };
 }

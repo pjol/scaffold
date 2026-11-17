@@ -46,6 +46,9 @@ type Gateway interface {
 	// CancelSubscription cancels immediately (no proration credit). An
 	// already-canceled subscription is returned as is.
 	CancelSubscription(ctx context.Context, subscriptionID, idemKey string) (*Subscription, error)
+	// CancelAtPeriodEnd stops a subscription renewing: it ends when the paid
+	// period does, with no refund (StopRenewal). Setting it twice is harmless.
+	CancelAtPeriodEnd(ctx context.Context, subscriptionID string) (*Subscription, error)
 	GetInvoice(ctx context.Context, invoiceID string) (*Invoice, error)
 	// ListPaidInvoices returns a subscription's paid invoices created since
 	// the given time (the reconcile job backfills a missed invoice.paid).

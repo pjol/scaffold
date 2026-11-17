@@ -1,0 +1,189 @@
+{
+  "name": "copytrade",
+  "title": "Copy trading",
+  "version": "1.0.0",
+  "summary": "People copy another trader's positions with an allocation of their own, with risk limits, stops and an optional profit share for the trader.",
+  "requires": [
+    "exchange"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 2900,
+  "env": [
+    {
+      "name": "COPYTRADE_PAUSED",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "false",
+      "doc": "Kill switch: true stops new copies, copied orders, reconcile and resumes. Stops, stop losses, withdrawals and closes still work; copies are not stopped."
+    },
+    {
+      "name": "COPYTRADE_MIN_ALLOCATION",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "50",
+      "doc": "Smallest allocation a copy starts with, in the exchange's quote currency (leaders may ask for more)."
+    },
+    {
+      "name": "COPYTRADE_MAX_PROFIT_SHARE_PCT",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "20",
+      "doc": "Highest profit share a leader may take, in percent of gains above the high-water mark (0–50)."
+    },
+    {
+      "name": "COPYTRADE_MAX_COPIERS_PER_LEADER",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "500",
+      "doc": "Most open copies one leader may have (1–10000); leaders may set fewer."
+    },
+    {
+      "name": "COPYTRADE_MAX_COPIES_PER_FOLLOWER",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "10",
+      "doc": "Most open copies one person may have (1–100)."
+    },
+    {
+      "name": "COPYTRADE_SETTLE_INTERVAL",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "24h",
+      "doc": "How often profit shares are settled (1h–2160h); also on every withdrawal and stop."
+    },
+    {
+      "name": "COPYTRADE_LEADER_MIN_AGE_DAYS",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "30",
+      "dev": "0",
+      "doc": "Default leader rule: the account is at least this many days old (0–3650)."
+    },
+    {
+      "name": "COPYTRADE_LEADER_MIN_FILLS",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "1",
+      "dev": "0",
+      "doc": "Default leader rule: at least this many fills on the person's main trading account."
+    },
+    {
+      "name": "COPYTRADE_EVENT_RETENTION",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "2160h",
+      "doc": "How long copy activity (orders, skips, transfers) is kept (24h or more)."
+    },
+    {
+      "name": "COPYTRADE_WORKERS",
+      "tier": "backend",
+      "group": "copytrade",
+      "required": "optional",
+      "default": "8",
+      "doc": "Parallel workers that place copied orders (1–64)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/copytrade",
+      "dst": "backend/internal/copytrade"
+    },
+    {
+      "src": "backend/feature_copytrade.go",
+      "dst": "backend/internal/api/feature_copytrade.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/copytrade"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/copytrade"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/copytrade"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./copytrade\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { copytradeAdminNav, copytradeHomeTile, copytradeNav, copytradeSettings } from \"./copytrade/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "copytradeNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "copytradeHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "copytradeSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "copytradeAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { copytradeHome, copytradeSettings } from \"./copytrade/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "copytradeHome,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "copytradeSettings,"
+    }
+  ],
+  "stitch": [
+    "Decide whether copy trading may run at all: with real-money collateral it is portfolio management or investment advice in most countries (FEATURE.md → Compliance). With test funds, say so on screen.",
+    "Rewrite the risk disclosure for your product (backend/internal/copytrade/disclosure.go) and change DisclosureVersion when its substance changes.",
+    "Decide who may lead: the default needs an active account COPYTRADE_LEADER_MIN_AGE_DAYS old with COPYTRADE_LEADER_MIN_FILLS fills; replace it with copytrade.SetEligibility (FEATURE.md → Stitching shows a reputation rule).",
+    "Set the limits: COPYTRADE_MIN_ALLOCATION, COPYTRADE_MAX_PROFIT_SHARE_PCT, COPYTRADE_MAX_COPIERS_PER_LEADER, COPYTRADE_MAX_COPIES_PER_FOLLOWER, COPYTRADE_SETTLE_INTERVAL.",
+    "Link to traders: the directory is /leaders; link a person's name elsewhere in the app (profiles, the leaderboard) to /leaders?leader=<user id>, which opens their start sheet.",
+    "With moderation installed, stop copies between people who block each other: call (*copytrade.Service).StopBetween from a stitch (FEATURE.md → Extending).",
+    "Know the kill switch: COPYTRADE_PAUSED=true halts copying without stopping copies (restart to apply)."
+  ]
+}

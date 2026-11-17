@@ -1,0 +1,199 @@
+{
+  "name": "catalog",
+  "title": "Reference catalog",
+  "version": "1.0.0",
+  "summary": "A large reference catalog of items imported nightly from an outside source, searched and resolved by name in memory (exact, alias, close spellings); staff watch the sync log, sync now, and retire or restore items.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 2600,
+  "env": [
+    {
+      "name": "CATALOG_SOURCE",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "",
+      "doc": "Registered source to sync from (http, file, or one the app registers). Unset: http when CATALOG_SOURCE_URL is set, else file when CATALOG_SOURCE_FILE is set, else no syncs."
+    },
+    {
+      "name": "CATALOG_SOURCE_URL",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "",
+      "doc": "The http source: an https URL serving every item as a JSON array or NDJSON (gzip allowed), fetched through safehttp."
+    },
+    {
+      "name": "CATALOG_SOURCE_TOKEN",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "secret": true,
+      "doc": "Bearer token sent to CATALOG_SOURCE_URL, if the feed needs one.",
+      "source": "The catalog provider's API or feed settings."
+    },
+    {
+      "name": "CATALOG_SOURCE_FILE",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "",
+      "doc": "The file source: a JSON array or NDJSON file on the server (development and offline machines; internal/catalog/devdata/elements.ndjson to try it)."
+    },
+    {
+      "name": "CATALOG_SOURCE_MAX_MB",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "256",
+      "doc": "Largest response the http source accepts, in MB after decompression (1 to 4096)."
+    },
+    {
+      "name": "CATALOG_SOURCE_TIMEOUT",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "10m",
+      "doc": "Time a source gets to send the whole catalog (10s to 50m)."
+    },
+    {
+      "name": "CATALOG_SYNC_HOUR",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "3",
+      "doc": "UTC hour of the nightly sync (0 to 23); -1 turns it off (staff and app code can still sync)."
+    },
+    {
+      "name": "CATALOG_MAX_RETIRE_PERCENT",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "40",
+      "doc": "Safety valve: a sync that would retire more than this share of the active items (catalogs of 100 or more) is refused and changes nothing; an empty pull is always refused. Staff can force one."
+    },
+    {
+      "name": "CATALOG_MAX_ITEMS",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "500000",
+      "doc": "Most items a source may send; a sync over it fails (the catalog is held in memory on every instance)."
+    },
+    {
+      "name": "CATALOG_PUBLIC_READS",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "true",
+      "doc": "Serve the catalog, search, items, resolve and the client index without sign-in. false puts them behind sign-in."
+    },
+    {
+      "name": "CATALOG_RELOAD_INTERVAL",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "30s",
+      "doc": "How often each instance checks the catalog version and reloads after a change elsewhere (1s to 10m)."
+    },
+    {
+      "name": "CATALOG_RESOLVE_PER_MINUTE",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "30",
+      "doc": "Resolve requests (up to 500 names each) per person, or per IP when signed out, per minute."
+    },
+    {
+      "name": "CATALOG_CLIENT_INDEX_MAX",
+      "tier": "backend",
+      "group": "catalog",
+      "required": "optional",
+      "default": "20000",
+      "doc": "Largest catalog served as a compact index for search on the device (GET /v1/catalog/index); larger ones are searched on the server only. 0 turns it off."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/catalog",
+      "dst": "backend/internal/catalog"
+    },
+    {
+      "src": "backend/feature_catalog.go",
+      "dst": "backend/internal/api/feature_catalog.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/catalog"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/catalog"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/catalog"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./catalog\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { catalogAdminNav, catalogHomeTile, catalogNav } from \"./catalog/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "catalogNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "catalogHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "catalogAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { catalogHome } from \"./catalog/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "catalogHome,"
+    }
+  ],
+  "stitch": [
+    "Decide who reads the catalog: anyone (default) or signed-in people (CATALOG_PUBLIC_READS=false). Rename \"Catalog\" in web/src/features/catalog/nav.ts and mobile/src/features/catalog/registry.tsx to what the product calls it.",
+    "Choose the source: CATALOG_SOURCE_URL for a JSON array or NDJSON feed (CATALOG_SOURCE_TOKEN if it needs one), or catalog.RegisterSource(\"name\", factory) from an init() in backend/internal/api/stitch_catalog.go for any other API, then CATALOG_SOURCE=name. Map the outside fields to Item: key (stable), name, aliases, category, subtitle, image_url, attrs, ref_price and currency.",
+    "Set CATALOG_SYNC_HOUR after the source's own daily refresh, and CATALOG_MAX_RETIRE_PERCENT to the largest drop that can be real; run Admin → Catalog → Sync now once and read the log.",
+    "Consumers call Service.Lookup, Service.Search and Service.Item (find the Service among d.Modules with a type assertion, or import the package when your feature requires catalog); treat Match \"fuzzy\" as a guess to confirm, and Item.Retired as \"no longer listed\".",
+    "Image hosts: item images render unoptimised on web unless their host is in next.config.ts images.remotePatterns and web/src/lib/images.ts.",
+    "Replace the development elements (backend/internal/catalog/devdata/elements.ndjson, seeded by cmd/seed into an empty catalog) with a sample of your own source."
+  ]
+}

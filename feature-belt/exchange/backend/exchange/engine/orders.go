@@ -17,6 +17,8 @@ type orderReq struct {
 	slippageBps           int
 	ephemeral             bool
 	skipMargin, skipBands bool
+	source, clientRef     string
+	avoid                 map[string]bool
 }
 
 func parseDec(s, field string) (decimal.Decimal, error) {
@@ -54,10 +56,21 @@ func (r PlaceOrder) parse() (orderReq, error) {
 	return q, nil
 }
 
-// PlaceOrder validates, matches and (for limits) rests an order.
+// PlaceOrder validates, matches and (for limits) rests an order placed by
+// the account holder (Source "user").
 func (e *Engine) PlaceOrder(accountID string, req PlaceOrder) (OrderView, []Fill, error) {
+	return e.PlaceOrderWith(accountID, req, PlaceOpts{})
+}
+
+// PlaceOrderWith is PlaceOrder on someone's behalf (an agent, a module): the
+// order records opts.Source and opts.ClientRef, and never trades with
+// opts.AvoidMakers' resting orders (a crossing one is cancelled instead).
+func (e *Engine) PlaceOrderWith(accountID string, req PlaceOrder, opts PlaceOpts) (OrderView, []Fill, error) {
 	q, err := req.parse()
 	if err != nil {
+		return OrderView{}, nil, err
+	}
+	if err := q.withOpts(opts); err != nil {
 		return OrderView{}, nil, err
 	}
 	e.mu.Lock()
@@ -214,15 +227,19 @@ func (e *Engine) place(c *cmd, a *Account, q orderReq) (*Order, []Fill, error) {
 			worst = m.mark.Mul(one.Sub(slip))
 			worst = worst.Div(m.tick).Ceil().Mul(m.tick)
 		}
-		if !e.hasLiquidity(m, a.ID, q.side, worst) {
+		if !e.hasLiquidity(m, a, q.side, worst, q.avoid) {
 			return nil, nil, reject("no_liquidity", "No liquidity within the slippage limit.")
 		}
 	}
 	now := e.nowMs()
+	src := q.source
+	if src == "" {
+		src = SourceUser
+	}
 	o := &Order{
 		ID: newID(), AccountID: a.ID, Symbol: q.sym, MarketID: m.spec.ID, Side: q.side, Type: q.typ, Px: worst, Sz: q.sz,
 		Status: StatusOpen, ReduceOnly: q.reduceOnly, PostOnly: q.postOnly, Leverage: q.lev,
-		CreatedMs: now, UpdatedMs: now, Ephemeral: q.ephemeral,
+		CreatedMs: now, UpdatedMs: now, Ephemeral: q.ephemeral, Source: src, ClientRef: q.clientRef, avoid: q.avoid,
 	}
 	if !a.IsSystem() && !q.skipMargin {
 		before := e.risk(a, nil, "", 0)
@@ -252,6 +269,7 @@ func (e *Engine) place(c *cmd, a *Account, q orderReq) (*Order, []Fill, error) {
 	if !q.postOnly {
 		fills = e.match(c, m, o, a, false)
 	}
+	o.avoid = nil // only while matching
 	switch {
 	case !o.Remaining().IsPositive():
 		o.Status = StatusFilled
@@ -272,7 +290,7 @@ func (e *Engine) place(c *cmd, a *Account, q orderReq) (*Order, []Fill, error) {
 	return o, fills, nil
 }
 
-func (e *Engine) hasLiquidity(m *market, self, side string, worst decimal.Decimal) bool {
+func (e *Engine) hasLiquidity(m *market, a *Account, side string, worst decimal.Decimal, avoid map[string]bool) bool {
 	book := m.asks
 	if side == Sell {
 		book = m.bids
@@ -281,11 +299,23 @@ func (e *Engine) hasLiquidity(m *market, self, side string, worst decimal.Decima
 		if !crosses(side, worst, o.Px) {
 			return false
 		}
-		if o.AccountID != self {
+		if !e.avoids(a, avoid, o) {
 			return true
 		}
 	}
 	return false
+}
+
+// avoids reports whether taker account ta must not trade with maker order mk:
+// the same account, the same person (a main account and their sub-accounts,
+// or two sub-accounts of one person) or a maker the taker avoids
+// (PlaceOpts.AvoidMakers).
+func (e *Engine) avoids(ta *Account, avoid map[string]bool, mk *Order) bool {
+	if mk.AccountID == ta.ID || avoid[mk.AccountID] {
+		return true
+	}
+	ma := e.accounts[mk.AccountID]
+	return ma != nil && ta.Person() != "" && ma.Person() == ta.Person()
 }
 
 func (e *Engine) emitOrder(c *cmd, a *Account, o *Order) {
@@ -297,7 +327,8 @@ func (e *Engine) emitOrder(c *cmd, a *Account, o *Order) {
 	c.emit(func(p Publisher) { p.AccountEvent(id, AccountEvent{Type: "order", Order: &v}) })
 }
 
-// match crosses taker against the opposite book. Self-trades expire the maker.
+// match crosses taker against the opposite book. Self-trades (owner-wide,
+// and against makers the taker avoids) expire the maker.
 func (e *Engine) match(c *cmd, m *market, taker *Order, ta *Account, liq bool) []Fill {
 	var fills []Fill
 	for taker.Remaining().IsPositive() {
@@ -312,7 +343,7 @@ func (e *Engine) match(c *cmd, m *market, taker *Order, ta *Account, liq bool) [
 		if !crosses(taker.Side, taker.Px, mk.Px) {
 			break
 		}
-		if mk.AccountID == taker.AccountID {
+		if e.avoids(ta, taker.avoid, mk) {
 			e.cancel(c, mk) // self-trade prevention: expire maker
 			continue
 		}
@@ -499,6 +530,11 @@ func (e *Engine) cancelAll(c *cmd, a *Account, symbol string) int {
 
 // ClosePosition market-closes sz (default all) of a position.
 func (e *Engine) ClosePosition(accountID, symbol string, sz string) (OrderView, []Fill, error) {
+	return e.ClosePositionWith(accountID, symbol, sz, PlaceOpts{})
+}
+
+// ClosePositionWith is ClosePosition carrying opts (PlaceOrderWith).
+func (e *Engine) ClosePositionWith(accountID, symbol string, sz string, opts PlaceOpts) (OrderView, []Fill, error) {
 	symbol = strings.ToUpper(symbol)
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -513,6 +549,9 @@ func (e *Engine) ClosePosition(accountID, symbol string, sz string) (OrderView, 
 	q := orderReq{sym: symbol, side: Sell, typ: TypeMarket, sz: p.Sz.Abs(), lev: p.Leverage, reduceOnly: true}
 	if p.Sz.IsNegative() {
 		q.side = Buy
+	}
+	if err := q.withOpts(opts); err != nil {
+		return OrderView{}, nil, err
 	}
 	if sz != "" {
 		d, err := parseDec(sz, "sz")

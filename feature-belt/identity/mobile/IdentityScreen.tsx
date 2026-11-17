@@ -5,6 +5,7 @@ import * as WebBrowser from "expo-web-browser";
 import { BadgeCheck, Clock, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
 import { View } from "react-native";
+import { IdentityBadgesSections } from "./BadgesSections";
 
 function dateText(iso: string | null): string {
   if (!iso) return "";
@@ -155,7 +156,7 @@ function Body_({ status }: { status: IdentityStatus }) {
   }
 }
 
-/** Settings → Verification: status and the next step. */
+/** Settings → Verification: ID verification status and the next step, then badges. */
 export function IdentityScreen() {
   const theme = useTheme();
   const s = theme.space;
@@ -169,7 +170,10 @@ export function IdentityScreen() {
       ) : status.isError ? (
         <ErrorState title="Couldn't load your verification" info={errorMessage(status.error)} onRetry={() => void status.refetch()} retrying={status.isRefetching} />
       ) : (
-        <Body_ status={status.data} />
+        <>
+          <Body_ status={status.data} />
+          <IdentityBadgesSections />
+        </>
       )}
     </Screen>
   );

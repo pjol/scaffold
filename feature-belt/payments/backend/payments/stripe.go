@@ -229,6 +229,16 @@ func (g *stripeGateway) CancelSubscription(ctx context.Context, subscriptionID, 
 	return subscriptionFromStripe(sub), nil
 }
 
+func (g *stripeGateway) CancelAtPeriodEnd(ctx context.Context, subscriptionID string) (*Subscription, error) {
+	sub, err := g.sc.V1Subscriptions.Update(ctx, subscriptionID, &stripe.SubscriptionUpdateParams{
+		CancelAtPeriodEnd: stripe.Bool(true),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return subscriptionFromStripe(sub), nil
+}
+
 func (g *stripeGateway) GetInvoice(ctx context.Context, invoiceID string) (*Invoice, error) {
 	p := &stripe.InvoiceRetrieveParams{}
 	p.AddExpand("payments")

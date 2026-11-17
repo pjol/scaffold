@@ -1,0 +1,134 @@
+{
+  "name": "forum",
+  "title": "Forum",
+  "version": "1.0.0",
+  "summary": "People post text and links to communities, comment in threads, vote posts up or down (hot, new, top), mention each other, and moderators pin, lock and remove; every post is screened and held posts wait for review.",
+  "requires": [
+    "moderation",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 3400,
+  "env": [
+    {
+      "name": "FORUM_POST_MAX_CHARS",
+      "tier": "backend",
+      "group": "forum",
+      "required": "optional",
+      "default": "10000",
+      "doc": "Longest post text accepted, in characters (Markdown included)."
+    },
+    {
+      "name": "FORUM_COMMENT_MAX_CHARS",
+      "tier": "backend",
+      "group": "forum",
+      "required": "optional",
+      "default": "5000",
+      "doc": "Longest comment accepted, in characters."
+    },
+    {
+      "name": "FORUM_VOTE_MIN_AGE",
+      "tier": "backend",
+      "group": "forum",
+      "required": "optional",
+      "default": "0s",
+      "doc": "How old an account must be before it can vote (e.g. 24h for a public forum); 0s lets everyone vote."
+    },
+    {
+      "name": "FORUM_KARMA_MIN_AGE",
+      "tier": "backend",
+      "group": "forum",
+      "required": "optional",
+      "default": "168h",
+      "doc": "Votes from accounts younger than this move scores but don't count toward the author's karma."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/forum",
+      "dst": "backend/internal/forum"
+    },
+    {
+      "src": "backend/feature_forum.go",
+      "dst": "backend/internal/api/feature_forum.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/forum"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/forum"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/forum"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./forum\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { forumAdminNav, forumHomeTile, forumNav, forumNewPostAction } from \"./forum/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "forumNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "forumHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "forumAdminNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "forumNewPostAction,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { forumHome } from \"./forum/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "forumHome,"
+    }
+  ],
+  "stitch": [
+    "Decide the communities: create them in Admin → Forum, or from app code call forum.EnsureCommunity(ctx, tx, forum.CommunitySpec{RefKind, RefID, Title, Description}) when one of your objects is created (one community per product, place or event). Write each community's description: screening uses it to judge what's off-topic.",
+    "Name community moderators (Admin → Forum → a community → Moderators); staff moderate every community and work held posts and reports in Admin → Moderation.",
+    "Decide FORUM_VOTE_MIN_AGE (24h for a public forum) and FORUM_KARMA_MIN_AGE, and tune moderation's screening (MODERATION_BRAND_DOMAINS, MODERATION_LINK_DENYLIST, MODERATION_STRIKE_LIMITS, the optional decision model).",
+    "Place the entry: the nav item, home tile and ⌘K action ship on web, a Home row on mobile; move them or add a tab in the registries if the forum is central.",
+    "Optional: label posts with your own facts through forum.SetLabeler (from an init() in backend/internal/api/stitch_forum.go) and name the labels in FORUM_LABELS (packages/shared/src/forum/types.ts).",
+    "Add the forum to the privacy policy and store data-safety forms: posts, comments, votes and mentions people make; post titles appear in push notifications."
+  ]
+}

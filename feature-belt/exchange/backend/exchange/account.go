@@ -55,13 +55,19 @@ func TransferStatus(ctx context.Context, q db.Querier, transferID string) (statu
 
 // ---- account deletion and export ----
 
-// DeleteAccount unlinks the user's trading account and marks it closing: the
-// engine then cancels its orders, hands its positions and balance to the
-// backstop and closes it. Its orders, fills and ledger stay as anonymous
-// financial records. Pending transfers are rejected.
+// DeleteAccount unlinks the user's trading account and their sub-accounts
+// and marks them closing: the engine then cancels their orders, hands their
+// positions and balances to the backstop and closes them. Their orders,
+// fills and ledger stay as anonymous financial records. Pending transfers are
+// rejected.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `UPDATE exchange_accounts SET status = 'closing', user_id = NULL, updated_at = now()
 		WHERE user_id = $1 AND status = 'active'`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE exchange_accounts SET status = CASE WHEN status = 'closed' THEN status ELSE 'closing' END,
+		  owner_id = NULL, updated_at = now()
+		WHERE owner_id = $1 AND kind = 'sub'`, userID); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE exchange_transfers SET status = 'rejected', reason = 'The account was deleted.', settled_at = now()
@@ -69,12 +75,17 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 	return err
 }
 
-// AccountDeleted closes the account out right away when this instance runs
+// AccountDeleted closes the accounts out right away when this instance runs
 // the engine (otherwise the engine's inbox does it within a second).
 func (s *Service) AccountDeleted(ctx context.Context, userID uuid.UUID) error {
 	eng := s.engine()
 	if eng == nil {
 		return nil
+	}
+	for _, sub := range eng.Subaccounts(userID.String()) {
+		if err := eng.CloseAccount(sub.ID); err != nil {
+			return err
+		}
 	}
 	if id, ok := eng.AccountForUser(userID.String()); ok {
 		return eng.CloseAccount(id)
@@ -83,8 +94,46 @@ func (s *Service) AccountDeleted(ctx context.Context, userID uuid.UUID) error {
 }
 
 // ExportAccount returns the user's trading account, positions, orders,
-// fills, funding payments, ledger and transfers.
+// fills, funding payments, ledger and transfers, and the same for each of
+// their sub-accounts.
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
+	out, err := s.exportMain(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.d.Pool.Query(ctx, `SELECT id::text, label, status, balance::text, deposits::text, created_at FROM exchange_accounts
+		WHERE owner_id = $1 AND kind = 'sub' ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	type sub struct {
+		ID        string    `json:"id"`
+		Purpose   string    `json:"purpose"`
+		Status    string    `json:"status"`
+		Balance   string    `json:"balance"`
+		Deposits  string    `json:"deposits"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	subs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (sub, error) {
+		var x sub
+		return x, r.Scan(&x.ID, &x.Purpose, &x.Status, &x.Balance, &x.Deposits, &x.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	list := make([]map[string]any, 0, len(subs))
+	for _, x := range subs {
+		m := map[string]any{"account": x}
+		if err := s.exportHistory(ctx, x.ID, m); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	out["subaccounts"] = list
+	return out, nil
+}
+
+func (s *Service) exportMain(ctx context.Context, userID uuid.UUID) (map[string]any, error) {
 	var acct struct {
 		ID        string    `json:"id"`
 		Status    string    `json:"status"`
@@ -101,11 +150,32 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		return nil, err
 	}
 	out := map[string]any{"account": acct, "quote_currency": s.quoteCurrency}
+	if err := s.exportHistory(ctx, acct.ID, out); err != nil {
+		return nil, err
+	}
+	rows, err := s.d.Pool.Query(ctx, `SELECT kind, amount::text, status, reason, note, created_at, settled_at FROM exchange_transfers
+		WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("export transfers: %w", err)
+	}
+	transfers, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		return nil, fmt.Errorf("export transfers: %w", err)
+	}
+	if transfers == nil {
+		transfers = []map[string]any{}
+	}
+	out["transfers"] = transfers
+	return out, nil
+}
+
+// exportHistory adds one account's positions, orders, fills, funding and ledger to out.
+func (s *Service) exportHistory(ctx context.Context, accountID string, out map[string]any) error {
 	queries := map[string]string{
 		"positions": `SELECT m.symbol, p.sz::text, p.entry_px::text, p.leverage, p.funding_since_open::text, p.updated_at
 			FROM exchange_positions p JOIN exchange_markets m ON m.id = p.market_id WHERE p.account_id = $1 AND p.sz <> 0`,
 		"orders": `SELECT o.id::text, m.symbol, o.side, o.type, o.px::text, o.sz::text, o.filled_sz::text, o.status, o.reduce_only,
-			  o.post_only, o.leverage, o.liquidation, o.created_at, o.updated_at
+			  o.post_only, o.leverage, o.liquidation, o.source, o.created_at, o.updated_at
 			FROM exchange_orders o JOIN exchange_markets m ON m.id = o.market_id WHERE o.account_id = $1 ORDER BY o.created_at`,
 		"fills": `SELECT f.id::text, f.order_id::text, m.symbol, f.side, f.px::text, f.sz::text, f.fee::text, f.realized_pnl::text,
 			  f.liquidity, f.liquidation, f.created_at
@@ -114,28 +184,22 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 			FROM exchange_funding_payments f JOIN exchange_markets m ON m.id = f.market_id WHERE f.account_id = $1 ORDER BY f.created_at`,
 		"ledger": `SELECT l.kind, l.amount::text, COALESCE(m.symbol, ''), l.note, l.created_at
 			FROM exchange_ledger l LEFT JOIN exchange_markets m ON m.id = l.market_id WHERE l.account_id = $1 ORDER BY l.created_at`,
-		"transfers": `SELECT kind, amount::text, status, reason, note, created_at, settled_at FROM exchange_transfers
-			WHERE user_id = $1 ORDER BY created_at`,
 	}
 	for name, q := range queries {
-		arg := any(acct.ID)
-		if name == "transfers" {
-			arg = userID
-		}
-		rows, err := s.d.Pool.Query(ctx, q, arg)
+		rows, err := s.d.Pool.Query(ctx, q, accountID)
 		if err != nil {
-			return nil, fmt.Errorf("export %s: %w", name, err)
+			return fmt.Errorf("export %s: %w", name, err)
 		}
 		list, err := pgx.CollectRows(rows, pgx.RowToMap)
 		if err != nil {
-			return nil, fmt.Errorf("export %s: %w", name, err)
+			return fmt.Errorf("export %s: %w", name, err)
 		}
 		if list == nil {
 			list = []map[string]any{}
 		}
 		out[name] = list
 	}
-	return out, nil
+	return nil
 }
 
 // ---- development data ----

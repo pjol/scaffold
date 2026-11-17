@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/notify"
 )
@@ -62,6 +63,7 @@ func (s *Service) fetch(ctx context.Context, ev *Event) (*snapshot, error) {
 }
 
 func (s *Service) apply(ctx context.Context, tx pgx.Tx, ev *Event, snap *snapshot, fx *effects) error {
+	ctx = withEffects(ctx, fx) // hooks queue AfterCommit work on fx
 	switch ev.Type {
 	case EventCheckout:
 		return s.syncCheckout(ctx, tx, snap.checkout, snap.sub)
@@ -79,9 +81,11 @@ func (s *Service) apply(ctx context.Context, tx pgx.Tx, ev *Event, snap *snapsho
 }
 
 // effects are side effects collected inside a transaction and sent after it
-// commits (best-effort).
+// commits (best-effort): notifications, and hooks' AfterCommit work.
 type effects struct {
 	notes []notify.Notification
+	after []afterWork
+	drop  bool // account deletion: AfterCommit work is discarded
 }
 
 func (s *Service) flush(ctx context.Context, fx *effects) {
@@ -90,6 +94,10 @@ func (s *Service) flush(ctx context.Context, fx *effects) {
 			slog.WarnContext(ctx, "payments: notify failed", "kind", n.Kind, "user_id", n.UserID, "err", err)
 		}
 	}
+	for _, w := range fx.after {
+		bg.Go(ctx, w.name, w.fn)
+	}
+	fx.notes, fx.after = nil, nil
 }
 
 // ---- orders ------------------------------------------------------------------
@@ -341,16 +349,24 @@ func (s *Service) grantOrder(ctx context.Context, tx pgx.Tx, o Order, price *Adm
 	if gone, err := userDeleted(ctx, tx, o.UserID); err != nil || gone {
 		return err
 	}
+	now := time.Now().UTC()
 	var until *time.Time
 	if price.EntitlementDays != nil {
-		t := time.Now().UTC().AddDate(0, 0, *price.EntitlementDays)
+		t := now.AddDate(0, 0, *price.EntitlementDays)
 		until = &t
 	}
-	_, err := tx.Exec(ctx, `
+	var inserted bool
+	err := tx.QueryRow(ctx, `
 		INSERT INTO payment_entitlements (user_id, key, source, source_id, active_until)
-		VALUES ($1, $2, 'order', $3, $4) ON CONFLICT (source, source_id, key) DO NOTHING`,
-		o.UserID, *price.Entitlement, o.ID, until)
-	return err
+		VALUES ($1, $2, 'order', $3, $4) ON CONFLICT (source, source_id, key) DO NOTHING RETURNING true`,
+		o.UserID, *price.Entitlement, o.ID, until).Scan(&inserted)
+	if db.IsNoRows(err) {
+		return nil // already granted
+	}
+	if err != nil {
+		return err
+	}
+	return entitlementMoved(ctx, tx, o.UserID, *price.Entitlement, "order", o.ID, rowState{}, rowState{exists: true, until: until}, now)
 }
 
 // ---- subscriptions -------------------------------------------------------------
@@ -469,22 +485,33 @@ func (s *Service) syncSubscription(ctx context.Context, tx pgx.Tx, sub *Subscrip
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	if price != nil && price.Entitlement != nil && !gone {
 		keep = *price.Entitlement
+		before, err := lockEntitlement(ctx, tx, "subscription", ref.id, keep)
+		if err != nil {
+			return nil, err
+		}
+		until := accessUntil(sub, s.cfg.renewalGrace, now)
+		// An end already passed counts as reported (announced as revoked
+		// here, or never active), so the lapse sweep skips it.
+		ended := !until.After(now)
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO payment_entitlements (user_id, key, source, source_id, active_until)
-			VALUES ($1, $2, 'subscription', $3, $4)
-			ON CONFLICT (source, source_id, key) DO UPDATE SET active_until = EXCLUDED.active_until, updated_at = now()`,
-			userID, keep, ref.id, accessUntil(sub, s.cfg.renewalGrace, time.Now().UTC())); err != nil {
+			INSERT INTO payment_entitlements (user_id, key, source, source_id, active_until, end_reported_at)
+			VALUES ($1, $2, 'subscription', $3, $4, CASE WHEN $5 THEN now() END)
+			ON CONFLICT (source, source_id, key) DO UPDATE SET active_until = EXCLUDED.active_until,
+			  end_reported_at = CASE WHEN $5 THEN COALESCE(payment_entitlements.end_reported_at, now()) END,
+			  updated_at = now()`,
+			userID, keep, ref.id, until, ended); err != nil {
+			return nil, err
+		}
+		if err := entitlementMoved(ctx, tx, userID, keep, "subscription", ref.id, before, rowState{exists: true, until: &until}, now); err != nil {
 			return nil, err
 		}
 	}
 	// A plan change can move the subscription to a price with a different
 	// entitlement (or none): end what it no longer carries.
-	if _, err := tx.Exec(ctx, `
-		UPDATE payment_entitlements SET active_until = now(), updated_at = now()
-		WHERE source = 'subscription' AND source_id = $1 AND key <> $2
-		  AND (active_until IS NULL OR active_until > now())`, ref.id, keep); err != nil {
+	if err := revokeSource(ctx, tx, "subscription", ref.id, keep, now); err != nil {
 		return nil, err
 	}
 	return ref, nil
@@ -663,8 +690,7 @@ func (s *Service) settleOrders(ctx context.Context, tx pgx.Tx, paymentID string)
 			return err
 		}
 		if status == "refunded" && o.Status != "refunded" {
-			if _, err := tx.Exec(ctx, `UPDATE payment_entitlements SET active_until = now(), updated_at = now()
-				WHERE source = 'order' AND source_id = $1 AND (active_until IS NULL OR active_until > now())`, o.ID); err != nil {
+			if err := revokeSource(ctx, tx, "order", o.ID, "", time.Now().UTC()); err != nil {
 				return err
 			}
 			o.RefundedMinor, o.Status = total, status

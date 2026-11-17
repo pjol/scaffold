@@ -1,0 +1,216 @@
+{
+  "name": "baskets",
+  "title": "Baskets",
+  "version": "1.0.0",
+  "summary": "People turn a pasted list of markets into a composite market anyone can trade: lines resolve and price live, the same basket always maps to the same market, idle baskets archive themselves and come back when created again.",
+  "requires": [
+    "exchange",
+    "oracle"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 3200,
+  "env": [
+    {
+      "name": "BASKETS_SYMBOL_PREFIX",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "BKT",
+      "doc": "Symbol prefix of basket markets (1–11 of A–Z, 0–9): BKT-7KQ2M9."
+    },
+    {
+      "name": "BASKETS_MIN_VALUE",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "20",
+      "doc": "Smallest basket value (Σ quantity × price, in the exchange's quote currency) that can be listed."
+    },
+    {
+      "name": "BASKETS_MIN_LINES",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "2",
+      "doc": "Fewest different markets in a basket (1–100)."
+    },
+    {
+      "name": "BASKETS_MAX_LINES",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "100",
+      "doc": "Most different markets in a basket (BASKETS_MIN_LINES–100; the oracle prices up to 100 parts)."
+    },
+    {
+      "name": "BASKETS_MAX_LEVERAGE",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "3",
+      "doc": "Max leverage of a new basket market; about half (rounded up) when one line is over half the value."
+    },
+    {
+      "name": "BASKETS_MIN_ORDER",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "10",
+      "doc": "Minimum order (notional) on a new basket market."
+    },
+    {
+      "name": "BASKETS_OI_CAP_MIN",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "5000",
+      "doc": "Smallest open interest cap of a new basket market (the cap is 100 × its value, clamped, halved when concentrated)."
+    },
+    {
+      "name": "BASKETS_OI_CAP_MAX",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "50000",
+      "doc": "Largest open interest cap of a new basket market."
+    },
+    {
+      "name": "BASKETS_PER_DAY",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "5",
+      "doc": "New baskets one person may list per 24 hours (joining an existing basket doesn't count)."
+    },
+    {
+      "name": "BASKETS_PER_MONTH",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "20",
+      "doc": "New baskets one person may list per 30 days."
+    },
+    {
+      "name": "BASKETS_CAPACITY",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "5000",
+      "doc": "Baskets that may be listed (not archived) at once; creating or reviving one past it is refused until others archive."
+    },
+    {
+      "name": "BASKETS_IDLE_DAYS",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "14",
+      "doc": "A basket with no open positions and no trading by people for this many days is archived (its market halted, its page kept)."
+    },
+    {
+      "name": "BASKETS_END_GRACE_DAYS",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "30",
+      "doc": "Days after a basket's end date before it winds down: reduce-only while people hold positions, archived once they've closed."
+    },
+    {
+      "name": "BASKETS_REPORTS_TO_FLAG",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "3",
+      "doc": "Open reports that take a basket out of discovery until staff review it (it still trades)."
+    },
+    {
+      "name": "BASKETS_BLOCKED_TERMS",
+      "tier": "backend",
+      "group": "baskets",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated words and phrases basket names and descriptions may not use (matched as whole words, case, accents and digit swaps ignored). Add the app's own name."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/baskets",
+      "dst": "backend/internal/baskets"
+    },
+    {
+      "src": "backend/feature_baskets.go",
+      "dst": "backend/internal/api/feature_baskets.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/baskets"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/baskets"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/baskets"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./baskets\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { basketsAdminNav, basketsHomeTile, basketsNav } from \"./baskets/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "basketsNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "basketsHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "basketsAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { basketsHome } from \"./baskets/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "basketsHome,"
+    }
+  ],
+  "stitch": [
+    "Stitch the exchange to the oracle first (exchange FEATURE.md → Stitching step 2): basket markets get their index price from their oracle basket feed through it; without it they trade only on development seed prices.",
+    "Decide what a line may name: the exchange's markets (default), or a larger reference catalog through baskets.SetResolver (FEATURE.md → Stitching shows the catalog feature plugged in).",
+    "Set the limits for your audience: BASKETS_MIN_VALUE, BASKETS_PER_DAY / BASKETS_PER_MONTH, BASKETS_CAPACITY, BASKETS_IDLE_DAYS, and the spec knobs (BASKETS_MAX_LEVERAGE, BASKETS_MIN_ORDER, BASKETS_OI_CAP_MIN / MAX) in the exchange's quote currency.",
+    "Names and descriptions are user content: fill BASKETS_BLOCKED_TERMS (include the app's own name); with the moderation feature installed, add baskets.SetTextCheck(moderation.Check) in an init(). Staff work reports in Admin → Baskets.",
+    "Basket markets appear on the exchange's Markets screen under the Baskets category; rename \"Baskets\" in web/src/features/baskets/registry.ts and mobile/src/features/baskets/registry.tsx if the product calls them something else."
+  ]
+}

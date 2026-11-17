@@ -31,12 +31,14 @@ import (
 //     (the retention job then purges these rows too); a customer with no
 //     money movement is removed on the job's next run.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	if err := deleteEntitlements(ctx, tx, userID); err != nil {
+		return err
+	}
 	for _, q := range []string{
 		`UPDATE payment_subscriptions SET cancel_pending = true, updated_at = now()
 		 WHERE user_id = $1 AND status IN ('incomplete', 'trialing', 'active', 'past_due', 'unpaid', 'paused')`,
 		`UPDATE payment_checkout_sessions SET status = 'expired', url = NULL, updated_at = now()
 		 WHERE user_id = $1 AND status = 'pending'`,
-		`DELETE FROM payment_entitlements WHERE user_id = $1`,
 		`UPDATE payment_prices SET active = false, updated_at = now() WHERE destination_user_id = $1 AND active`,
 		`UPDATE payment_connected_accounts SET charges_enabled = false, updated_at = now() WHERE user_id = $1`,
 	} {
@@ -51,6 +53,37 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		  ELSE now() END
 		WHERE user_id = $1 AND delete_after IS NULL`, userID, s.cfg.retentionYears)
 	return err
+}
+
+// deleteEntitlements deletes the user's entitlements and announces each key
+// they held (Cause deleted). AfterCommit work from those hooks is dropped.
+func deleteEntitlements(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	now := time.Now().UTC()
+	rows, err := tx.Query(ctx, `DELETE FROM payment_entitlements WHERE user_id = $1
+		RETURNING key, (active_until IS NULL OR active_until > $2)`, userID, now)
+	if err != nil {
+		return err
+	}
+	type gone struct {
+		Key    string
+		Active bool
+	}
+	list, err := pgx.CollectRows(rows, pgx.RowToStructByPos[gone])
+	if err != nil {
+		return err
+	}
+	ctx = withEffects(ctx, &effects{drop: true})
+	held := map[string]bool{}
+	for _, g := range list {
+		if !g.Active || held[g.Key] {
+			continue
+		}
+		held[g.Key] = true
+		if err := runEntitlementHooks(ctx, tx, EntitlementChange{UserID: userID, Key: g.Key, Cause: EntitlementDeleted}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AccountDeleted runs after the deletion commits: cancel the user's live

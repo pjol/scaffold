@@ -4,7 +4,7 @@
 
 - Perpetual futures on any asset the app prices: markets come from the app's catalog (database rows, seeded from `EXCHANGE_CATALOG_FILE`, `UpsertCatalog` or Admin → Exchange), each with max leverage, tick size, size step, minimum order and an open interest cap.
 - Price-time priority order books; market orders (IOC within a slippage limit from the mark) and limit orders, reduce-only and post-only; self-trades expire the resting order; maker and taker fees.
-- One cross-margin account per person in the quote currency (`EXCHANGE_QUOTE_CURRENCY`): a ledger of every balance change, an optional test-funds faucet, and deposits/withdrawals the app makes with `exchange.Deposit` / `exchange.Withdraw`.
+- One cross-margin account per person in the quote currency (`EXCHANGE_QUOTE_CURRENCY`): a ledger of every balance change, an optional test-funds faucet, and deposits/withdrawals the app makes with `exchange.Deposit` / `exchange.Withdraw`. Modules can give a person sub-accounts (a copy trade's account) funded by internal transfer; they never count as separate people.
 - Mark price (median of index + EMA basis, book and index, clamped to ±10% of the index and rate-limited to 0.3%/s), funding every `EXCHANGE_FUNDING_INTERVAL` from impact prices, liquidations into the book (20% at a time above `EXCHANGE_LIQ_PARTIAL_NOTIONAL`) and a backstop account that takes over accounts below 2/3 of maintenance margin and absorbs bad debt.
 - Live market data: 1m–1d candles with history paging (1d continues into the price feed's daily history), sparklines, L2 book, trade tape and 24h stats over REST and realtime.
 - Optional simulated market maker and 12 traders (`EXCHANGE_SIM_ENABLED`) for demos; their trades are flagged `sim` and stats show the simulated share.
@@ -14,11 +14,11 @@
 | Table | Purpose |
 |---|---|
 | `exchange_markets` | the catalog; `status` (active / reduce_only / halted) and `manual_price` belong to admins |
-| `exchange_accounts` | one per user (`user_id`), plus system (backstop, fees) and simulated accounts; `balance`, `deposits` (PnL = account value − deposits) |
+| `exchange_accounts` | one main account per user (`user_id`, unique), people's sub-accounts (`kind` sub, `owner_id`, purpose in `label`), system (backstop, fees) and simulated accounts; `balance`, `deposits` (PnL = account value − deposits) |
 | `exchange_positions` | signed size, entry, leverage, funding since open |
-| `exchange_orders` | every order; open ones rebuild the books on boot |
+| `exchange_orders` | every order with its `source` (user, agent, copy, liquidation, system, a module) and the caller's `client_ref`; open ones rebuild the books on boot |
 | `exchange_trades` | public tape (pruned after `EXCHANGE_TRADE_RETENTION`), sim flag per side |
-| `exchange_fills`, `exchange_ledger`, `exchange_funding_payments`, `exchange_liquidations` | an account's private history (users only) |
+| `exchange_fills`, `exchange_ledger`, `exchange_funding_payments`, `exchange_liquidations` | an account's private history (people's main and sub-accounts); ledger kinds include `transfer` and `profit_share` |
 | `exchange_funding_rates` | each market's hourly rate, premium and index at settlement |
 | `exchange_candles` | 1m candles (`t` unix ms); longer intervals aggregate them |
 | `exchange_candle_backfill` | daily bars from the price feed's history (`PriceHistory`) |
@@ -48,11 +48,11 @@ All under `/v1`. Decimal strings for money, prices and sizes. History lists are 
 | POST / PUT | `/admin/exchange/markets`, `/admin/exchange/markets/{symbol}` | admin, audited | list / edit a market |
 | PUT | `/admin/exchange/markets/{symbol}/status`, `…/price` | admin, audited | status; set or clear (`""`) the manual index price |
 
-Order errors carry codes clients branch on: `insufficient_margin`, `price_band` (limit beyond ±15% of the index), `post_only_would_cross`, `reduce_only`, `min_notional`, `no_liquidity`, `oi_cap`, `price_unavailable`, `index_stale`, `market_halted`, `market_reduce_only`, `faucet_cooldown`, `exchange_standby`.
+Orders carry `source`. Order errors carry codes clients branch on: `insufficient_margin`, `price_band` (limit beyond ±15% of the index), `post_only_would_cross`, `reduce_only`, `min_notional`, `no_liquidity`, `oi_cap`, `price_unavailable`, `index_stale`, `market_halted`, `market_reduce_only`, `faucet_cooldown`, `exchange_standby`.
 
 Realtime (signed in): topic `exchange:<market id>` carries `exchange.book` (≤4/s), `exchange.trades` and `exchange.ticker` (stats + the open candle of every interval, 1/s); topic `exchange:00000000-0000-0000-0000-000000000000` carries `exchange.tickers` (all stats, every 2 s); the user's own topic gets `exchange.account` (order, fill, funding, liquidation, transfer) and `exchange.summary`. Signed-out and reconnecting clients poll.
 
-Agent tools: `exchange_list_markets`, `exchange_get_market`, `exchange_get_candles`, `exchange_get_account`, `exchange_list_fills` (read); `exchange_place_order`, `exchange_cancel_order`, `exchange_close_position` (writes with `Target` = the market or order and a `Preview`, so agent scopes gate them and Suggest shows the order first). No tool moves collateral. Global search finds markets (`exchange.market`).
+Agent tools: `exchange_list_markets`, `exchange_get_market`, `exchange_get_candles`, `exchange_get_account`, `exchange_list_fills` (read); `exchange_place_order`, `exchange_cancel_order`, `exchange_close_position` (source `agent`; writes with `Target` = the market or order and a `Preview`, so agent scopes gate them and Suggest shows the order first). No tool moves collateral. Global search finds markets (`exchange.market`).
 
 ## Screens
 
@@ -83,8 +83,8 @@ Catalog seed prices are used only with `APP_ENV=development`; elsewhere a market
 
 ## Compliance
 
-- Deleting an account marks its trading account `closing` and unlinks it inside the deletion transaction; the engine then cancels its orders, hands positions and balance to the backstop and closes it. Orders, fills and ledger stay as anonymous financial records. Pending transfers are rejected.
-- Export: account, positions, orders, fills, funding, ledger and transfers.
+- Deleting an account marks its trading account and sub-accounts `closing` and unlinks them inside the deletion transaction; the engine then cancels their orders, hands positions and balances to the backstop and closes them. Orders, fills and ledger stay as anonymous financial records. Pending transfers are rejected.
+- Export: account, positions, orders, fills, funding, ledger and transfers, and the same for each sub-account.
 - Public trades carry no identities (only a `sim` flag). No UGC.
 - With real-money collateral the app offers leveraged derivatives: licensed activity in most countries, and Apple (5.1.1, 3.1.5) and Google Play require the licences for real-money trading apps. Test funds (the faucet, no withdrawals) keep it a simulation; say so in the product.
 
@@ -126,13 +126,16 @@ Catalog seed prices are used only with `APP_ENV=development`; elsewhere a market
 ## Extending
 
 - Seams: `PriceFeed`, `PriceFeedFunc`, `PriceHistory`, `SetPriceFeed`, `PushPrice`, `Deposit`, `Withdraw`, `TransferStatus`, `UpsertCatalog`, `Scores`; risk and fee knobs in `engine.Params`.
-- The engine (`internal/exchange/engine`) is pure and tested (`engine_test.go`: priority, margin, reduce-only, bands, statuses, funding, mark, liquidation, backstop, transfers, close-out, rollback; `sim/sim_test.go` runs 2,000 simulated actions). Change behaviour together with its tests, and mutate engine state only inside a command (`begin` → `commit`).
+- Reads and catalog writes for other modules (`reads.go`, database-backed, any instance): `Markets` (the catalog with status), `SetMarketStatus` (no audit row: audit staff actions yourself), `UsageOf` (people's open interest, holders and volume since a time: what a lifecycle job archives on), `ActivityTotals` (each person's cumulative fills, volume, liquidations and first fill; pair with `Scores` for value and net deposits).
+- Engine support for modules (`modules.go`; live calls return `ErrStandby` off the engine's instance): `Find(d.Modules)`; `OnEngine(func(ctx))` runs a module's engine-bound loops where the engine runs; `OnFill(func(FillEvent))` hears every fill of a person's account after commit (queued, never blocking the engine; `FillsDropped`); `OpenSubaccount(owner, purpose)`, `Subaccounts`, `CloseSubaccount` (cancel, market-close, sweep back to the main account; `positions_open` when liquidity is missing); `Transfer(from, to, amount, TransferInternal | TransferProfitShare, note)` as one command within free collateral; `PlaceOrderAs` / `ClosePositionAs` / `CancelAllAs` with `PlaceOpts{Source, ClientRef, AvoidMakers}` (an avoided maker that crosses is cancelled, never filled); `MainAccount`, `AccountState`, `UserAccountState`, `Summary(ies)`, `Market`, `Quote`; database reads `OrderByClientRef` (find an order after a crash) and `ActivityOf`. A person's main and sub-accounts never trade with each other (owner-wide self-trade prevention).
+- The engine (`internal/exchange/engine`) is pure and tested (`engine_test.go`: priority, margin, reduce-only, bands, statuses, funding, mark, liquidation, backstop, transfers, close-out, rollback, sub-accounts, internal transfers, client refs, AvoidMakers, the fill hook; `sim/sim_test.go` runs 2,000 simulated actions). Change behaviour together with its tests, and mutate engine state only inside a command (`begin` → `commit`).
 - Don't write `exchange_accounts`, positions or orders directly: the engine owns them in memory. Go through transfers, the catalog or the API.
 
 ## Provenance
 
-Distilled from MOX (`backend/internal/engine`, `internal/sim`, `internal/store`, the REST and realtime layers) without its collectibles catalog, handles, oracle internals and index baskets. Generalised: markets live in the database and reload live (status, manual price, parameters); index prices come from any feed (pull and push) with stale handling and development-only seed prices; collateral moves through a transfer inbox any instance can write; one engine elected by advisory lock instead of one process; accounts belong to scaffold users and are closed out on deletion; public trades carry no identities. Kept: decimal money throughout, atomic commands with in-memory rollback, the mark, funding and liquidation formulas and their tests. Added: candle history paging (`before`), keyset history routes, admin catalog tools, agent tools, search.
+Distilled from MOX (`backend/internal/engine`, `internal/sim`, `internal/store`, the REST and realtime layers) without its collectibles catalog, handles, oracle internals and index baskets. Generalised: markets live in the database and reload live (status, manual price, parameters); index prices come from any feed (pull and push) with stale handling and development-only seed prices; collateral moves through a transfer inbox any instance can write; one engine elected by advisory lock instead of one process; accounts belong to scaffold users and are closed out on deletion; public trades carry no identities. Kept: decimal money throughout, atomic commands with in-memory rollback, the mark, funding and liquidation formulas and their tests. Added: candle history paging (`before`), keyset history routes, admin catalog tools, agent tools, search. 1.1.0's module support follows MOX's copy accounts (`engine/placeopts.go`, `accounts.go`, migration 0016) with sub-accounts owned by a person instead of child user rows, and a fill hook instead of a Publisher tap.
 
 ## Changes
 
 - 1.0.0: first version.
+- 1.1.0: `Markets`, `SetMarketStatus`, `UsageOf`, `ActivityTotals` for other modules (baskets lists and archives markets, reputation reads activity). Engine support for modules (copytrade): people's sub-accounts (`2701_exchange_subaccounts.sql`: `owner_id`, kind `sub`), internal transfers and profit shares, `PlaceOrderAs` with order `source` and `client_ref` and `AvoidMakers`, owner-wide self-trade prevention, a fill hook, `OnEngine`, live account reads; deletion and export cover sub-accounts; agent orders carry source `agent`; `UsageOf` counts a person's sub-accounts as that person.

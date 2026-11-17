@@ -1,8 +1,8 @@
 {
   "name": "identity",
   "title": "Identity verification",
-  "version": "1.0.1",
-  "summary": "Verify a user's identity through Persona or manual staff review of an ID photo and selfie, and show a verified badge.",
+  "version": "1.1.0",
+  "summary": "Verify a user's identity through Persona or manual staff review of an ID photo and selfie, and show verification badges: official, organization and notable (reviewed applications with evidence and DNS domain proofs) and a paid badge an entitlement grants.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -60,6 +60,54 @@
       "required": "optional",
       "default": "0",
       "doc": "How long a verification lasts, as a Go duration (8760h = a year). 0 never expires."
+    },
+    {
+      "name": "IDENTITY_BADGE_LABELS",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "official=Official,org=Organization,notable=Notable,paid=Supporter",
+      "doc": "Names of the badge kinds, kind=Label pairs over the defaults (e.g. paid=Patron). Up to 40 characters each."
+    },
+    {
+      "name": "IDENTITY_BADGE_CATEGORIES",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "business:org:Business,organization:org:Organization,public_figure:notable:Public figure,creator:notable:Creator",
+      "doc": "What people apply for, key:kind:Label entries; kind is org or notable (the badge an approval grants). Empty turns applications off."
+    },
+    {
+      "name": "IDENTITY_BADGE_TTL_DAYS",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "365",
+      "doc": "Days an approved organization or notable badge lasts before the holder applies again (1 to 730); reviewers can pick another."
+    },
+    {
+      "name": "IDENTITY_PAID_ENTITLEMENT",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "supporter",
+      "doc": "The payments entitlement key whose holders get the paid badge (stitching wires payments to identity.SetPaidBadge)."
+    },
+    {
+      "name": "IDENTITY_PAID_MIN_ACCOUNT_DAYS",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "30",
+      "doc": "Account age in days before the paid badge shows (0 in development by default)."
+    },
+    {
+      "name": "IDENTITY_PAID_REQUIRES_VERIFIED",
+      "tier": "backend",
+      "group": "identity",
+      "required": "optional",
+      "default": "false",
+      "doc": "Show the paid badge only to people who verified their identity."
     }
   ],
   "files": [
@@ -130,9 +178,12 @@
   ],
   "stitch": [
     "Decide what requires verification and gate it with identity.IsVerified (return identity.ErrVerificationRequired).",
-    "Show the verified badge where people judge each other (profiles, listings, messages) with GET /v1/identity/users/{id}/badge or identity.VerifiedSet.",
+    "Show badges where people judge each other (profiles, listings, messages): VerifiedBadge (web and mobile) with userId, or with badge/verified from identity.BadgeSet and identity.VerifiedSet on lists.",
     "Persona: create a template, point a webhook at https://<api>/webhooks/persona, set the 4 PERSONA_* variables, and name Persona in the privacy policy.",
     "Manual mode: staff the admin queue; photos are deleted as soon as a decision is made.",
-    "Allow the hosted-flow return: web origins come from CORS_ALLOWED_ORIGINS/PUBLIC_WEB_URL, mobile uses scaffoldapp://."
+    "Allow the hosted-flow return: web origins come from CORS_ALLOWED_ORIGINS/PUBLIC_WEB_URL, mobile uses scaffoldapp://.",
+    "Badges: set IDENTITY_BADGE_CATEGORIES to what your community verifies (or empty to turn applications off) and IDENTITY_BADGE_LABELS to your names; staff work Admin → Verification → Badge applications; admins grant official badges.",
+    "Paid badge with payments installed: add backend/internal/api/stitch_identity_payments.go from FEATURE.md (entitlement hook → identity.SetPaidBadge, stop renewal on staff removal, eligibility guard on checkout), create a plan that grants IDENTITY_PAID_ENTITLEMENT, and call setIdentityPaidBadgeLink at startup on web and mobile.",
+    "With notifications installed, register kinds identity.status and identity.badge."
   ]
 }

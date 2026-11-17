@@ -1,8 +1,8 @@
 {
   "name": "moderation",
   "title": "Moderation",
-  "version": "1.0.1",
-  "summary": "People report content and other users, block anyone, and staff work a review queue; text is filtered before it is posted.",
+  "version": "1.1.0",
+  "summary": "People report content and other users, block anyone, and staff work a review queue; text is filtered before it is posted, and posts and comments are screened by rules and an optional decision model that can hold them for review.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -51,6 +51,79 @@
       "required": "optional",
       "default": "true",
       "doc": "Tell reporters when staff close their report (generic wording, no details about the action)."
+    },
+    {
+      "name": "MODERATION_LINK_DENYLIST",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated domains whose links are removed by screening (subdomains included)."
+    },
+    {
+      "name": "MODERATION_BRAND_DOMAINS",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated domains that are the app's own besides PUBLIC_WEB_URL's; links to look-alikes of them are removed or held."
+    },
+    {
+      "name": "MODERATION_STRIKE_LIMITS",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "3:24h,5:168h",
+      "doc": "Strikes within 90 days that stop someone posting, and for how long from their latest strike (strikes:duration, comma-separated); off turns posting restrictions off."
+    },
+    {
+      "name": "MODERATION_DECISION_URL",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "",
+      "doc": "Decision model endpoint speaking the decisions format (state + yes/no questions), e.g. https://openrouter.ai/api/alpha/decisions. Unset = rules only."
+    },
+    {
+      "name": "MODERATION_DECISION_API_KEY",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "secret": true,
+      "doc": "Bearer key for MODERATION_DECISION_URL; required when it is set.",
+      "source": "The decision service's dashboard (OpenRouter: Keys)."
+    },
+    {
+      "name": "MODERATION_DECISION_MODEL",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "",
+      "doc": "Model id sent with each decision request (e.g. typesafe/jev-1.13); the answering snapshot is recorded on each decision."
+    },
+    {
+      "name": "MODERATION_DECISION_MAX_RPS",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "5",
+      "doc": "Decision requests per second at most; an item that can't get a slot within half the timeout keeps the rules' decision."
+    },
+    {
+      "name": "MODERATION_DECISION_TIMEOUT",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "3s",
+      "doc": "Time limit per decision request (posting waits for it); on timeout the rules' decision stands."
+    },
+    {
+      "name": "MODERATION_DECISION_DAILY_USD",
+      "tier": "backend",
+      "group": "moderation",
+      "required": "optional",
+      "default": "5",
+      "doc": "Most the decision model may cost per UTC day, per server instance, in dollars; 0 = no cap. Past it, rules only until midnight UTC."
     }
   ],
   "files": [
@@ -124,6 +197,7 @@
     "Decide MODERATION_AUTOHIDE_REPORTS for launch (3 is a common start for a public feed; 0 for small private groups).",
     "Name who works the queue and how they hear about new cases (admin:live is realtime; add an email or chat alert if nobody watches the console). Target: every case closed within 24 hours.",
     "Fill MODERATION_BLOCKED_TERMS for your audience and language; set MODERATION_PROVIDER=openai for public UGC.",
+    "Screening: set MODERATION_BRAND_DOMAINS (your other domains), MODERATION_LINK_DENYLIST and MODERATION_STRIKE_LIMITS; optionally MODERATION_DECISION_URL, _API_KEY and _MODEL for the decision model (name the service in the privacy policy), and watch Admin → Moderation for its health and cost.",
     "Add ReportDialog/BlockButton (web and mobile src/features/moderation) wherever a person or their content appears that no feature already covers (profiles, avatars, member lists)."
   ]
 }

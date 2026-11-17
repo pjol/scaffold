@@ -1,6 +1,6 @@
 "use client";
 
-import { errorMessage, useCaseAction, useMe, useModerationCase, type CaseAction, type CaseDetail, type CaseUser } from "@scaffoldapp/shared";
+import { errorMessage, useCaseAction, useMe, useModerationCase, type CaseAction, type CaseDetail, type CaseUser, type ModerationDecision } from "@scaffoldapp/shared";
 import { Badge, Button, Card, Checkbox, Dialog, EmptyState, ErrorState, Field, Skeleton, SkeletonGroup, TextArea, toast } from "@scaffoldapp/ui-web";
 import { Ban, Check, ChevronLeft, CircleSlash, EyeOff, FileQuestion, MessageSquareWarning, PauseCircle, SquareArrowOutUpRight } from "lucide-react";
 import Link from "next/link";
@@ -9,7 +9,7 @@ import { StatusBadge } from "@/components/admin/badges";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { Section } from "@/components/shell/PageHeader";
 import { formatDateTime } from "@/lib/format";
-import { ACTION_LABEL, formatAge, kindLabel, reasonLabel } from "./labels";
+import { ACTION_LABEL, categoryLabel, DECISION_LABEL, DECISION_TONE, formatAge, kindLabel, QUESTION_LABEL, reasonLabel, ruleLabel } from "./labels";
 
 const ACTIONS: Record<CaseAction, { label: string; title: string; confirm: string; tone: "primary" | "danger"; icon: ReactNode }> = {
   dismiss: { label: "Dismiss", title: "Dismiss this case?", confirm: "Dismiss", tone: "primary", icon: <CircleSlash /> },
@@ -60,19 +60,27 @@ function Media({ urls }: { urls: string[] }) {
   );
 }
 
+/** Screening holds its content until staff approve (dismiss) or remove it. */
+function isHeld(c: CaseDetail): boolean {
+  return c.source === "auto" && c.status === "open" && c.auto_hidden;
+}
+
 function ActionDialog({ c, action, onClose }: { c: CaseDetail; action: CaseAction | null; onClose: () => void }) {
   const act = useCaseAction();
   const [note, setNote] = useState("");
   const [removeContent, setRemoveContent] = useState(false);
   const [notify, setNotify] = useState(true);
   const content = c.target_kind !== "user";
-  const a = action ? ACTIONS[action] : null;
-  const offerRemove = content && !c.hidden && (action === "warn" || action === "suspend" || action === "ban");
+  const held = isHeld(c);
+  const a = action ? (held && action === "dismiss" ? { ...ACTIONS.dismiss, title: "Approve this content?", confirm: "Approve" } : ACTIONS[action]) : null;
+  const authorAction = action === "warn" || action === "suspend" || action === "ban";
+  const offerRemove = content && (!c.hidden || held) && authorAction;
+  const mustRemove = held && authorAction;
 
   const submit = async () => {
     if (!action) return;
     try {
-      await act.mutateAsync({ id: c.id, action, note: note.trim(), remove_content: offerRemove && removeContent, notify_reporters: notify });
+      await act.mutateAsync({ id: c.id, action, note: note.trim(), remove_content: offerRemove && (removeContent || mustRemove), notify_reporters: notify });
       toast.success(`Case ${ACTION_LABEL[action].toLowerCase()}`);
       setNote("");
       setRemoveContent(false);
@@ -100,12 +108,20 @@ function ActionDialog({ c, action, onClose }: { c: CaseDetail; action: CaseActio
       }
     >
       <div className="flex flex-col gap-6">
-        {action && <p className="text-fg-muted">{ACTION_BODY[action]}</p>}
+        {action && <p className="text-fg-muted">{held && action === "dismiss" ? "The content becomes visible to everyone and the author is told." : ACTION_BODY[action]}</p>}
         <Field label="Note" info="Staff only. Saved with the case and the audit log.">
           <TextArea value={note} onChange={(e) => setNote(e.target.value.slice(0, 2000))} minRows={2} maxRows={6} autoGrow />
         </Field>
         <div className="flex flex-col gap-3">
-          {offerRemove && <Checkbox checked={removeContent} onCheckedChange={setRemoveContent} label="Also remove the content" />}
+          {offerRemove && (
+            <Checkbox
+              checked={removeContent || mustRemove}
+              disabled={mustRemove}
+              onCheckedChange={setRemoveContent}
+              label="Also remove the content"
+              {...(mustRemove ? { info: "Held content is approved or removed; an author action on it removes it." } : {})}
+            />
+          )}
           <Checkbox checked={notify} onCheckedChange={setNotify} label="Tell reporters it was reviewed" info="They hear that it was reviewed, and whether action was taken. Never which action." />
         </div>
       </div>
@@ -119,22 +135,83 @@ function Actions({ c }: { c: CaseDetail }) {
   const content = c.target_kind !== "user";
   const author = c.author;
   const canActOnAuthor = !!author && author.status !== "deleted" && author.id !== me.data?.id;
+  const held = isHeld(c);
   const available: CaseAction[] = [
     "dismiss",
-    ...(content && !c.hidden ? (["remove"] as const) : []),
+    ...(content && (!c.hidden || held) ? (["remove"] as const) : []),
     ...(canActOnAuthor ? (["warn", "suspend", "ban"] as const) : []),
-    "resolve",
+    ...(held ? [] : (["resolve"] as const)),
   ];
   return (
     <Section title="Action" info="Every action closes the case and is written to the audit log.">
       <div className="flex flex-wrap gap-2">
         {available.map((a) => (
           <Button key={a} variant={ACTIONS[a].tone === "danger" ? "danger-ghost" : "secondary"} size="auto" leftIcon={ACTIONS[a].icon} onClick={() => setAction(a)}>
-            {ACTIONS[a].label}
+            {held && a === "dismiss" ? "Approve" : ACTIONS[a].label}
           </Button>
         ))}
       </div>
       <ActionDialog c={c} action={action} onClose={() => setAction(null)} />
+    </Section>
+  );
+}
+
+function percent(p: number): string {
+  return `${Math.round(p * 100)}%`;
+}
+
+function DecisionBlock({ d }: { d: ModerationDecision }) {
+  const answers = d.answers ? Object.entries(d.answers).sort(([a], [b]) => a.localeCompare(b)) : [];
+  const model = d.model_status === "ok" ? (d.model ?? "Model") : `Model ${d.model_status.replace(/_/g, " ")}`;
+  return (
+    <li className="flex flex-col gap-3 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={DECISION_TONE[d.action]}>{DECISION_LABEL[d.action]}</Badge>
+        {d.edit && <Badge tone="neutral">Edit</Badge>}
+        {d.distrusted && <Badge tone="warning">Model answers distrusted</Badge>}
+        <span className="type-caption text-fg-muted">{`Rules ${DECISION_LABEL[d.rules_action].toLowerCase()} · ${model}${d.latency_ms !== null ? ` · ${d.latency_ms} ms` : ""}`}</span>
+        <span className="ml-auto type-caption text-fg-muted">{formatDateTime(d.created_at)}</span>
+      </div>
+      {d.hits.length > 0 ? (
+        <ul className="flex flex-col gap-2">
+          {d.hits.map((h, i) => (
+            <li key={`${h.rule}-${i}`} className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-3">
+              <span className="flex shrink-0 items-center gap-2 sm:w-64">
+                <Badge tone={DECISION_TONE[h.action]} size="sm">
+                  {DECISION_LABEL[h.action]}
+                </Badge>
+                <span className="type-label font-semibold text-fg">{ruleLabel(h.rule)}</span>
+              </span>
+              <span className="min-w-0 break-words type-label text-fg-muted">{[h.category ? categoryLabel(h.category) : "", h.detail ?? ""].filter(Boolean).join(" · ")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="type-label text-fg-muted">No rule fired.</p>
+      )}
+      {answers.length > 0 && (
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
+          {answers.map(([q, p]) => (
+            <div key={q} className="flex items-baseline justify-between gap-2">
+              <dt className="truncate type-caption text-fg-muted">{QUESTION_LABEL[q] ?? q}</dt>
+              <dd className="type-label tabular-nums text-fg">{percent(p)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </li>
+  );
+}
+
+function Screening({ decisions }: { decisions: ModerationDecision[] }) {
+  if (decisions.length === 0) return null;
+  return (
+    <Section title="Screening" info="Rules run first; the decision model can only raise the action. Newest first.">
+      <ul className="flex flex-col divide-y divide-border">
+        {decisions.map((d) => (
+          <DecisionBlock key={d.id} d={d} />
+        ))}
+      </ul>
     </Section>
   );
 }
@@ -183,10 +260,13 @@ export function ModerationCaseScreen({ id }: { id: string }) {
           ) : (
             <Badge tone={c.status === "dismissed" ? "neutral" : "success"}>{c.action ? ACTION_LABEL[c.action] : "Closed"}</Badge>
           )}
-          {c.hidden && <Badge tone="warning">{c.auto_hidden ? "Hidden by reports" : "Removed"}</Badge>}
+          {c.hidden && <Badge tone="warning">{c.auto_hidden ? (c.source === "auto" ? "Held by screening" : "Hidden by reports") : "Removed"}</Badge>}
         </div>
 
-        <Section title="What was reported" info="Captured when it was first reported, so edits and deletions don't change it.">
+        <Section
+          title={c.source === "auto" ? "What was posted" : "What was reported"}
+          info={c.source === "auto" ? "The text screening saw, updated when the author edits it." : "Captured when it was first reported, so edits and deletions don't change it."}
+        >
           <Card className="flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-3">
               <AppAvatar name={authorName} src={c.author?.avatar_url ?? null} size="md" />
@@ -220,6 +300,9 @@ export function ModerationCaseScreen({ id }: { id: string }) {
           </Card>
         </Section>
 
+        <Screening decisions={c.decisions} />
+
+        {c.reports.length > 0 && (
         <Section title={`Reports (${c.report_count})`}>
           <Card padding="none">
             <ul className="flex flex-col">
@@ -241,13 +324,15 @@ export function ModerationCaseScreen({ id }: { id: string }) {
             </ul>
           </Card>
         </Section>
+        )}
 
         {c.author && (
           <Section title="Author history">
             <p className="type-body text-fg">
               {c.author_history.cases === 0
                 ? "No other cases."
-                : `${c.author_history.cases} other ${c.author_history.cases === 1 ? "case" : "cases"}, ${c.author_history.actioned} with action taken.`}{" "}
+                : `${c.author_history.cases} other ${c.author_history.cases === 1 ? "case" : "cases"}, ${c.author_history.actioned} with action taken.`}
+              {c.author_history.strikes > 0 ? ` ${c.author_history.strikes} active ${c.author_history.strikes === 1 ? "strike" : "strikes"}.` : ""}{" "}
               {c.author_history.cases > 0 && (
                 <Link href={`/admin/moderation?status=closed&author_id=${c.author.id}`} className="font-semibold underline underline-offset-2">
                   View

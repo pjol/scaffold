@@ -43,6 +43,8 @@ type Case struct {
 	TargetKind     string         `json:"target_kind"`
 	TargetID       string         `json:"target_id"`
 	Status         string         `json:"status"` // open | resolved | dismissed
+	Source         string         `json:"source"` // report | auto (opened by screening)
+	Categories     []string       `json:"categories"`
 	ReportCount    int            `json:"report_count"`
 	Reasons        map[string]int `json:"reasons"`
 	Snapshot       Snapshot       `json:"snapshot"`
@@ -74,18 +76,20 @@ type CaseReport struct {
 // CaseDetail is GET /v1/admin/moderation/cases/{id}.
 type CaseDetail struct {
 	Case
-	Reports       []CaseReport  `json:"reports"`
-	AuthorHistory AuthorHistory `json:"author_history"`
+	Reports       []CaseReport   `json:"reports"`
+	Decisions     []DecisionView `json:"decisions"` // screening decisions on the content, newest first
+	AuthorHistory AuthorHistory  `json:"author_history"`
 }
 
-// AuthorHistory counts the author's other cases.
+// AuthorHistory counts the author's other cases and active strikes.
 type AuthorHistory struct {
 	Cases    int `json:"cases"`
 	Actioned int `json:"actioned"`
+	Strikes  int `json:"strikes"`
 }
 
 const caseCols = `
-	c.id, c.target_kind, c.target_id, c.status, c.report_count,
+	c.id, c.target_kind, c.target_id, c.status, c.source, c.categories, c.report_count,
 	COALESCE((SELECT jsonb_object_agg(reason, n) FROM (
 	  SELECT reason, count(*) AS n FROM moderation_reports WHERE case_id = c.id GROUP BY reason) x), '{}'::jsonb),
 	c.snapshot, c.hidden_at IS NOT NULL, c.auto_hidden, c.action, c.resolution_note, c.resolved_by, c.resolved_at,
@@ -104,10 +108,13 @@ func (s *Service) scanCases(ctx context.Context, rows pgx.Rows) ([]Case, error) 
 			uname, uemail, ustat *string
 			uavatar              *string
 		)
-		if err := rows.Scan(&c.ID, &c.TargetKind, &c.TargetID, &c.Status, &c.ReportCount, &reasons, &snap,
+		if err := rows.Scan(&c.ID, &c.TargetKind, &c.TargetID, &c.Status, &c.Source, &c.Categories, &c.ReportCount, &reasons, &snap,
 			&c.Hidden, &c.AutoHidden, &c.Action, &c.ResolutionNote, &c.ResolvedBy, &c.ResolvedAt,
 			&c.LastReportedAt, &c.CreatedAt, &uid, &uname, &uemail, &ustat, &uavatar); err != nil {
 			return nil, err
+		}
+		if c.Categories == nil {
+			c.Categories = []string{}
 		}
 		if err := json.Unmarshal(reasons, &c.Reasons); err != nil {
 			return nil, err
@@ -242,7 +249,12 @@ func (s *Service) respondCase(w http.ResponseWriter, r *http.Request, id uuid.UU
 	if err != nil {
 		return err
 	}
-	d := CaseDetail{Case: *c, Reports: []CaseReport{}}
+	d := CaseDetail{Case: *c, Reports: []CaseReport{}, Decisions: []DecisionView{}}
+	if c.TargetKind != TargetUser {
+		if d.Decisions, err = loadDecisions(ctx, s.d.Pool, c.TargetKind, c.TargetID, 10); err != nil {
+			return err
+		}
+	}
 	rows, err := s.d.Pool.Query(ctx, `
 		SELECT r.id, r.reason, r.note, r.snapshot, r.created_at,
 		       u.id, u.display_name, u.email, u.status, u.avatar_url
@@ -283,6 +295,9 @@ func (s *Service) respondCase(w http.ResponseWriter, r *http.Request, id uuid.UU
 		).Scan(&d.AuthorHistory.Cases, &d.AuthorHistory.Actioned); err != nil {
 			return err
 		}
+		if d.AuthorHistory.Strikes, err = Strikes(ctx, s.d.Pool, c.Author.ID, time.Now().Add(-StrikeWindow)); err != nil {
+			return err
+		}
 	}
 	httpx.OK(w, d)
 	return nil
@@ -296,6 +311,9 @@ type Summary struct {
 	Closed7d             int    `json:"closed_7d"`
 	MedianCloseSeconds7d *int64 `json:"median_close_seconds_7d"`
 	SLASeconds           int64  `json:"sla_seconds"`
+	HeldOpen             int    `json:"held_open"` // open cases screening opened
+
+	DecisionModel DecisionModelHealth `json:"decision_model"`
 }
 
 func (s *Service) summary(w http.ResponseWriter, r *http.Request) error {
@@ -308,7 +326,7 @@ func (s *Service) summary(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Service) loadSummary(ctx context.Context) (Summary, error) {
-	out := Summary{SLASeconds: int64(SLA.Seconds())}
+	out := Summary{SLASeconds: int64(SLA.Seconds()), DecisionModel: decisionModelHealth()}
 	var oldest, median *float64
 	err := s.d.Pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE status = 'open'),
@@ -316,10 +334,11 @@ func (s *Service) loadSummary(ctx context.Context) (Summary, error) {
 		       extract(epoch FROM now() - min(created_at) FILTER (WHERE status = 'open'))::float8,
 		       count(*) FILTER (WHERE resolved_at > now() - interval '7 days'),
 		       (percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM resolved_at - created_at))
-		          FILTER (WHERE resolved_at > now() - interval '7 days'))::float8
+		          FILTER (WHERE resolved_at > now() - interval '7 days'))::float8,
+		       count(*) FILTER (WHERE status = 'open' AND source = 'auto')
 		FROM moderation_cases
 		WHERE status = 'open' OR resolved_at > now() - interval '7 days'`, SLA.Seconds(),
-	).Scan(&out.Open, &out.OverSLA, &oldest, &out.Closed7d, &median)
+	).Scan(&out.Open, &out.OverSLA, &oldest, &out.Closed7d, &median, &out.HeldOpen)
 	if oldest != nil {
 		v := int64(*oldest)
 		out.OldestOpenAgeSeconds = &v
@@ -351,9 +370,10 @@ type actionReq struct {
 }
 
 type lockedCase struct {
-	status, kind, targetID string
-	authorID               *uuid.UUID
-	hidden, autoHidden     bool
+	status, kind, targetID, source string
+	categories                     []string
+	authorID                       *uuid.UUID
+	hidden, autoHidden             bool
 }
 
 // actOnCase: POST /v1/admin/moderation/cases/{id}/actions.
@@ -384,13 +404,15 @@ func (s *Service) actOnCase(w http.ResponseWriter, r *http.Request) error {
 	var (
 		lc        lockedCase
 		removed   bool
+		restored  bool
+		struck    bool
 		reporters []uuid.UUID
 	)
 	notifyReporters := s.cfg.notifyReporter && (req.NotifyReporters == nil || *req.NotifyReporters)
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT status, target_kind, target_id, author_id, hidden_at IS NOT NULL, auto_hidden
+		err := tx.QueryRow(ctx, `SELECT status, target_kind, target_id, source, categories, author_id, hidden_at IS NOT NULL, auto_hidden
 			FROM moderation_cases WHERE id = $1 FOR UPDATE`, id).
-			Scan(&lc.status, &lc.kind, &lc.targetID, &lc.authorID, &lc.hidden, &lc.autoHidden)
+			Scan(&lc.status, &lc.kind, &lc.targetID, &lc.source, &lc.categories, &lc.authorID, &lc.hidden, &lc.autoHidden)
 		if db.IsNoRows(err) {
 			return httpx.NotFound("Case not found.")
 		}
@@ -402,12 +424,20 @@ func (s *Service) actOnCase(w http.ResponseWriter, r *http.Request) error {
 		}
 		isUser := lc.kind == TargetUser
 
-		// Content removal.
+		// Content screening held or removed waits for a decision on the
+		// content itself: approve it (dismiss) or take it down.
+		held := lc.source == "auto" && lc.autoHidden
+		if held && (req.Action == ActionResolve || ((req.Action == ActionWarn || req.Action == ActionSuspend || req.Action == ActionBan) && !req.RemoveContent)) {
+			return httpx.BadRequest("This content is held: approve it, or remove it (alone or with the author action).")
+		}
+
+		// Content removal. Held content is taken down by its Target too
+		// (Remove is idempotent), so it leaves the held state.
 		if req.Action == ActionRemove || req.RemoveContent {
 			if isUser {
 				return httpx.BadRequest("A person can't be removed. Suspend or ban them instead.")
 			}
-			if !lc.hidden {
+			if !lc.hidden || held {
 				t, ok := target(lc.kind)
 				if !ok {
 					return httpx.Conflict("That content type is no longer installed, so it can't be removed here.")
@@ -433,6 +463,7 @@ func (s *Service) actOnCase(w http.ResponseWriter, r *http.Request) error {
 					if _, err := tx.Exec(ctx, `UPDATE moderation_cases SET hidden_at = NULL, auto_hidden = false WHERE id = $1`, id); err != nil {
 						return err
 					}
+					restored = true
 				}
 			}
 		}
@@ -448,6 +479,22 @@ func (s *Service) actOnCase(w http.ResponseWriter, r *http.Request) error {
 			if err := applySuspension(ctx, tx, staff, *lc.authorID, req.Action == ActionBan, id, req.Note); err != nil {
 				return err
 			}
+		}
+
+		// A removal or a ban is a strike against the author.
+		if lc.authorID != nil && (removed || req.Action == ActionBan) {
+			kind := ActionRemove
+			if req.Action == ActionBan {
+				kind = ActionBan
+			}
+			category := ""
+			if len(lc.categories) > 0 {
+				category = lc.categories[0]
+			}
+			if err := addStrike(ctx, tx, *lc.authorID, id, kind, category, staff.UserID); err != nil {
+				return err
+			}
+			struck = true
 		}
 
 		status := "resolved"
@@ -473,14 +520,14 @@ func (s *Service) actOnCase(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		return audit.Log(ctx, tx, staff.UserID, "moderation.case."+req.Action, "moderation_case", id.String(), map[string]any{
-			"target_kind": lc.kind, "target_id": lc.targetID, "author_id": lc.authorID,
-			"removed": removed, "note": req.Note,
+			"target_kind": lc.kind, "target_id": lc.targetID, "author_id": lc.authorID, "source": lc.source,
+			"removed": removed, "restored": restored, "strike": struck, "note": req.Note,
 		})
 	})
 	if err != nil {
 		return err
 	}
-	s.afterAction(context.WithoutCancel(ctx), id, req.Action, lc, removed, reporters)
+	s.afterAction(context.WithoutCancel(ctx), id, req.Action, lc, removed, restored, struck, reporters)
 	return s.respondCase(w, r, id)
 }
 
@@ -520,7 +567,14 @@ func applySuspension(ctx context.Context, tx pgx.Tx, staff *auth.Identity, userI
 }
 
 // afterAction sends the best-effort side effects once the action committed.
-func (s *Service) afterAction(ctx context.Context, id uuid.UUID, action string, lc lockedCase, removed bool, reporters []uuid.UUID) {
+func (s *Service) afterAction(ctx context.Context, id uuid.UUID, action string, lc lockedCase, removed, restored, struck bool, reporters []uuid.UUID) {
+	if (removed || restored) && lc.kind != TargetUser {
+		if t, ok := target(lc.kind); ok {
+			if ch, ok := t.(Changer); ok {
+				ch.Changed(ctx, lc.targetID, restored)
+			}
+		}
+	}
 	// Reporters learn only whether something was done, never what.
 	outcome, body := "closed", "Thanks for your report. We reviewed it and closed it."
 	if action == ActionRemove || action == ActionWarn || action == ActionSuspend || action == ActionBan {
@@ -545,9 +599,27 @@ func (s *Service) afterAction(ctx context.Context, id uuid.UUID, action string, 
 			}
 			s.send(ctx, *lc.authorID, KindNotice, "A warning about your account", body, "", nil)
 		case ActionRemove:
-			s.send(ctx, *lc.authorID, KindNotice, "Something you posted was removed",
-				"It broke the community rules. Repeated removals can lead to suspension.", "", nil)
+			s.send(ctx, *lc.authorID, KindNotice, "Your "+kindNoun(lc.kind)+" was removed",
+				"It broke the community rules. Repeated removals stop you posting for a while.", "/settings/safety", nil)
+		case ActionDismiss:
+			if lc.source == "auto" && restored {
+				s.send(ctx, *lc.authorID, KindNotice, "Your "+kindNoun(lc.kind)+" was approved",
+					"A moderator reviewed it and it's now visible to everyone.", s.snapshotLink(ctx, id), nil)
+			}
+		}
+		if struck && action != ActionBan {
+			if until, err := RestrictedUntil(ctx, s.d.Pool, *lc.authorID); err == nil && !until.IsZero() {
+				s.send(ctx, *lc.authorID, KindNotice, "You can't post for a while",
+					"After repeated removals you can post again on "+until.UTC().Format("Jan 2, 15:04")+" UTC.", "/settings/safety", nil)
+			}
 		}
 	}
 	s.publish(ctx, realtime.AdminLiveTopic, EventCaseClosed, map[string]any{"case_id": id, "action": action})
+}
+
+// snapshotLink is the app path stored with a case's content.
+func (s *Service) snapshotLink(ctx context.Context, id uuid.UUID) string {
+	var link string
+	_ = s.d.Pool.QueryRow(ctx, `SELECT COALESCE(snapshot->>'link', '') FROM moderation_cases WHERE id = $1`, id).Scan(&link)
+	return link
 }

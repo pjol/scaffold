@@ -115,7 +115,7 @@ func (e *Engine) liqOrder(a *Account, m *market, p *Position, qty decimal.Decima
 	return &Order{
 		ID: newID(), AccountID: a.ID, Symbol: m.spec.Symbol, MarketID: m.spec.ID, Side: side, Type: TypeMarket, Px: worst, Sz: qty,
 		Status: StatusOpen, ReduceOnly: true, Leverage: p.Leverage, Seq: e.nextSeq(), CreatedMs: now, UpdatedMs: now,
-		Liquidation: true,
+		Liquidation: true, Source: SourceLiquidation,
 	}
 }
 

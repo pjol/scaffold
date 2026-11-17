@@ -264,6 +264,8 @@ const ledgerLabels: Record<ExchangeLedgerKind, string> = {
   funding: "Funding",
   liquidation: "Liquidation",
   adjustment: "Adjustment",
+  transfer: "Copy trading transfer",
+  profit_share: "Profit share",
 };
 
 /** Every balance change. */

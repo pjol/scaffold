@@ -20,6 +20,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,6 +72,13 @@ type Service struct {
 
 	eng atomic.Pointer[engine.Engine] // nil while this instance is on standby
 	sp  sparkCache
+
+	// Other modules' hooks (modules.go).
+	hooksMu     sync.Mutex
+	fillHooks   []func(FillEvent)
+	engineHooks []func(context.Context)
+	engineCtx   context.Context // set while this instance runs the engine
+	fillDrops   atomic.Int64
 }
 
 // leaderLockKey is the session advisory lock the engine's process holds.
@@ -291,8 +299,19 @@ func (s *Service) lead(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	out := newFanout(s, eng)
 	eng.SetPublisher(out)
+	fills := make(chan engine.FillEvent, 10_000)
+	eng.SetFillHook(func(f engine.FillEvent) { // inside the engine lock: never block
+		select {
+		case fills <- f:
+		default:
+			s.fillDrops.Add(1)
+		}
+	})
+	go s.deliverFills(ctx, fills)
 	setPushTarget(func(key string, p Price) { applyPrice(eng, eng.FeedKeys(), key, p) })
 	s.eng.Store(eng)
+	s.engineStarted(ctx)
+	defer s.engineStopped()
 	slog.InfoContext(ctx, "exchange: engine running", "markets", len(specs), "sim", s.simEnabled, "price_feed", currentFeed() != nil)
 	defer func() {
 		s.eng.Store(nil)

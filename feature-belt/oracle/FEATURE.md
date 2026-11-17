@@ -79,13 +79,14 @@ Realtime (any signed-in user): `oracle:<feed id>` → `oracle.price`, `oracle.ob
 2. Create the feeds the product needs (Admin → Oracle → New feed, or the API) with a pace profile each; set a seed only when you trust it within ±30%.
 3. Sources beyond JSON-HTTP: implement `oracle.Source` (and `HistorySource` for backfill) in your own package and call `oracle.RegisterSource("name", factory)` from an `init()`; give each API host its own `Task.Lane` and an honest `Budget` (published limits, with margin). Push-only sources call `oracle.RegisterPushSource` and `Service.Push`, with a `Print.ID` stable per feed, source and venue (a trade id) so retries are no-ops.
 4. Where one market is the truth, give its venue a fixed premium of 0: learned premiums then measure the other venues against it (with no anchor they measure against the venues' median).
-5. Consumers (an exchange, alerts) read `Service.Current(ctx, key)` or follow `oracle.price`; on the leading instance `Service.OnPublish` gets every tick. Treat `stale` and `seed` as "don't act on this".
+5. Consumers (an exchange, alerts) read `Service.Current(ctx, key)` (or `CurrentMany` for several keys) or follow `oracle.price`; on the leading instance `Service.OnPublish` gets every tick. Treat `stale` and `seed` as "don't act on this".
 6. Optionally set `ORACLE_DECISION_*`, then watch Admin → Oracle → Sources for its calls, failures and cost.
 7. Replace the dev seeds in `backend/internal/oracle/seed.go` (BTC-USD polls three public exchange APIs; GOLD-OZ, SILVER-OZ and METALS-BASKET take seeded staff prints).
 
 ## Extending
 
-- Seams: `Source`, `HistorySource`, `RegisterSource`, `RegisterPushSource`, `Service.Push`, `UseDecisionModel`, `Service.OnPublish`, `Service.Current`; pace presets in `Profiles`.
+- Seams: `Source`, `HistorySource`, `RegisterSource`, `RegisterPushSource`, `Service.Push`, `UseDecisionModel`, `Service.OnPublish`, `Service.Current`, `Service.CurrentMany` (`PricePoint.Kind` says single or basket); pace presets in `Profiles`.
+- Feeds from code, inside the caller's transaction (`ensure.go`, the baskets feature's path): `Service.EnsureBasketFeed(ctx, q, BasketFeed{Key, Name, Category, Quote, Decimals, Listed, Parts})` creates a basket feed or brings its name, listing and parts in line (no write when nothing changed; refuses a single's key with `ErrNotBasket`, and parts that are unknown or baskets); `Service.SetFeedEnabled(ctx, q, key, on)` turns any feed on or off (`ErrUnknownFeed`). Neither writes an audit row: audit staff actions yourself. The leader loads the change within 5 s of commit; call `Service.Reload()` after commit to make it sooner.
 - Screening thresholds and coefficients live in `params.go` and `screen.go` (`stat-v1`); change them together with `oracle_test.go`, which pins the behaviour (outliers, walk-ups, slow trends, premiums, the decision floor).
 - Don't publish from anywhere but the leader, and don't write observations directly: everything goes through `ingest`, so screening, dedupe and weights apply.
 
@@ -96,3 +97,4 @@ Distilled from MOX (`backend/internal/oracle`: `screen.go`, `params.go`, `oracle
 ## Changes
 
 - 1.0.0: first version.
+- 1.1.0: basket feeds and feed switches from code (`EnsureBasketFeed`, `SetFeedEnabled`, `Reload`), `CurrentMany` and `PricePoint.Kind`; `Current` now reads a feed the leader hasn't published yet from the database (status `seed`, or `off` when disabled) instead of reporting it unknown. Tests: `ensure_test.go`.

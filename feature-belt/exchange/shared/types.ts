@@ -134,6 +134,8 @@ export interface ExchangeOrder {
   post_only: boolean;
   leverage: number;
   liquidation: boolean;
+  /** Who placed it: user, agent (an AI agent for the person), copy (a copy trade), liquidation, system or another module's name. */
+  source: string;
   created_at: string;
   updated_at: string;
 }
@@ -193,7 +195,18 @@ export interface ExchangeFundingPayment {
   created_at: string;
 }
 
-export type ExchangeLedgerKind = "deposit" | "withdrawal" | "faucet" | "fee" | "realized_pnl" | "funding" | "liquidation" | "adjustment";
+/** `transfer`: between your main account and one of your sub-accounts (a copy trade); `profit_share`: paid to or by a copy trade's leader. */
+export type ExchangeLedgerKind =
+  | "deposit"
+  | "withdrawal"
+  | "faucet"
+  | "fee"
+  | "realized_pnl"
+  | "funding"
+  | "liquidation"
+  | "adjustment"
+  | "transfer"
+  | "profit_share";
 
 export interface ExchangeLedgerEntry {
   id: string;

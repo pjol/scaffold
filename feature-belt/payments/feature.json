@@ -1,7 +1,7 @@
 {
   "name": "payments",
   "title": "Payments",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "summary": "Users pay through hosted Stripe Checkout for one-time purchases and subscriptions, manage billing in the portal and see their history; features gate on entitlements.",
   "requires": [
     "notifications"
@@ -146,6 +146,7 @@
     "Create products and prices in Stripe, then add each to the catalog (Admin \u2192 Payments \u2192 Prices, or PAYMENTS_PRICES in .env.dev) with a stable key and the entitlement it grants.",
     "Gate paid features with payments.RequireEntitlement(\"<entitlement>\") on routes (402 payment_required); in clients call usePaymentRequired() in onError to open the plan picker, and link pricing to /payments (web) or /payments/plans (mobile).",
     "Selling per item (tickets, orders)? Call payments.From(d).Checkout with a Ref from your own endpoint, react in payments.OnOrder hooks (inside the webhook transaction), check with payments.HasPaidOrder. Physical goods: set PAYMENTS_SHIPPING_COUNTRIES and read order.Shipping in the hook.",
+    "Following a paid plan from another module (a badge, a role, a quota)? Register payments.OnEntitlementChange: it runs inside the sync transaction on every grant, renewal, cancellation, lapse, refund and deletion with the user's resulting hold on the key; queue notifications and provider calls with payments.AfterCommit. Refuse checkouts people shouldn't make with payments.GuardCheckout.",
     "Production: add the endpoint <PUBLIC_API_URL>/webhooks/stripe in Stripe with the events in FEATURE.md, set STRIPE_WEBHOOK_SECRET, configure the Billing Portal, and name Stripe as a processor in the privacy policy.",
     "Development: put a test-mode STRIPE_SECRET_KEY in .env.dev and install the Stripe CLI; dev-up's payments hook forwards webhooks."
   ],

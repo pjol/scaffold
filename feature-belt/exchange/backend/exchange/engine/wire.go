@@ -92,6 +92,7 @@ type OrderView struct {
 	PostOnly    bool      `json:"post_only"`
 	Leverage    int       `json:"leverage"`
 	Liquidation bool      `json:"liquidation"`
+	Source      string    `json:"source"` // user | agent | copy | liquidation | system | a module's name
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

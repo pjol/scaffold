@@ -633,3 +633,240 @@ func TestFeesConserveCollateral(t *testing.T) {
 		})
 	}
 }
+
+// ---- 1.1.0: sub-accounts, transfers, orders for modules, fill hook ----
+
+func uidOf(e *Engine, accountID string) string { return e.Account(accountID).UserID }
+
+func ledgerKinds(st *MemStore, accountID string) map[string]decimal.Decimal {
+	out := map[string]decimal.Decimal{}
+	for _, b := range st.Commits {
+		for _, l := range b.Ledger {
+			if l.AccountID == accountID {
+				out[l.Kind] = out[l.Kind].Add(l.Amount)
+			}
+		}
+	}
+	return out
+}
+
+func TestSubaccountsAndInternalTransfers(t *testing.T) {
+	st := &MemStore{}
+	e, _ := newTestEngineWith(t, st)
+	alice, bob := user(t, e, "sub-alice"), user(t, e, "sub-bob")
+	sub, err := e.OpenSubaccount(uidOf(e, alice), "copy:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := e.OpenSubaccount(uidOf(e, alice), "copy:1"); again != sub {
+		t.Fatal("the same purpose should return the open sub-account")
+	}
+	if a := e.Account(sub); a.Kind != KindSub || a.UserID != "" || a.OwnerID != uidOf(e, alice) || a.Label != "copy:1" || !a.Balance.IsZero() {
+		t.Fatalf("sub-account %+v", a)
+	}
+	if id, _ := e.AccountForUser(uidOf(e, alice)); id != alice {
+		t.Fatal("the main account must stay the person's account")
+	}
+	if _, err := e.OpenSubaccount(uuid.NewString(), "copy:2"); code(err) != "no_account" {
+		t.Fatalf("a person without a main account: %v", err)
+	}
+	if err := e.Transfer(alice, sub, d("400"), LedgerTransfer, "copy"); err != nil {
+		t.Fatal(err)
+	}
+	if a, s := e.Account(alice), e.Account(sub); !a.Balance.Equal(d("600")) || !a.Deposits.Equal(d("600")) ||
+		!s.Balance.Equal(d("400")) || !s.Deposits.Equal(d("400")) {
+		t.Fatalf("balances after transfer: main %s/%s sub %s/%s", a.Balance, a.Deposits, s.Balance, s.Deposits)
+	}
+	if k := ledgerKinds(st, alice); !k[LedgerTransfer].Equal(d("-400")) {
+		t.Fatalf("main ledger %v", k)
+	}
+	if k := ledgerKinds(st, sub); !k[LedgerTransfer].Equal(d("400")) {
+		t.Fatalf("sub ledger %v", k)
+	}
+	if err := e.Transfer(alice, sub, d("601"), LedgerTransfer, ""); code(err) != "insufficient_collateral" {
+		t.Fatalf("over-transfer: %v", err)
+	}
+	if err := e.Transfer(sub, bob, d("10"), LedgerTransfer, ""); code(err) != "invalid" {
+		t.Fatalf("an internal transfer to someone else: %v", err)
+	}
+	if err := e.Transfer(sub, alice, d("10"), LedgerProfitShare, ""); code(err) != "invalid" {
+		t.Fatalf("a profit share to the owner: %v", err)
+	}
+	if err := e.Transfer(sub, bob, d("25"), LedgerProfitShare, "share"); err != nil {
+		t.Fatal(err)
+	}
+	if !e.Account(bob).Balance.Equal(d("1025")) || !e.Account(sub).Balance.Equal(d("375")) {
+		t.Fatal("profit share should move the balance")
+	}
+	if subs := e.Subaccounts(uidOf(e, alice)); len(subs) != 1 || subs[0].ID != sub || !subs[0].AccountValue.Equal(d("375")) {
+		t.Fatalf("subaccounts %+v", subs)
+	}
+	// margin in use can't be moved out
+	must(t)(limit(e, bob, Sell, "100", "10", 5))
+	must(t)(e.PlaceOrder(sub, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "10", Leverage: 5}))
+	if err := e.Transfer(sub, alice, d("300"), LedgerTransfer, ""); code(err) != "insufficient_collateral" {
+		t.Fatalf("moving margin in use: %v", err)
+	}
+	if e.Platform().Accounts != 2 {
+		t.Fatal("sub-accounts are not separate people")
+	}
+}
+
+func TestOwnerWideSelfTradePrevention(t *testing.T) {
+	e, _ := newTestEngine(t)
+	alice, maker := user(t, e, "stp-alice"), user(t, e, "stp-maker")
+	sub, _ := e.OpenSubaccount(uidOf(e, alice), "x")
+	if err := e.Transfer(alice, sub, d("500"), LedgerTransfer, ""); err != nil {
+		t.Fatal(err)
+	}
+	own, _ := must(t)(limit(e, alice, Sell, "100", "1", 2))
+	must(t)(limit(e, maker, Sell, "100.5", "1", 2))
+	_, fills := must(t)(e.PlaceOrder(sub, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1", Leverage: 2}))
+	if len(fills) != 1 || fills[0].Px != "100.50" {
+		t.Fatalf("fills %+v", fills)
+	}
+	if e.Account(alice).Orders[own.ID] != nil || !pos(e, alice, "TST-A").IsZero() {
+		t.Fatal("a person's main and sub-account must never trade with each other")
+	}
+}
+
+func TestOrdersForModules(t *testing.T) {
+	st := &MemStore{}
+	e, _ := newTestEngineWith(t, st)
+	leader, follower, maker := user(t, e, "mod-leader"), user(t, e, "mod-follower"), user(t, e, "mod-maker")
+	cp, _ := e.OpenSubaccount(uidOf(e, follower), "copy:a")
+	if err := e.Transfer(follower, cp, d("500"), LedgerTransfer, ""); err != nil {
+		t.Fatal(err)
+	}
+	lead, _ := must(t)(limit(e, leader, Sell, "100", "1", 2))
+	opts := PlaceOpts{Source: SourceCopy, ClientRef: "ev-1", AvoidMakers: []string{leader}}
+	if _, _, err := e.PlaceOrderWith(cp, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1", Leverage: 2}, opts); code(err) != "no_liquidity" {
+		t.Fatalf("only the avoided maker quotes: %v", err)
+	}
+	if e.Account(leader).Orders[lead.ID] == nil {
+		t.Fatal("a rejected order must not touch the book")
+	}
+	must(t)(limit(e, maker, Sell, "100.5", "2", 2))
+	opts.ClientRef = "ev-2"
+	o, fills, err := e.PlaceOrderWith(cp, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1", Leverage: 2}, opts)
+	if err != nil || len(fills) != 1 || fills[0].Px != "100.50" || o.Source != SourceCopy {
+		t.Fatalf("copy order: %v %+v %+v", err, o, fills)
+	}
+	if e.Account(leader).Orders[lead.ID] != nil || !pos(e, leader, "TST-A").IsZero() {
+		t.Fatal("the leader's crossing order must be expired, never filled")
+	}
+	var found bool
+	for _, b := range st.Commits {
+		if x := b.Orders[o.ID]; x != nil {
+			found = x.Source == SourceCopy && x.ClientRef == "ev-2"
+		}
+	}
+	if !found {
+		t.Fatal("source and client ref must reach the store")
+	}
+	if _, _, err := e.PlaceOrderWith(cp, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1"}, PlaceOpts{Source: SourceLiquidation}); code(err) != "invalid" {
+		t.Fatalf("callers can't claim the engine's sources: %v", err)
+	}
+	if _, _, err := e.PlaceOrderWith(cp, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1"}, PlaceOpts{Source: "Bad Source"}); code(err) != "invalid" {
+		t.Fatalf("source format: %v", err)
+	}
+	if v, _ := must(t)(limit(e, follower, Buy, "90", "1", 2)); v.Source != SourceUser {
+		t.Fatalf("plain orders are the user's: %q", v.Source)
+	}
+	must(t)(limit(e, maker, Buy, "99", "5", 2))
+	if v, _, err := e.ClosePositionWith(cp, "TST-A", "", PlaceOpts{Source: SourceCopy, ClientRef: "ev-3"}); err != nil || v.Source != SourceCopy {
+		t.Fatalf("close with opts: %v %+v", err, v)
+	}
+}
+
+func TestCloseSubaccountClosesPositionsAndSweeps(t *testing.T) {
+	st := &MemStore{}
+	e, _ := newTestEngineWith(t, st)
+	owner, maker := user(t, e, "cls-owner"), user(t, e, "cls-maker")
+	sub, _ := e.OpenSubaccount(uidOf(e, owner), "copy:c")
+	if err := e.Transfer(owner, sub, d("500"), LedgerTransfer, ""); err != nil {
+		t.Fatal(err)
+	}
+	must(t)(limit(e, maker, Sell, "100", "2", 2))
+	must(t)(e.PlaceOrder(sub, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "2", Leverage: 2}))
+	must(t)(e.PlaceOrder(sub, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeLimit, Px: "95", Sz: "1", Leverage: 2}))
+	// nobody bids: the position can't close yet, orders are cancelled anyway
+	if err := e.CloseSubaccount(sub, 0); code(err) != "positions_open" {
+		t.Fatalf("want positions_open, got %v", err)
+	}
+	if a := e.Account(sub); a.Status != AccountActive || len(a.Orders) != 0 || !pos(e, sub, "TST-A").Equal(d("2")) {
+		t.Fatalf("after a partial close: %+v", a)
+	}
+	must(t)(limit(e, maker, Buy, "100", "2", 2))
+	before := e.Account(owner).Balance
+	if err := e.CloseSubaccount(sub, 0); err != nil {
+		t.Fatal(err)
+	}
+	a := e.Account(sub)
+	if a.Status != AccountClosed || hasPosition(a) || !a.Balance.IsZero() {
+		t.Fatalf("closed sub-account %+v", a)
+	}
+	// 500 − two taker fees (2 × 100 × 0.00045 each way)
+	if got := e.Account(owner).Balance.Sub(before); !got.Equal(d("499.82")) {
+		t.Fatalf("swept %s", got)
+	}
+	if k := ledgerKinds(st, sub); !k[LedgerTransfer].Equal(d("0.18")) || !k[LedgerTransfer].Add(k[LedgerFee]).IsZero() {
+		t.Fatalf("the sub-account's ledger should net to zero: %v", k)
+	}
+	if len(e.Subaccounts(uidOf(e, owner))) != 0 {
+		t.Fatal("a closed sub-account is not listed")
+	}
+	if err := e.Transfer(owner, sub, d("1"), LedgerTransfer, ""); code(err) != "account_closed" {
+		t.Fatalf("transfer into a closed sub-account: %v", err)
+	}
+}
+
+func TestDeletionClosesSubaccountsToTheBackstop(t *testing.T) {
+	e, _ := newTestEngine(t)
+	owner, maker := user(t, e, "del-owner"), user(t, e, "del-maker")
+	sub, _ := e.OpenSubaccount(uidOf(e, owner), "copy:d")
+	if err := e.Transfer(owner, sub, d("300"), LedgerTransfer, ""); err != nil {
+		t.Fatal(err)
+	}
+	must(t)(limit(e, maker, Sell, "100", "1", 2))
+	must(t)(e.PlaceOrder(sub, PlaceOrder{Symbol: "TST-A", Side: Buy, Type: TypeMarket, Sz: "1", Leverage: 2}))
+	if err := e.CloseAccount(sub); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.Account(sub); a.Status != AccountClosed || a.OwnerID != "" || hasPosition(a) || !a.Balance.IsZero() {
+		t.Fatalf("deleted owner's sub-account %+v", a)
+	}
+	if !pos(e, e.backstop.ID, "TST-A").Equal(d("1")) {
+		t.Fatal("the backstop should take the position")
+	}
+}
+
+func TestFillHookRunsAfterCommitOnly(t *testing.T) {
+	st := &failStore{}
+	e, _ := newTestEngineWith(t, st)
+	mk, tk := user(t, e, "hook-mk"), user(t, e, "hook-tk")
+	var got []FillEvent
+	e.SetFillHook(func(f FillEvent) { got = append(got, f) })
+	must(t)(limit(e, mk, Sell, "100", "3", 2))
+	if len(got) != 0 {
+		t.Fatal("resting an order fills nothing")
+	}
+	st.fail = true
+	if _, _, err := mkt(e, tk, Buy, "1", 2); code(err) != "unavailable" {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatal("a rolled-back command must not reach the hook")
+	}
+	st.fail = false
+	must(t)(mkt(e, tk, Buy, "1", 2))
+	if len(got) != 2 {
+		t.Fatalf("want both sides, got %+v", got)
+	}
+	for _, f := range got {
+		want := map[string]string{tk: "taker", mk: "maker"}[f.AccountID]
+		if want == "" || f.Liquidity != want || f.Kind != KindUser || f.UserID != uidOf(e, f.AccountID) || !f.Px.Equal(d("100")) || !f.Sz.Equal(d("1")) {
+			t.Fatalf("fill event %+v", f)
+		}
+	}
+}

@@ -390,7 +390,7 @@ func (s *Service) orderView(o *engine.Order) engine.OrderView {
 	}
 	v := engine.OrderView{ID: o.ID, Symbol: o.Symbol, Side: o.Side, Type: o.Type, Sz: o.Sz.String(), FilledSz: o.Filled.String(),
 		Status: o.Status, ReduceOnly: o.ReduceOnly, PostOnly: o.PostOnly, Leverage: o.Leverage, Liquidation: o.Liquidation,
-		CreatedAt: ms(o.CreatedMs), UpdatedAt: ms(o.UpdatedMs)}
+		Source: o.Source, CreatedAt: ms(o.CreatedMs), UpdatedAt: ms(o.UpdatedMs)}
 	if o.Type == engine.TypeLimit {
 		px := o.Px.String()
 		v.Px = &px

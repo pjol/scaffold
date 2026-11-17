@@ -9,6 +9,7 @@ Stripe by default, behind a `Gateway` interface so another provider can replace 
 - Settings → Billing shows the plan, what the user holds and their payment history, and links to Stripe's billing portal (cards, invoices, plan changes, cancellation).
 - Orders, subscriptions and refunds change only from provider state (signed webhook, re-fetched, or the hourly reconcile job), never because a client says it paid.
 - A failed renewal notifies the user (`payments.failed`); a lapsed or cancelled subscription loses its entitlement at period end.
+- Other modules follow entitlements without polling: `OnEntitlementChange` hooks run inside the sync transaction on every grant, renewal, shortening, revocation, lapse and deletion, with the user's resulting hold on the key.
 - Staff look up customers, read the ledger, refund (audited, idempotent) and manage the price catalog. Optional Connect: sellers onboard Express accounts and receive destination charges minus a platform fee.
 
 ## The store rule (decide before selling anything)
@@ -30,7 +31,7 @@ The web may sell anything. The mobile app opens hosted checkout and the portal o
 | `payment_checkout_sessions` | hosted checkouts: pending → completed / expired / failed; expected amount, `ref` |
 | `payment_orders` | one-time purchases (provider state only); refunded totals, platform fee, `shipping` |
 | `payment_subscriptions` | mirrored subscriptions: status, periods, `cancel_at_period_end`, `cancel_at`, `cancel_pending`, destination |
-| `payment_entitlements` | `(user_id, key, source, source_id, active_until)` derived from orders and subscriptions |
+| `payment_entitlements` | `(user_id, key, source, source_id, active_until)` derived from orders and subscriptions; `end_reported_at` marks an end already announced to hooks (1401) |
 | `payment_ledger` | append-only (UPDATE blocked by trigger): payments and invoices positive, refunds negative, unique `idempotency_key` |
 | `payment_refunds` | staff and dashboard refunds with status, reason, note, requester |
 | `payment_connected_accounts` | Connect payout accounts and capability flags |
@@ -89,22 +90,26 @@ Invalid values fail the boot through `config.Problem`. Go dependency `github.com
 3. Gate features: `r.With(payments.RequireEntitlement("pro"))` or `payments.HasEntitlement`; in clients call `usePaymentRequired()(error)` in `onError`, and link pricing to `/payments` (web) or `/payments/plans` (mobile).
 4. Per-item sales: your endpoint calls `payments.From(d).Checkout(ctx, payments.CheckoutInput{…, Ref: "event:<id>"})`; react in `payments.OnOrder` (inside the webhook transaction; idempotent); check with `payments.HasPaidOrder`. Physical goods: set `PAYMENTS_SHIPPING_COUNTRIES` and read `order.Shipping` in the hook.
 5. Past-due policy: access continues while Stripe retries; set Stripe's retry schedule and end state to match.
-6. Production: webhook endpoint + events above, `STRIPE_WEBHOOK_SECRET`, Billing Portal configuration, privacy policy.
+6. Following a plan from another module (a badge, a role, a quota): `payments.OnEntitlementChange(func(ctx, tx, ch payments.EntitlementChange) error)` in an `init()` or a stitch module: set your state to `ch.Active`/`ch.Until` for `ch.Key` (idempotent, no network); queue notifications and provider calls with `payments.AfterCommit(ctx, name, fn)`. Refuse checkouts someone can't benefit from with `payments.GuardCheckout` (return an `*httpx.Error`). A listener added after sales began catches up with `payments.From(d).ReplayEntitlements(ctx, key)`, run once. Example: identity's FEATURE.md (paid badge).
+7. Production: webhook endpoint + events above, `STRIPE_WEBHOOK_SECRET`, Billing Portal configuration, privacy policy.
 
 ## Extending
 
 - **Another provider**: implement `Gateway` (neutral types in `gateway.go`), return it from `newGateway`, mount its webhook route. Rows from another provider stay readable; refunds on them answer 409 `other_provider`.
-- **Hooks and readers**: `OnOrder`; `HasEntitlement`, `ActiveEntitlements`, `CurrentSubscription`, `ListLedger`, `NetPaid`, `HasPaidOrder`. Agent tools: `payments_get_subscription`, `payments_list_history` (read-only). Shared: `paymentsEndpoints`, `paymentsKeys`, hooks, `formatMinor`/`parseMinor` (currency-exponent aware).
+- **Hooks and readers**: `OnOrder`; `OnEntitlementChange` (`EntitlementChange{UserID, Key, Cause, Source, SourceID, Active, Until}`; causes `granted`, `extended`, `shortened`, `revoked`, `lapsed`, `deleted`, `replayed`; a re-sync that changes nothing a reader sees announces nothing; deletion hooks run in the account-deletion transaction and their `AfterCommit` work is dropped); `AfterCommit` (works in `OnOrder` hooks too); `GuardCheckout`; `(*Service).StopRenewal(ctx, userID, key)` (cancel at period end, no refund: for a perk staff took away; `Gateway.CancelAtPeriodEnd`); `ReplayEntitlements`; `HasEntitlement`, `ActiveEntitlements`, `CurrentSubscription`, `ListLedger`, `NetPaid`, `HasPaidOrder`. Agent tools: `payments_get_subscription`, `payments_list_history` (read-only). Shared: `paymentsEndpoints`, `paymentsKeys`, hooks, `formatMinor`/`parseMinor` (currency-exponent aware).
 - Don't write orders, entitlements or ledger rows outside `sync.go`; don't trust webhook payloads; never UPDATE the ledger.
 
 ## Provenance
 
 Distilled from DOGPATCH (`Gateway` boundary, stripe-go v87 client, idempotency keys, `httpx.Detach` money routes, `webhook_events` dedupe, re-fetch before trusting `account.updated`, Express accounts, return-URL allow-list), STIQQ (subscriptions, billing portal, reconcile of missed webhooks and invoices, append-only ledger with unique keys), ASSEMBLY (Connect Express + hosted Checkout + platform fee) and SIMMONS (orders only from the webhook, amount check against the priced checkout, async payment events, 200 for unknown events, API version drift tolerated). Fixed on the way: webhooks fail closed without a secret (ASSEMBLY accepted forged events); return URLs are validated paths the web ships (ASSEMBLY sent payers to 404s); lapsed and cancelled subscriptions revoke entitlements and failed renewals notify (ASSEMBLY never handled them); 402 carries routing details and both clients handle it (ASSEMBLY's mobile ignored it); no fake gateway: no keys means an honest 503.
 
-**Verified**: backend build/vet/unit tests; 53 end-to-end API checks and the web flows (subscribe, buy, portal, payouts, refund, catalog) against an in-memory provider in a scratch copy; Stripe requests against `stripe-mock`; `pnpm typecheck`/`check`; `expo export` (iOS). **Unverified**: calls to real Stripe with a test key; the dev-up hook with a logged-in Stripe CLI; mobile screens on a simulator or device.
+1.1.0 compared MOX's `internal/billing` (the paid verification badge: Stripe test mode, checkout, webhook, reconcile, simulate mode) with this module and took what was generic: the entitlement callback (MOX's `OnEntitlement`, called after a non-transactional write and re-emitted by the hourly reconcile; here a hook inside the sync transaction plus a lapse sweep, so nothing is missed between runs and a failing hook makes the provider retry), stopping renewal when staff remove the perk (MOX `CancelAtPeriodEnd`), and refusing checkout for people who can't hold the perk (MOX checked eligibility before checkout). Not taken: MOX's simulate mode (payments keeps "no keys, honest 503"; Stripe test-mode keys are the test path), its raw-HTTPS client and single-price config (the catalog covers it), refusing live keys outside development (apps sell for real).
 
-## Changelog
+**Verified**: backend build/vet/unit tests; 53 end-to-end API checks and the web flows (subscribe, buy, portal, payouts, refund, catalog) against an in-memory provider in a scratch copy; Stripe requests against `stripe-mock`; `pnpm typecheck`/`check`; `expo export` (iOS). 1.1.0: `go build`/`vet`, `go test` with `TEST_DATABASE_URL` (entitlement changes through subscription syncs, order grants and revocations, the lapse sweep, deletion, replay, a failing hook rolling back, `AfterCommit` only after commit), the identity paid-badge stitch and `GuardCheckout` driven through real syncs in a scratch copy, `pnpm typecheck`/`check`, `scaffold doctor`. **Unverified**: calls to real Stripe with a test key (1.1.0's `CancelAtPeriodEnd` sends `cancel_at_period_end=true` on a subscription update, unexercised against Stripe); the dev-up hook with a logged-in Stripe CLI; mobile screens on a simulator or device.
 
+## Changes
+
+- 1.1.0: entitlement-change hook (`OnEntitlementChange`, `AfterCommit`), lapse sweep (`payments.lapses`, every 5 minutes; migration `1401_payments_entitlement_changes.sql`), `StopRenewal` (`Gateway.CancelAtPeriodEnd`: custom gateways must add it), `GuardCheckout`, `ReplayEntitlements`.
 - 1.0.1: `/payments/return` wired into `web/proxy.ts` public paths (`scaffold:public-paths`).
 - 1.0.0: web, mobile and shared clients; shipping address collection; deletion provider calls moved after commit; Connect routes always mounted (`connect_disabled`); two-phase dev-up hook.
 - 0.1.0: backend, migration, dev-up hook.

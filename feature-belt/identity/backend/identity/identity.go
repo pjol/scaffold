@@ -4,12 +4,19 @@
 // admin queue and the photos are deleted right after). Other modules gate on
 // IsVerified; clients show the badge from GET /v1/identity/status and
 // GET /v1/identity/users/{id}/badge.
+//
+// Beside ID verification it keeps verification badges (badges.go): official,
+// org, notable and paid, from admin grants, reviewed applications with
+// evidence and DNS domain proofs (applications.go), and a paid plan through
+// SetPaidBadge. Other modules read them with BadgeOf and BadgeSet.
 package identity
 
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,7 +42,12 @@ type Service struct {
 	d        *app.Deps
 	provider Provider // nil = manual review
 	cfg      settings
+	badges   badgeSettings
+	resolver Resolver // DNS TXT lookups for domain proofs
 }
+
+// installed is the constructed module, for the package-level badge helpers.
+var installed atomic.Pointer[Service]
 
 type settings struct {
 	maxAttempts   int           // rejected attempts before the user must contact support
@@ -58,6 +70,8 @@ func New(d *app.Deps) *Service {
 		config.Problem("IDENTITY_VERIFICATION_TTL must not be negative")
 		s.cfg.ttl = 0
 	}
+	s.badges = readBadgeSettings(d.Cfg.IsDevelopment())
+	s.resolver = net.DefaultResolver
 	if key := config.String("PERSONA_API_KEY", ""); key != "" {
 		s.provider = &Persona{
 			APIKey:        key,
@@ -67,9 +81,15 @@ func New(d *app.Deps) *Service {
 			HTTP:          &http.Client{Timeout: personaTimeout},
 		}
 	}
-	slog.Info("identity configured", "mode", s.mode(), "verification_ttl", s.cfg.ttl.String())
+	slog.Info("identity configured", "mode", s.mode(), "verification_ttl", s.cfg.ttl.String(),
+		"badge_categories", len(s.badges.categories), "paid_entitlement", s.badges.paidKey)
+	installed.Store(s)
 	return s
 }
+
+// SetResolver replaces the DNS resolver domain proofs use (tests, or a
+// resolver pinned to particular servers).
+func (s *Service) SetResolver(r Resolver) { s.resolver = r }
 
 func (s *Service) Name() string { return "identity" }
 
@@ -92,6 +112,14 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RequireActive, auth.RateLimit(10, time.Hour), httpx.Detach(30*time.Second)).
 		Post("/identity/start", httpx.Handler(s.start))
 	r.With(auth.RequireActive, auth.RateLimit(10, time.Hour)).Post("/identity/documents", httpx.Handler(s.submitDocuments))
+
+	r.Get("/identity/badges", httpx.Handler(s.getBadges))
+	r.With(auth.RequireActive, auth.RateLimit(10, time.Hour)).Post("/identity/badges/applications", httpx.Handler(s.postApplication))
+	r.With(auth.RequireActive, auth.RateLimit(10, time.Hour)).Post("/identity/badges/applications/{id}/resubmit", httpx.Handler(s.postResubmit))
+	r.With(auth.RequireActive).Post("/identity/badges/applications/{id}/withdraw", httpx.Handler(s.postWithdraw))
+	r.With(auth.RequireActive, auth.RateLimit(20, time.Hour)).Post("/identity/badges/domains", httpx.Handler(s.postDomain))
+	r.With(auth.RequireActive, auth.RateLimit(30, time.Hour)).Post("/identity/badges/domains/{domain}/check", httpx.Handler(s.postDomainCheck))
+	r.Delete("/identity/badges/domains/{domain}", httpx.Handler(s.deleteDomain))
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
@@ -99,6 +127,13 @@ func (s *Service) MountAdmin(r chi.Router) {
 	r.Get("/identity/verifications/{id}", httpx.Handler(s.adminGet))
 	r.Post("/identity/verifications/{id}/approve", httpx.Handler(s.adminApprove))
 	r.Post("/identity/verifications/{id}/reject", httpx.Handler(s.adminReject))
+
+	r.Get("/identity/badge-applications", httpx.Handler(s.adminApplications))
+	r.Get("/identity/badge-applications/{id}", httpx.Handler(s.adminApplication))
+	r.Post("/identity/badge-applications/{id}/decision", httpx.Handler(s.adminDecide))
+	r.Get("/identity/badges", httpx.Handler(s.adminBadges))
+	r.With(auth.RequireAdminRole("admin")).Post("/identity/badges", httpx.Handler(s.adminGrant))
+	r.Post("/identity/badges/{user_id}/{kind}/revoke", httpx.Handler(s.adminRevoke))
 }
 
 func (s *Service) MountWebhooks(r chi.Router) {
@@ -221,11 +256,13 @@ func (s *Service) status(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// Badge is GET /v1/identity/users/{id}/badge. Unknown users read as not
-// verified, so the route never reveals whether an account exists.
+// Badge is GET /v1/identity/users/{id}/badge: ID verification and the
+// highest verification badge. Unknown users read as not verified with no
+// badge, so the route never reveals whether an account exists.
 type Badge struct {
-	UserID   uuid.UUID `json:"user_id"`
-	Verified bool      `json:"verified"`
+	UserID   uuid.UUID  `json:"user_id"`
+	Verified bool       `json:"verified"`
+	Badge    *HeldBadge `json:"badge"`
 }
 
 func (s *Service) badge(w http.ResponseWriter, r *http.Request) error {
@@ -237,8 +274,12 @@ func (s *Service) badge(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	held, err := BadgeOf(r.Context(), s.d.Pool, id)
+	if err != nil {
+		return err
+	}
 	w.Header().Set("Cache-Control", "public, max-age=60")
-	httpx.OK(w, Badge{UserID: id, Verified: ok})
+	httpx.OK(w, Badge{UserID: id, Verified: ok, Badge: held})
 	return nil
 }
 

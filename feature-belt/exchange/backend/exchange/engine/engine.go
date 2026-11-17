@@ -169,6 +169,7 @@ type Engine struct {
 	p       Params
 	store   Store
 	pub     Publisher
+	onFill  func(FillEvent) // modules' fill hook (SetFillHook)
 	log     *slog.Logger
 	now     func() time.Time
 	markets map[string]*market
@@ -371,7 +372,7 @@ func (e *Engine) indexAccount(a *Account) {
 	if a.UserID != "" {
 		e.byUser[a.UserID] = a
 	}
-	if a.Kind != KindUser {
+	if a.Kind != KindUser && a.Kind != KindSub {
 		e.system[a.Kind+"|"+a.Label] = a
 	}
 }
@@ -451,6 +452,11 @@ func (e *Engine) commit(c *cmd) error {
 	}
 	for _, f := range c.events {
 		f(e.pub)
+	}
+	if e.onFill != nil {
+		for _, f := range c.b.Fills {
+			e.onFill(e.fillEvent(f))
+		}
 	}
 	for id := range c.accts {
 		if a := e.accounts[id]; a != nil && a.Kind == KindUser {

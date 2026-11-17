@@ -10,6 +10,7 @@ import { LoadMore } from "@/components/shell/LoadMore";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { formatDate } from "@/lib/format";
 import { useUrlState } from "@/lib/url-state";
+import { IdentityAdminTabs } from "./IdentityAdminTabs";
 
 type Filter = "queue" | Exclude<IdentityState, "none">;
 
@@ -40,6 +41,7 @@ export function AdminVerificationsScreen() {
     <div className="flex flex-col gap-section">
       <PageHeader title="Verification" info="Photos are deleted as soon as you approve or reject." />
       <div className="flex flex-col gap-4">
+        <IdentityAdminTabs />
         <Select aria-label="Status" options={FILTERS} value={filter} onValueChange={(v) => setFilter(v as Filter)} className="sm:w-56" />
         <Card padding="none">
           {list.isPending ? (

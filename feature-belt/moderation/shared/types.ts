@@ -72,12 +72,18 @@ export interface CaseUser {
   avatar_url: string | null;
 }
 
-/** One reported target in the staff queue. */
+/** Where a case came from: people's reports, or screening that held or removed the content. */
+export type ModerationCaseSource = "report" | "auto";
+
+/** One reported or screened target in the staff queue. */
 export interface ModerationCase {
   id: string;
   target_kind: string;
   target_id: string;
   status: CaseStatus;
+  source: ModerationCaseSource;
+  /** Screening categories (spam, scam, harassment, manipulation, off_topic, injection, other). */
+  categories: string[];
   report_count: number;
   reasons: Partial<Record<ReportReason, number>>;
   snapshot: ModerationSnapshot;
@@ -108,7 +114,9 @@ export interface CaseReport {
 
 export interface CaseDetail extends ModerationCase {
   reports: CaseReport[];
-  author_history: { cases: number; actioned: number };
+  /** Screening decisions on the content, newest first (empty for people). */
+  decisions: ModerationDecision[];
+  author_history: { cases: number; actioned: number; strikes: number };
 }
 
 /** `GET /v1/admin/moderation/summary`. */
@@ -119,7 +127,120 @@ export interface ModerationSummary {
   closed_7d: number;
   median_close_seconds_7d: number | null;
   sla_seconds: number;
+  /** Open cases screening opened. */
+  held_open: number;
+  decision_model: ModerationDecisionModelHealth;
 }
+
+// ---- screening ----
+
+/** Screening actions, least to most severe: the final one is the more severe of the rules' and the decision model's. */
+export type ModerationDecisionAction = "allow" | "label" | "hold" | "remove";
+
+/** How an item is stored after screening. */
+export type ModerationContentStatus = "visible" | "held" | "removed";
+
+/** What screening told the author after posting (UGC features return it with the item). */
+export interface ModerationOutcome {
+  action: ModerationDecisionAction;
+  status: ModerationContentStatus;
+  labels: string[];
+  /** User-safe reasons for a label, hold or removal. */
+  reasons: string[];
+}
+
+/** One rule (or model answer, `model:<question>`) that fired. */
+export interface ModerationHit {
+  rule: string;
+  action: ModerationDecisionAction;
+  category?: string;
+  /** For staff: the matched domain, count or probability. */
+  detail?: string;
+  reason?: string;
+}
+
+/** Decision model status recorded with a decision. */
+export type ModerationModelStatus = "ok" | "off" | "skipped" | "unavailable" | "rate_limited" | "timeout" | "cap_reached" | "error";
+
+/** A recorded screening decision (admin case page). */
+export interface ModerationDecision {
+  id: string;
+  rules_version: string;
+  action: ModerationDecisionAction;
+  rules_action: ModerationDecisionAction;
+  labels: string[];
+  categories: string[];
+  hits: ModerationHit[];
+  model: string | null;
+  model_status: ModerationModelStatus;
+  /** P(yes) per question: spam, scam, harassment, manipulation, on_topic, addresses_moderator. */
+  answers: Record<string, number> | null;
+  distrusted: boolean;
+  latency_ms: number | null;
+  /** Decimal dollars. */
+  cost_usd: string | null;
+  edit: boolean;
+  created_at: string;
+}
+
+/** The decision model's state (Admin → Moderation). */
+export interface ModerationDecisionModelHealth {
+  configured: boolean;
+  model: string;
+  status: "ok" | "off" | "unavailable" | "rate_limited" | "cap_reached";
+  note: string;
+  calls: number;
+  failures: number;
+  /** Decimal dollars since the server started. */
+  cost_usd: string;
+  day_cost_usd: string;
+  /** "0" = no cap. */
+  daily_cap_usd: string;
+  paused_until: string | null;
+}
+
+/** Something the caller posted that screening held or staff removed (`GET /v1/moderation/content`). */
+export interface ModerationContentItem {
+  case_id: string;
+  target_kind: string;
+  target_id: string;
+  text: string;
+  link: string;
+  state: "in_review" | "removed" | "approved";
+  reasons: string[];
+  created_at: string;
+  decided_at: string | null;
+}
+
+/** One strike against the caller. */
+export interface ModerationStrike {
+  id: string;
+  action: "remove" | "ban";
+  category: string;
+  created_at: string;
+  expires_at: string;
+}
+
+/** `GET /v1/moderation/standing`. */
+export interface ModerationStanding {
+  /** Strikes that count now, newest first. */
+  strikes: ModerationStrike[];
+  /** When the caller may post again; null when they may post now. */
+  restricted_until: string | null;
+  ladder: { strikes: number; hours: number }[];
+  window_days: number;
+}
+
+/** Labels for screening categories. */
+export const MODERATION_CATEGORY_LABELS: Record<string, string> = {
+  spam: "Spam",
+  scam: "Scam",
+  harassment: "Harassment",
+  manipulation: "Manipulation",
+  off_topic: "Off-topic",
+  injection: "Addressed to moderators",
+  other: "Flagged",
+};
 
 /** `POST /v1/admin/moderation/cases/{id}/actions`. */
 export interface CaseActionRequest {

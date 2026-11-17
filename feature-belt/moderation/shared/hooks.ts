@@ -16,6 +16,9 @@ import type {
   CreateReportRequest,
   ModerationCase,
   ModerationCaseListParams,
+  ModerationContentItem,
+  ModerationDecisionModelHealth,
+  ModerationStanding,
   ModerationSummary,
   MyReport,
 } from "./types";
@@ -27,6 +30,8 @@ export const moderationKeys = {
   blockList: () => ["moderation", "blocks", "list"] as const,
   blockedIds: () => ["moderation", "blocks", "ids"] as const,
   myReports: () => ["moderation", "reports"] as const,
+  content: () => ["moderation", "content"] as const,
+  standing: () => ["moderation", "standing"] as const,
   admin: {
     all: () => ["moderation", "admin"] as const,
     summary: () => ["moderation", "admin", "summary"] as const,
@@ -51,6 +56,20 @@ export function useCreateReport(): UseMutationResult<MyReport, ApiError, CreateR
 export function useMyReports(options?: InfiniteOverrides<MyReport>): PagedQueryResult<MyReport> {
   const m = useEndpoints(moderationEndpoints);
   return usePagedQuery<MyReport>(moderationKeys.myReports(), (cursor, signal) => m.myReports({ cursor }, { signal }), options);
+}
+
+// ---- screening: your held and removed content, strikes -------------------------
+
+/** `GET /v1/moderation/content`: your posts and comments screening held or staff removed. */
+export function useModerationContent(options?: InfiniteOverrides<ModerationContentItem>): PagedQueryResult<ModerationContentItem> {
+  const m = useEndpoints(moderationEndpoints);
+  return usePagedQuery<ModerationContentItem>(moderationKeys.content(), (cursor, signal) => m.content({ cursor }, { signal }), options);
+}
+
+/** `GET /v1/moderation/standing`: your strikes and when you can post again. */
+export function useModerationStanding(options?: QueryOverrides<ModerationStanding>): UseQueryResult<ModerationStanding, ApiError> {
+  const m = useEndpoints(moderationEndpoints);
+  return useApiQuery(moderationKeys.standing(), ({ signal }) => m.standing({ signal }), options);
 }
 
 // ---- blocks ------------------------------------------------------------------
@@ -164,6 +183,16 @@ export function useCaseAction(): UseMutationResult<CaseDetail, ApiError, { id: s
     onSuccess: (detail) => qc.setQueryData(moderationKeys.admin.case(detail.id), detail),
     onSettled: () =>
       Promise.all([qc.invalidateQueries({ queryKey: moderationKeys.admin.all() }), qc.invalidateQueries({ queryKey: ["admin", "audit"] }), qc.invalidateQueries({ queryKey: ["admin", "users"] })]),
+  });
+}
+
+/** `POST /v1/admin/moderation/decision-model/reset` (admin). */
+export function useResetModerationDecisionModel(): UseMutationResult<ModerationDecisionModelHealth, ApiError, void> {
+  const m = useEndpoints(moderationEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ModerationDecisionModelHealth, ApiError, void>({
+    mutationFn: () => m.admin.resetDecisionModel(),
+    onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: moderationKeys.admin.summary() }), qc.invalidateQueries({ queryKey: ["admin", "audit"] })]),
   });
 }
 

@@ -43,11 +43,12 @@ func (s *pgStore) Commit(ctx context.Context, b *engine.Batch) error {
 		if a.LastFaucetMs > 0 {
 			faucet = ms(a.LastFaucetMs)
 		}
-		q.Queue(`INSERT INTO exchange_accounts (id, user_id, kind, label, status, balance, deposits, last_faucet_at, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		q.Queue(`INSERT INTO exchange_accounts (id, user_id, owner_id, kind, label, status, balance, deposits, last_faucet_at, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (id) DO UPDATE SET balance = EXCLUDED.balance, deposits = EXCLUDED.deposits,
 			  last_faucet_at = EXCLUDED.last_faucet_at, updated_at = now()`,
-			a.ID, nullable(a.UserID), a.Kind, a.Label, a.Status, a.Balance.String(), a.Deposits.String(), faucet, ms(a.CreatedMs))
+			a.ID, nullable(a.UserID), nullable(a.OwnerID), a.Kind, a.Label, a.Status, a.Balance.String(), a.Deposits.String(), faucet,
+			ms(a.CreatedMs))
 	}
 	seen := map[string]bool{}
 	for _, a := range b.NewAccounts {
@@ -72,12 +73,16 @@ func (s *pgStore) Commit(ctx context.Context, b *engine.Batch) error {
 		if o.Type == engine.TypeLimit {
 			px = o.Px.String()
 		}
+		src := o.Source
+		if src == "" {
+			src = engine.SourceUser
+		}
 		q.Queue(`INSERT INTO exchange_orders (id, account_id, market_id, side, type, px, sz, filled_sz, status, reduce_only,
-			  post_only, leverage, liquidation, seq, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			  post_only, leverage, liquidation, seq, created_at, updated_at, source, client_ref)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 			ON CONFLICT (id) DO UPDATE SET filled_sz = EXCLUDED.filled_sz, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`,
 			o.ID, o.AccountID, o.MarketID, o.Side, o.Type, px, o.Sz.String(), o.Filled.String(), o.Status, o.ReduceOnly,
-			o.PostOnly, o.Leverage, o.Liquidation, o.Seq, ms(o.CreatedMs), ms(o.UpdatedMs))
+			o.PostOnly, o.Leverage, o.Liquidation, o.Seq, ms(o.CreatedMs), ms(o.UpdatedMs), src, nullable(o.ClientRef))
 	}
 	for _, t := range b.Trades {
 		q.Queue(`INSERT INTO exchange_trades (id, market_id, px, sz, side, buyer_id, seller_id, buyer_sim, seller_sim, liquidation, created_at)
@@ -137,7 +142,8 @@ func (s *pgStore) Commit(ctx context.Context, b *engine.Batch) error {
 func (s *pgStore) Load(ctx context.Context) (*engine.Snapshot, error) {
 	snap := &engine.Snapshot{}
 	byID := map[string]*engine.Account{}
-	rows, err := s.pool.Query(ctx, `SELECT id::text, COALESCE(user_id::text, ''), kind, label, status, balance::text, deposits::text,
+	rows, err := s.pool.Query(ctx, `SELECT id::text, COALESCE(user_id::text, ''), COALESCE(owner_id::text, ''), kind, label, status,
+		  balance::text, deposits::text,
 		  COALESCE((extract(epoch FROM last_faucet_at) * 1000)::bigint, 0), (extract(epoch FROM created_at) * 1000)::bigint
 		FROM exchange_accounts WHERE status <> 'closed'`)
 	if err != nil {
@@ -146,7 +152,7 @@ func (s *pgStore) Load(ctx context.Context) (*engine.Snapshot, error) {
 	for rows.Next() {
 		a := &engine.Account{Positions: map[string]*engine.Position{}}
 		var bal, dep string
-		if err := rows.Scan(&a.ID, &a.UserID, &a.Kind, &a.Label, &a.Status, &bal, &dep, &a.LastFaucetMs, &a.CreatedMs); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.OwnerID, &a.Kind, &a.Label, &a.Status, &bal, &dep, &a.LastFaucetMs, &a.CreatedMs); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -269,7 +275,8 @@ func scanCandle(rows pgx.Rows) (engine.CandleRec, error) {
 func (s *pgStore) queryOrders(ctx context.Context, where string, args ...any) ([]*engine.Order, error) {
 	rows, err := s.pool.Query(ctx, `SELECT o.id::text, o.account_id::text, m.symbol, o.market_id::text, o.side, o.type,
 		  COALESCE(o.px, 0)::text, o.sz::text, o.filled_sz::text, o.status, o.reduce_only, o.post_only, o.leverage, o.liquidation,
-		  o.seq, (extract(epoch FROM o.created_at) * 1000)::bigint, (extract(epoch FROM o.updated_at) * 1000)::bigint
+		  o.seq, (extract(epoch FROM o.created_at) * 1000)::bigint, (extract(epoch FROM o.updated_at) * 1000)::bigint,
+		  o.source, COALESCE(o.client_ref, '')
 		FROM exchange_orders o JOIN exchange_markets m ON m.id = o.market_id `+where, args...)
 	if err != nil {
 		return nil, err
@@ -280,7 +287,7 @@ func (s *pgStore) queryOrders(ctx context.Context, where string, args ...any) ([
 		o := &engine.Order{}
 		var px, sz, filled string
 		if err := rows.Scan(&o.ID, &o.AccountID, &o.Symbol, &o.MarketID, &o.Side, &o.Type, &px, &sz, &filled, &o.Status, &o.ReduceOnly,
-			&o.PostOnly, &o.Leverage, &o.Liquidation, &o.Seq, &o.CreatedMs, &o.UpdatedMs); err != nil {
+			&o.PostOnly, &o.Leverage, &o.Liquidation, &o.Seq, &o.CreatedMs, &o.UpdatedMs, &o.Source, &o.ClientRef); err != nil {
 			return nil, err
 		}
 		o.Px, o.Sz, o.Filled = dec(px), dec(sz), dec(filled)

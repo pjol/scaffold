@@ -1,7 +1,17 @@
 "use client";
 
-import { useModerationCases, useModerationSummary, type CaseStatusFilter, type ModerationCase, type ReportReason } from "@scaffoldapp/shared";
-import { Badge, Card, EmptyState, ErrorState, SegmentedControl, Skeleton, SkeletonGroup } from "@scaffoldapp/ui-web";
+import {
+  errorMessage,
+  useMe,
+  useModerationCases,
+  useModerationSummary,
+  useResetModerationDecisionModel,
+  type CaseStatusFilter,
+  type ModerationCase,
+  type ModerationDecisionModelHealth,
+  type ReportReason,
+} from "@scaffoldapp/shared";
+import { Badge, Button, Card, EmptyState, ErrorState, SegmentedControl, Skeleton, SkeletonGroup, toast } from "@scaffoldapp/ui-web";
 import { Inbox, SearchX } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,7 +20,7 @@ import { AppAvatar } from "@/components/shell/AppAvatar";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { useUrlState } from "@/lib/url-state";
-import { ACTION_LABEL, formatAge, kindLabel, reasonLabel } from "./labels";
+import { ACTION_LABEL, categoryLabel, formatAge, kindLabel, reasonLabel } from "./labels";
 
 type Tab = "open" | "closed";
 
@@ -19,6 +29,61 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "da
     <div className="flex flex-col gap-1">
       <dt className="type-caption text-fg-muted">{label}</dt>
       <dd className={tone === "danger" ? "type-title-sm tabular-nums text-danger-strong" : "type-title-sm tabular-nums text-fg"}>{value}</dd>
+    </div>
+  );
+}
+
+const MODEL_STATUS: Record<ModerationDecisionModelHealth["status"], { label: string; tone: "success" | "neutral" | "danger" | "warning" }> = {
+  ok: { label: "On", tone: "success" },
+  off: { label: "Off", tone: "neutral" },
+  unavailable: { label: "Stopped", tone: "danger" },
+  rate_limited: { label: "Paused", tone: "warning" },
+  cap_reached: { label: "Daily cap spent", tone: "warning" },
+};
+
+function usd(v: string): string {
+  return `$${v}`;
+}
+
+/** The decision model's health: status, calls, failures, today's cost against the cap; admins turn a stopped one back on. */
+function DecisionModel({ h }: { h: ModerationDecisionModelHealth }) {
+  const me = useMe();
+  const reset = useResetModerationDecisionModel();
+  const st = MODEL_STATUS[h.status];
+  if (!h.configured) {
+    return (
+      <p className="flex items-center gap-2 type-label text-fg-muted">
+        <Badge tone="neutral">Rules only</Badge>
+        No decision model is configured.
+      </p>
+    );
+  }
+  const cap = h.daily_cap_usd === "0" ? "no cap" : `cap ${usd(h.daily_cap_usd)}`;
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 type-label text-fg-muted">
+      <span className="flex items-center gap-2">
+        <Badge tone={st.tone} dot>
+          {st.label}
+        </Badge>
+        <span className="font-semibold text-fg">{h.model || "Decision model"}</span>
+      </span>
+      <span className="tabular-nums">{`${h.calls} calls · ${h.failures} failed · today ${usd(h.day_cost_usd)} (${cap})`}</span>
+      {h.note ? <span className="min-w-0 break-words">{h.note}</span> : null}
+      {h.status === "unavailable" && me.data?.admin_role === "admin" ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={reset.isPending}
+          onClick={() =>
+            reset.mutate(undefined, {
+              onSuccess: () => toast.success("Decision model turned back on"),
+              onError: (e) => toast.error(errorMessage(e, "Couldn't turn it back on. Try again.")),
+            })
+          }
+        >
+          Turn back on
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -37,13 +102,15 @@ function Summary() {
   if (summary.isError) return null;
   const s = summary.data;
   return (
-    <Card>
-      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+    <Card className="flex flex-col gap-4">
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-5">
         <Stat label="Open" value={String(s.open)} />
+        <Stat label="Held by screening" value={String(s.held_open)} />
         <Stat label="Over 24 hours" value={String(s.over_sla)} {...(s.over_sla > 0 ? { tone: "danger" as const } : {})} />
         <Stat label="Oldest open" value={s.oldest_open_age_seconds === null ? "None" : formatAge(s.oldest_open_age_seconds)} />
         <Stat label="Median close, 7 days" value={s.median_close_seconds_7d === null ? "None" : formatAge(s.median_close_seconds_7d)} />
       </dl>
+      <DecisionModel h={s.decision_model} />
     </Card>
   );
 }
@@ -73,7 +140,7 @@ function CaseRow({ c }: { c: ModerationCase }) {
         <span className="flex min-w-0 flex-col gap-1">
           <span className="flex items-center gap-2">
             <Badge tone="neutral">{kindLabel(c.target_kind)}</Badge>
-            {c.hidden && <Badge tone="warning">Hidden</Badge>}
+            {c.source === "auto" ? <Badge tone="warning">{c.status === "open" && c.auto_hidden ? "Held" : "Screened"}</Badge> : c.hidden && <Badge tone="warning">Hidden</Badge>}
           </span>
           <Link href={href} className="line-clamp-2 type-body text-fg underline-offset-2 hover:underline">
             {text}
@@ -86,7 +153,7 @@ function CaseRow({ c }: { c: ModerationCase }) {
           <span className="truncate text-fg-muted">{authorName}</span>
         </span>
       </TD>
-      <TD className="hidden sm:table-cell">{reason ? reasonLabel(reason) : ""}</TD>
+      <TD className="hidden sm:table-cell">{reason ? reasonLabel(reason) : c.categories[0] ? categoryLabel(c.categories[0]) : ""}</TD>
       <TD align="right">{c.report_count}</TD>
       <TD align="right">
         {c.status === "open" ? (
@@ -111,7 +178,7 @@ export function ModerationQueueScreen() {
 
   return (
     <div className="flex flex-col gap-section">
-      <PageHeader title="Moderation" info="Reports from people and content are grouped by what was reported. Work open cases from the top: the target is under 24 hours." />
+      <PageHeader title="Moderation" info="Reports are grouped by what was reported; screening adds what it held or removed. Work open cases from the top: the target is under 24 hours." />
       <Summary />
       <div className="flex flex-col gap-4">
         <SegmentedControl<Tab>

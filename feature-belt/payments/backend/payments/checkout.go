@@ -160,6 +160,9 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResu
 	if err != nil {
 		return nil, err
 	}
+	if err := runCheckoutGuards(ctx, s.d.Pool, in.UserID, price); err != nil {
+		return nil, err
+	}
 	mode := ModePayment
 	if price.Kind == "recurring" {
 		mode = ModeSubscription

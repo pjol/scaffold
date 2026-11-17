@@ -141,7 +141,10 @@ func (e *Engine) orderView(o *Order) OrderView {
 		ID: o.ID, Symbol: o.Symbol, Side: o.Side, Type: o.Type,
 		Sz: o.Sz.StringFixed(sd), FilledSz: o.Filled.StringFixed(sd), Status: o.Status,
 		ReduceOnly: o.ReduceOnly, PostOnly: o.PostOnly, Leverage: o.Leverage, Liquidation: o.Liquidation,
-		CreatedAt: msTime(o.CreatedMs), UpdatedAt: msTime(o.UpdatedMs),
+		Source: o.Source, CreatedAt: msTime(o.CreatedMs), UpdatedAt: msTime(o.UpdatedMs),
+	}
+	if v.Source == "" {
+		v.Source = SourceUser
 	}
 	if o.Type == TypeLimit {
 		s := o.Px.StringFixed(pd)

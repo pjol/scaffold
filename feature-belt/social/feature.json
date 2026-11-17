@@ -1,0 +1,165 @@
+{
+  "name": "social",
+  "title": "Social",
+  "version": "1.0.0",
+  "summary": "People get a public profile with a handle, bio and links, follow each other, choose who sees each part of their profile, and read what the people they follow did.",
+  "requires": [
+    "moderation",
+    "notifications"
+  ],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 3500,
+  "env": [
+    {
+      "name": "SOCIAL_HANDLE_COOLDOWN",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "168h",
+      "doc": "Shortest time between two handle changes by one person (0 = any time)."
+    },
+    {
+      "name": "SOCIAL_HANDLE_REDIRECT",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "720h",
+      "doc": "How long an old handle keeps redirecting to the new one; nobody else can take it meanwhile. Also how long a deleted account's handle stays unclaimable."
+    },
+    {
+      "name": "SOCIAL_RESERVED_HANDLES",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated handles nobody can take, on top of the built-in list (routes, staff words, the app's name)."
+    },
+    {
+      "name": "SOCIAL_MAX_FOLLOWING",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "2000",
+      "doc": "Most people one person can follow."
+    },
+    {
+      "name": "SOCIAL_BIO_MAX_CHARS",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "280",
+      "doc": "Longest bio accepted, in characters."
+    },
+    {
+      "name": "SOCIAL_ACTIVITY_RETENTION",
+      "tier": "backend",
+      "group": "social",
+      "required": "optional",
+      "default": "2160h",
+      "doc": "Activity items older than this are deleted (at least 24h)."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/social",
+      "dst": "backend/internal/social"
+    },
+    {
+      "src": "backend/feature_social.go",
+      "dst": "backend/internal/api/feature_social.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/social"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/social"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/social"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./social\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { socialAccountMenu, socialHomeTile, socialNav, socialSettings } from \"./social/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "socialNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "socialHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "socialSettings,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "account-menu",
+      "insert": "socialAccountMenu,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { socialHome, socialSettings } from \"./social/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "socialHome,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "settings",
+      "insert": "socialSettings,"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "imports",
+      "insert": "import { SocialTabIcon } from \"@/features/social/registry\";"
+    },
+    {
+      "file": "mobile/app/(tabs)/_layout.tsx",
+      "anchor": "tabs",
+      "insert": "<Tabs.Screen name=\"following\" options={{ title: \"Following\", tabBarIcon: (props) => <SocialTabIcon {...props} /> }} />"
+    }
+  ],
+  "stitch": [
+    "Record activity from your modules: social.RegisterKind (with a Render that builds title, summary and link from data) and social.RegisterSection for any part of a profile people should control, both in the module's New; then social.Record(ctx, tx, social.Activity{…}) where the thing happens and social.RemoveActivity when it is deleted. A module that doesn't require social does this from backend/internal/api/stitch_social.go.",
+    "Show people by handle elsewhere: social.Refs(ctx, q, ids) on the server, and link names and avatars to /u/<handle> (FollowButton and PersonRow are exported from @/features/social on web and mobile).",
+    "Decide the handle rules: add brand and product words to SOCIAL_RESERVED_HANDLES; set SOCIAL_HANDLE_COOLDOWN and SOCIAL_HANDLE_REDIRECT.",
+    "Place the entries: web nav Following, Home tile People, account menu Your profile, Settings → Public profile; mobile Following tab, Home row People, two Settings rows. Move or drop them in the registries.",
+    "Profiles are visible to signed-in people only. To serve them signed out, add a PublicRoutes route that calls the profile builder with uuid.Nil (public sections only) and a page under (public).",
+    "Add social to the privacy policy and store data-safety forms: public profile (handle, bio, links), who people follow, activity shown to followers; follow notifications go through notifications."
+  ]
+}

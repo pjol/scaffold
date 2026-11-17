@@ -14,6 +14,7 @@ import { BadgeCheck, Clock, ShieldAlert, ShieldCheck, ShieldQuestion } from "luc
 import { useState, type ReactNode } from "react";
 import { PageHeader, Section } from "@/components/shell/PageHeader";
 import { formatDate } from "@/lib/format";
+import { IdentityBadgesSections } from "./badges/BadgesSections";
 
 /** Manual review: ID photo + selfie, uploaded privately, then submitted together. */
 function DocumentsForm() {
@@ -145,7 +146,7 @@ function Body({ status }: { status: IdentityStatus }) {
   }
 }
 
-/** Settings → Verification (`/settings/identity`): status and the next step. */
+/** Settings → Verification (`/settings/identity`): ID verification status and the next step, then badges. */
 export function IdentityScreen() {
   const status = useIdentityStatus();
   return (
@@ -160,6 +161,7 @@ export function IdentityScreen() {
       ) : (
         <div className="flex max-w-form flex-col gap-section">
           <Body status={status.data} />
+          <IdentityBadgesSections />
         </div>
       )}
     </div>

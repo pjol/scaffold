@@ -1,7 +1,7 @@
 {
   "name": "oracle",
   "title": "Price oracle",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "summary": "Prices for any asset from many sources: every print is screened for manipulation, aggregated into a slew-limited published price with live, stale and seed status, daily history and baskets; staff watch sources and observations and post prices by hand.",
   "requires": [],
   "surfaces": [

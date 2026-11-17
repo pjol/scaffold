@@ -41,9 +41,13 @@ func newFilter(terms []string, p Provider) *filter {
 
 // matchTerm reports whether any blocked term appears in text as whole
 // words, after normalisation.
-func (f *filter) matchTerm(text string) bool {
-	if len(f.terms) == 0 {
-		return false
+func (f *filter) matchTerm(text string) bool { return f.matchedTerm(text) != "" }
+
+// matchedTerm returns the first blocked term found in text ("" if none),
+// for the moderator detail of a screening decision.
+func (f *filter) matchedTerm(text string) string {
+	if f == nil || len(f.terms) == 0 {
+		return ""
 	}
 	words := tokens(text)
 	for _, term := range f.terms {
@@ -56,11 +60,11 @@ func (f *filter) matchTerm(text string) bool {
 				}
 			}
 			if ok {
-				return true
+				return strings.Join(term, " ")
 			}
 		}
 	}
-	return false
+	return ""
 }
 
 // leetDigits and leetSymbols map common swaps back to letters. Digits

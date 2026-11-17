@@ -191,14 +191,14 @@ func (e *Engine) ApplyTransfers(ts []Transfer) ([]TransferResult, error) {
 	return out, nil
 }
 
-// CloseAccount closes out an account whose owner deleted their user account:
-// open orders are cancelled, positions go to the backstop at mark (no fee),
+// CloseAccount closes out an account whose owner deleted their user account
+// (a main account or one of their sub-accounts): open orders are cancelled, positions go to the backstop at mark (no fee),
 // any remaining balance goes to the backstop, and the account is closed.
 func (e *Engine) CloseAccount(accountID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.accounts[accountID]
-	if a == nil || a.Kind != KindUser {
+	if a == nil || (a.Kind != KindUser && a.Kind != KindSub) {
 		return ErrNotFound
 	}
 	if a.Status == AccountClosed {
@@ -214,7 +214,7 @@ func (e *Engine) CloseAccount(accountID string) error {
 		}
 		qty := p.Sz.Abs()
 		o := e.liqOrder(a, m, p, qty)
-		o.Liquidation = false
+		o.Liquidation, o.Source = false, SourceSystem
 		bp := e.position(e.backstop, m)
 		if bp.Leverage < m.spec.MaxLeverage {
 			bp.Leverage = m.spec.MaxLeverage
@@ -231,8 +231,10 @@ func (e *Engine) CloseAccount(accountID string) error {
 		a.Balance = decimal.Zero
 		c.touchAccount(e.backstop)
 	}
-	delete(e.byUser, a.UserID)
-	a.UserID = ""
+	if a.UserID != "" {
+		delete(e.byUser, a.UserID)
+	}
+	a.UserID, a.OwnerID = "", ""
 	a.Status = AccountClosed
 	c.touchAccount(a)
 	c.b.Closed = append(c.b.Closed, a.ID)
