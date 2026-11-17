@@ -10,8 +10,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 )
 
@@ -38,6 +40,12 @@ type Mine struct {
 	Audiences        []uuid.UUID `json:"audiences"` // subscribe to presence:<id> for each
 	HeartbeatSeconds int         `json:"heartbeat_seconds"`
 	IdleAfterSeconds int         `json:"idle_after_seconds"`
+	// ManualDNDUntil is Do Not Disturb set by hand or by a feature;
+	// QuietUntil the end of the schedule's quiet hours you are in (null
+	// outside them or after resuming). DNDUntil is the later of the two.
+	ManualDNDUntil *time.Time `json:"manual_dnd_until"`
+	QuietUntil     *time.Time `json:"quiet_until"`
+	Schedule       *Schedule  `json:"schedule"` // null until you set one
 }
 
 // GET /presence?user_ids=<id>,<id> — the ones the caller may see (≤ 100).
@@ -77,10 +85,22 @@ func (s *Service) mine(ctx context.Context, userID uuid.UUID) (*Mine, error) {
 		IdleAfterSeconds: int(s.cfg.idleAfter.Seconds()),
 	}
 	if len(rows) == 1 {
-		m.Presence, m.Away = rows[0].Presence, rows[0].away
+		m.Presence, m.Away, m.ManualDNDUntil = rows[0].Presence, rows[0].away, rows[0].manual
 	}
 	if m.Audiences, err = audiences(ctx, s.d.Pool, userID); err != nil {
 		return nil, err
+	}
+	sc, skip, err := loadSchedule(ctx, s.d.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	if sc != nil {
+		m.Schedule = sc
+		if q, err := sc.parse(); err == nil && sc.Enabled {
+			if end, ok := scheduledUntil(q, skip, time.Now()); ok {
+				m.QuietUntil = &end
+			}
+		}
 	}
 	return m, nil
 }
@@ -192,15 +212,9 @@ func (s *Service) setStatus(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.Decode(r, &req); err != nil {
 		return err
 	}
-	emoji := strings.TrimSpace(req.Emoji)
-	text := strings.Join(strings.Fields(req.Text), " ")
-	switch {
-	case emoji == "" && text == "":
-		return httpx.BadRequest("Write a status or choose an emoji.")
-	case emoji != "" && !validEmoji(emoji):
-		return httpx.BadRequest("Choose an emoji.")
-	case utf8.RuneCountInString(text) > 100:
-		return httpx.BadRequest("Statuses can be up to 100 characters.")
+	emoji, text, err := normalizeStatus(req.Emoji, req.Text)
+	if err != nil {
+		return err
 	}
 	now := time.Now()
 	var expires *time.Time
@@ -276,13 +290,34 @@ func (s *Service) setDND(w http.ResponseWriter, r *http.Request) error {
 	return s.respondMine(w, r)
 }
 
-// DELETE /presence/me/dnd
+// DELETE /presence/me/dnd — resume notifications: ends Do Not Disturb set
+// by hand and skips the schedule's quiet hours you are in until they end.
 func (s *Service) clearDND(w http.ResponseWriter, r *http.Request) error {
-	me := auth.MustFromContext(r.Context()).UserID
-	if _, err := s.d.Pool.Exec(r.Context(), `UPDATE presence_status SET dnd_until = NULL, updated_at = now() WHERE user_id = $1`, me); err != nil {
+	ctx := r.Context()
+	me := auth.MustFromContext(ctx).UserID
+	err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE presence_status SET dnd_until = NULL, updated_at = now() WHERE user_id = $1`, me); err != nil {
+			return err
+		}
+		sc, skip, err := loadSchedule(ctx, tx, me)
+		if err != nil || sc == nil || !sc.Enabled {
+			return err
+		}
+		q, err := sc.parse()
+		if err != nil {
+			return nil
+		}
+		if end, ok := scheduledUntil(q, skip, time.Now()); ok {
+			if _, err := tx.Exec(ctx, `UPDATE presence_dnd_schedules SET skip_until = $2, updated_at = now() WHERE user_id = $1`, me, end); err != nil {
+				return err
+			}
+		}
+		return refreshSchedule(ctx, tx, me)
+	})
+	if err != nil {
 		return err
 	}
-	s.reconcile(r.Context(), []uuid.UUID{me}, true)
+	s.reconcile(ctx, []uuid.UUID{me}, true)
 	return s.respondMine(w, r)
 }
 
@@ -307,6 +342,21 @@ func (s *Service) setAway(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.reconcile(r.Context(), []uuid.UUID{me}, true)
 	return s.respondMine(w, r)
+}
+
+// normalizeStatus trims a status (or preset) and checks its emoji and length.
+func normalizeStatus(rawEmoji, rawText string) (string, string, error) {
+	emoji := strings.TrimSpace(rawEmoji)
+	text := strings.Join(strings.Fields(rawText), " ")
+	switch {
+	case emoji == "" && text == "":
+		return "", "", httpx.BadRequest("Write a status or choose an emoji.")
+	case emoji != "" && !validEmoji(emoji):
+		return "", "", httpx.BadRequest("Choose an emoji.")
+	case utf8.RuneCountInString(text) > 100:
+		return "", "", httpx.BadRequest("Statuses can be up to 100 characters.")
+	}
+	return emoji, text, nil
 }
 
 // validEmoji accepts free-form emoji (sequences, keycaps, flags) and refuses words.

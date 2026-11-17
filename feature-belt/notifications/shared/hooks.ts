@@ -9,6 +9,13 @@ import { notificationsEndpoints } from "./api";
 import type {
   InboxPage,
   MarkReadRequest,
+  NotificationDigest,
+  NotificationGroup,
+  NotificationInboxFilter,
+  NotificationKinds,
+  NotificationMute,
+  NotificationTargets,
+  SnoozeNotificationsRequest,
   NotificationEvent,
   NotificationItem,
   NotificationPreference,
@@ -30,7 +37,12 @@ declare module "../types" {
 export const notificationKeys = {
   all: () => ["notifications"] as const,
   inboxAll: () => ["notifications", "inbox"] as const,
-  inbox: (unreadOnly: boolean) => ["notifications", "inbox", { unread: unreadOnly }] as const,
+  inbox: (filter: boolean | NotificationInboxFilter) => ["notifications", "inbox", normalizeFilter(filter)] as const,
+  groupsAll: () => ["notifications", "groups"] as const,
+  groups: (filter: NotificationInboxFilter) => ["notifications", "groups", normalizeFilter(filter)] as const,
+  kinds: (snoozed: boolean) => ["notifications", "kinds", { snoozed }] as const,
+  mutes: () => ["notifications", "mutes"] as const,
+  digest: () => ["notifications", "digest"] as const,
   unread: () => ["notifications", "unread"] as const,
   preferences: () => ["notifications", "preferences"] as const,
   admin: {
@@ -39,6 +51,19 @@ export const notificationKeys = {
 };
 
 type InboxCache = InfiniteData<InboxPage, string | undefined>;
+
+function normalizeFilter(f: boolean | NotificationInboxFilter): { unread: boolean; snoozed: boolean; kind: string } {
+  if (typeof f === "boolean") return { unread: f, snoozed: false, kind: "" };
+  return { unread: !!f.unread, snoozed: !!f.snoozed, kind: f.kind ?? "" };
+}
+
+/** Whether a new (unread, not snoozed) notification belongs in a cached list with this key. */
+function fitsList(key: readonly unknown[], item: NotificationItem): boolean {
+  const f = key[2] as ReturnType<typeof normalizeFilter> | undefined;
+  if (!f) return true;
+  if (f.snoozed) return false;
+  return !f.kind || item.kind === f.kind || item.kind.startsWith(`${f.kind}.`);
+}
 
 function setUnread(qc: QueryClient, count: number) {
   qc.setQueryData<UnreadCount>(notificationKeys.unread(), { unread_count: Math.max(0, count) });
@@ -61,30 +86,177 @@ registerRealtimeHandler("notification", (qc, e) => {
   if (!isEvent(data)) return;
   const { user_id: _user, unread_count, ...item } = data;
   setUnread(qc, unread_count);
-  qc.setQueriesData<InboxCache>({ queryKey: notificationKeys.inboxAll() }, (cache) => {
+  for (const [key, cache] of qc.getQueriesData<InboxCache>({ queryKey: notificationKeys.inboxAll() })) {
     const first = cache?.pages[0];
-    if (!cache || !first || cache.pages.some((p) => p.items.some((i) => i.id === item.id))) return cache;
-    return { ...cache, pages: [{ ...first, items: [item, ...first.items], unread_count }, ...cache.pages.slice(1)] };
-  });
+    if (!cache || !first || !fitsList(key, item)) continue;
+    // A snoozed one coming back moves to the top.
+    const pages = cache.pages.map((p) => ({ ...p, items: p.items.filter((i) => i.id !== item.id) }));
+    qc.setQueryData<InboxCache>(key, { ...cache, pages: [{ ...pages[0]!, items: [item, ...pages[0]!.items], unread_count }, ...pages.slice(1)] });
+  }
+  // Groups and counts are cheaper to refetch than to patch.
+  void qc.invalidateQueries({ queryKey: notificationKeys.groupsAll() });
+  void qc.invalidateQueries({ queryKey: ["notifications", "kinds"] });
 });
 registerRealtimeHandler("notifications.unread", (qc, e) => setUnread(qc, e.data.unread_count));
 registerReconnectRefetch(notificationKeys.all());
 
 // ---- inbox -------------------------------------------------------------------
 
-/** The inbox, newest first (`data.items`); `unreadOnly` lists unread rows. Keeps the unread count in step. */
-export function useInbox(unreadOnly = false, options?: InfiniteOverrides<NotificationItem>): PagedQueryResult<NotificationItem> {
+/**
+ * The inbox, newest first (`data.items`): `true` (or `{unread: true}`) lists unread rows,
+ * `{snoozed: true}` the snoozed ones, `{kind}` one kind or feature. Keeps the unread count in step.
+ */
+export function useInbox(filter: boolean | NotificationInboxFilter = false, options?: InfiniteOverrides<NotificationItem>): PagedQueryResult<NotificationItem> {
   const n = useEndpoints(notificationsEndpoints);
   const qc = useQueryClient();
+  const f = normalizeFilter(filter);
   return usePagedQuery<NotificationItem>(
-    notificationKeys.inbox(unreadOnly),
+    notificationKeys.inbox(f),
     async (cursor, signal) => {
-      const page = await n.inbox({ unread: unreadOnly, cursor, limit: 30 }, { signal });
+      const page = await n.inbox({ ...f, cursor, limit: 30 }, { signal });
       if (!cursor) setUnread(qc, page.unread_count);
       return page;
     },
     options,
   );
+}
+
+/** The inbox grouped by thread or resource (GitHub-style), newest group first. */
+export function useNotificationGroups(filter: NotificationInboxFilter = {}, options?: InfiniteOverrides<NotificationGroup>): PagedQueryResult<NotificationGroup> {
+  const n = useEndpoints(notificationsEndpoints);
+  const qc = useQueryClient();
+  const f = normalizeFilter(filter);
+  return usePagedQuery<NotificationGroup>(
+    notificationKeys.groups(f),
+    async (cursor, signal) => {
+      const page = await n.groups({ ...f, cursor, limit: 30 }, { signal });
+      if (!cursor) setUnread(qc, page.unread_count);
+      return page;
+    },
+    options,
+  );
+}
+
+/** Per-feature counts for the inbox's filter chips, and how many are snoozed. */
+export function useNotificationKinds(snoozed = false, options?: QueryOverrides<NotificationKinds>): UseQueryResult<NotificationKinds, ApiError> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useApiQuery(notificationKeys.kinds(snoozed), ({ signal }) => n.kinds(snoozed, { signal }), { staleTime: 30_000, ...options });
+}
+
+/** After a change that moves rows between lists: refetch lists, groups and chips; take the new count. */
+function useInboxChange<V>(fn: (v: V) => Promise<UnreadCount>, hide?: (v: V) => (item: NotificationItem) => boolean): UseMutationResult<UnreadCount, ApiError, V> {
+  const qc = useQueryClient();
+  return useMutation<UnreadCount, ApiError, V>({
+    mutationFn: fn,
+    onMutate: (v) => {
+      if (!hide) return;
+      const gone = hide(v);
+      qc.setQueriesData<InboxCache>({ queryKey: notificationKeys.inboxAll() }, (data) =>
+        data ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.filter((i) => !gone(i)) })) } : data,
+      );
+    },
+    onSuccess: (res) => setUnread(qc, res.unread_count),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: notificationKeys.inboxAll() });
+      void qc.invalidateQueries({ queryKey: notificationKeys.groupsAll() });
+      void qc.invalidateQueries({ queryKey: ["notifications", "kinds"] });
+    },
+  });
+}
+
+function targets(t: NotificationTargets): (item: NotificationItem) => boolean {
+  if (t.ids) {
+    const ids = new Set(t.ids);
+    return (i) => ids.has(i.id);
+  }
+  const keys = t.resources ?? [];
+  return (i) => keys.some((k) => i.id === k || i.resource === k || i.resource.startsWith(`${k}/thread:`));
+}
+
+/** `POST /v1/notifications/unread`: read ones turn unread. */
+export function useMarkNotificationsUnread(): UseMutationResult<UnreadCount, ApiError, NotificationTargets> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useInboxChange((t: NotificationTargets) => n.markUnread(t));
+}
+
+/** Snooze until a time (≤ 30 days): they leave the inbox now and come back unread at the top. */
+export function useSnoozeNotifications(): UseMutationResult<UnreadCount, ApiError, SnoozeNotificationsRequest> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useInboxChange((b: SnoozeNotificationsRequest) => n.snooze(b), (b) => targets(b));
+}
+
+/** Bring snoozed notifications back now. */
+export function useUnsnoozeNotifications(): UseMutationResult<UnreadCount, ApiError, NotificationTargets> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useInboxChange((t: NotificationTargets) => n.unsnooze(t), (t) => targets(t));
+}
+
+/** Mute a resource from the inbox (rows with `mutable`): its unread ones turn read and new ones stop. */
+export function useMuteNotificationResource(): UseMutationResult<UnreadCount, ApiError, { resource: string; label: string }> {
+  const n = useEndpoints(notificationsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<UnreadCount, ApiError, { resource: string; label: string }>({
+    mutationFn: (b) => n.mute(b),
+    onSuccess: (res) => setUnread(qc, res.unread_count),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: notificationKeys.inboxAll() });
+      void qc.invalidateQueries({ queryKey: notificationKeys.groupsAll() });
+      void qc.invalidateQueries({ queryKey: notificationKeys.mutes() });
+    },
+  });
+}
+
+/** Resources you muted from the inbox. */
+export function useNotificationMutes(options?: QueryOverrides<{ items: NotificationMute[] }>): UseQueryResult<{ items: NotificationMute[] }, ApiError> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useApiQuery(notificationKeys.mutes(), ({ signal }) => n.mutes({ signal }), options);
+}
+
+/** Unmute (optimistic on the mutes list). */
+export function useUnmuteNotificationResource(): UseMutationResult<void, ApiError, string, { items: NotificationMute[] } | undefined> {
+  const n = useEndpoints(notificationsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string, { items: NotificationMute[] } | undefined>({
+    mutationFn: (resource) => n.unmute(resource),
+    onMutate: (resource) => {
+      const previous = qc.getQueryData<{ items: NotificationMute[] }>(notificationKeys.mutes());
+      if (previous) qc.setQueryData(notificationKeys.mutes(), { items: previous.items.filter((m) => m.resource !== resource) });
+      return previous;
+    },
+    onError: (_e, _r, previous) => {
+      if (previous) qc.setQueryData(notificationKeys.mutes(), previous);
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: notificationKeys.inboxAll() }),
+  });
+}
+
+/** Your email digest setting (`cadence: "off"` until you choose one). */
+export function useNotificationDigest(options?: QueryOverrides<NotificationDigest>): UseQueryResult<NotificationDigest, ApiError> {
+  const n = useEndpoints(notificationsEndpoints);
+  return useApiQuery(notificationKeys.digest(), ({ signal }) => n.digest({ signal }), options);
+}
+
+export function useUpdateNotificationDigest(): UseMutationResult<NotificationDigest, ApiError, NotificationDigest> {
+  const n = useEndpoints(notificationsEndpoints);
+  const qc = useQueryClient();
+  return useMutation<NotificationDigest, ApiError, NotificationDigest>({
+    mutationFn: (body) => n.updateDigest(body),
+    onSuccess: (d) => qc.setQueryData(notificationKeys.digest(), d),
+  });
+}
+
+/** Snooze choices: later today (+3 h), this evening (18:00), tomorrow (9:00), next week (Monday 9:00), in the viewer's zone. */
+export function notificationSnoozeOptions(now: Date = new Date()): { label: string; until: string }[] {
+  const at = (days: number, hour: number) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, hour, 0, 0, 0);
+    return d;
+  };
+  const out: { label: string; until: Date }[] = [{ label: "In 3 hours", until: new Date(now.getTime() + 3 * 3_600_000) }];
+  if (now.getHours() < 17) out.push({ label: "This evening", until: at(0, 18) });
+  out.push({ label: "Tomorrow", until: at(1, 9) });
+  const toMonday = ((8 - now.getDay()) % 7) || 7;
+  out.push({ label: "Next week", until: at(toMonday, 9) });
+  return out.map((o) => ({ label: o.label, until: o.until.toISOString() }));
 }
 
 /** `GET /v1/notifications/unread-count` (realtime keeps it current; refetched on reconnect). */
@@ -116,10 +288,10 @@ export function useMarkNotificationsRead(): UseMutationResult<UnreadCount, ApiEr
         unread: qc.getQueryData<UnreadCount>(notificationKeys.unread()),
       };
       const now = new Date().toISOString();
-      const ids = body.all ? null : new Set(body.ids);
+      const match = body.all ? null : targets(body.resources ? { resources: body.resources } : { ids: body.ids ?? [] });
       const marked = new Set<string>(); // the same row can sit in several cached lists
       mapInbox(qc, (item) => {
-        if (item.read_at || (ids && !ids.has(item.id))) return item;
+        if (item.read_at || (match && !match(item))) return item;
         marked.add(item.id);
         return { ...item, read_at: now };
       });
@@ -127,8 +299,12 @@ export function useMarkNotificationsRead(): UseMutationResult<UnreadCount, ApiEr
       return snapshot;
     },
     onSuccess: (res) => setUnread(qc, res.unread_count),
-    // The unread-only list drops what was just read.
-    onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.inbox(true) }),
+    // The unread-only lists drop what was just read; groups recount.
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: notificationKeys.inboxAll(), predicate: (q) => (q.queryKey[2] as { unread?: boolean } | undefined)?.unread === true });
+      void qc.invalidateQueries({ queryKey: notificationKeys.groupsAll() });
+      void qc.invalidateQueries({ queryKey: ["notifications", "kinds"] });
+    },
     onError: (_e, _body, snapshot) => {
       if (!snapshot) return;
       for (const [key, data] of snapshot.inbox) qc.setQueryData(key, data);
@@ -212,4 +388,13 @@ export function useSendTestNotification(): UseMutationResult<SendTestNotificatio
     mutationFn: (body) => n.admin.sendTest(body),
     onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.admin.stats() }),
   });
+}
+
+/** This device's IANA time zone, for the digest ("UTC" when the runtime doesn't say). */
+export function notificationDeviceZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }

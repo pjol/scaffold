@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 /** Which presence dialog is open. The account menu closes before a dialog opens, so the state lives here. */
-export type PresenceDialog = "status" | "dnd" | null;
+export type PresenceDialog = "status" | "dnd" | "schedule" | null;
 
 let open: PresenceDialog = null;
 const listeners = new Set<() => void>();

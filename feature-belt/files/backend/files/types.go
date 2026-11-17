@@ -77,6 +77,21 @@ type Item struct {
 	ThumbURL       *string    `json:"thumb_url"` // images, when the list asked for thumbs
 	// Shortcut says what a link item points at (null for everything else).
 	Shortcut *ShortcutInfo `json:"shortcut"`
+	// Lock: a file checked out by someone (others can't change it until it's
+	// checked in or a manager breaks the lock). Null when unlocked.
+	Lock *LockInfo `json:"lock"`
+	// Color is a folder's colour token name ("" for the default).
+	Color string `json:"color"`
+	// Content says the file's text is searchable: "text" (a text file) or
+	// "extracted" (from a PDF or office document); "" otherwise.
+	Content string `json:"content"`
+}
+
+// LockInfo says who checked a file out, when and why.
+type LockInfo struct {
+	By   *Person   `json:"by"`
+	At   time.Time `json:"at"`
+	Note string    `json:"note"`
 }
 
 // IsFolder reports whether the item holds other items.
@@ -106,8 +121,12 @@ type Version struct {
 	MimeType   string    `json:"mime_type"`
 	UploadedBy *Person   `json:"uploaded_by"`
 	Note       string    `json:"note"`
-	Current    bool      `json:"current"`
-	CreatedAt  time.Time `json:"created_at"`
+	// Name labels a version ("Sent to client"); KeepForever exempts it from
+	// pruning (the newest 100 are kept otherwise).
+	Name        string    `json:"name"`
+	KeepForever bool      `json:"keep_forever"`
+	Current     bool      `json:"current"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Activity is one event on an item (or, for a folder, on a child).

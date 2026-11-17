@@ -83,11 +83,13 @@ func (s *Service) mute(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	muted, found := 0, false
+	var touched []string
 	for _, p := range people {
 		if req.All && skip[p.Identity] || !req.All && p.Identity != req.Identity {
 			continue
 		}
 		found = true
+		touched = append(touched, p.Identity)
 		for _, sid := range micTracks(p) {
 			if err := s.media.MuteTrack(dctx, room, p.Identity, sid); err != nil && err != errMediaNotFound {
 				return s.mediaErr(ctx, err)
@@ -98,6 +100,7 @@ func (s *Service) mute(w http.ResponseWriter, r *http.Request) error {
 	if !req.All && !found {
 		return httpx.NotFound("That person isn't in the call.")
 	}
+	s.dropSpeakers(ctx, m, touched)
 	httpx.OK(w, map[string]int{"muted": muted})
 	return nil
 }
@@ -159,6 +162,11 @@ func (s *Service) remove(w http.ResponseWriter, r *http.Request) error {
 	if err := s.media.RemoveParticipant(dctx, m.ID.String(), req.Identity); err != nil && err != errMediaNotFound {
 		return s.mediaErr(ctx, err)
 	}
+	for _, room := range breakoutRooms(ctx, s.d.Pool, m.LiveSession) {
+		if err := s.media.RemoveParticipant(dctx, room, req.Identity); err != nil && err != errMediaNotFound {
+			slog.WarnContext(ctx, "calls: removing from a breakout room failed", "meeting_id", m.ID, "err", err)
+		}
+	}
 	httpx.NoContent(w)
 	return nil
 }
@@ -174,6 +182,9 @@ func (s *Service) end(w http.ResponseWriter, r *http.Request) error {
 	}
 	dctx, cancel := detached(ctx)
 	defer cancel()
+	if err := s.endBreakouts(dctx, *m.LiveSession); err != nil {
+		return err
+	}
 	if err := s.media.EndRoom(dctx, m.ID.String()); err != nil {
 		return s.mediaErr(ctx, err)
 	}
@@ -266,5 +277,6 @@ func (s *Service) closeSession(ctx context.Context, sessionID uuid.UUID, at time
 	if err != nil || meetingID == uuid.Nil {
 		return err
 	}
+	s.afterSessionClosed(ctx, sessionID)
 	return s.missRings(ctx, meetingID)
 }

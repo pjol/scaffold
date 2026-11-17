@@ -1,11 +1,12 @@
 {
   "name": "calendar",
   "title": "Calendar",
-  "version": "1.2.0",
-  "summary": "Personal calendars with recurring events, invitations and RSVPs, reminders, busy time from other calendars, colleagues' free/busy, booking links (members-only or public) with race-safe bookings, and connected Google and Outlook calendars shown and edited natively.",
+  "version": "1.3.2",
+  "summary": "Several calendars per person and team calendars shared through access (free/busy, details, make changes, manage), recurring events, invitations with notes and proposed times, out of office and focus time, find a time, rooms and resources, reminders, busy time from other calendars, booking links (personal, round robin, collective; members-only or public, embeddable) with race-safe bookings, and connected Google and Outlook calendars shown and edited natively.",
   "requires": [
     "orgs",
-    "notifications"
+    "notifications",
+    "access"
   ],
   "surfaces": [
     "backend",
@@ -139,6 +140,11 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "session",
       "insert": "calendarZoneSync,"
+    },
+    {
+      "file": "web/next.config.ts",
+      "anchor": "headers",
+      "insert": "{ source: \"/book/:slug/embed\", headers: [{ key: \"Content-Security-Policy\", value: \"frame-ancestors *\" }] },"
     }
   ],
   "stitch": [
@@ -150,7 +156,12 @@
     "Name booking links in your product's copy (scheduling page, appointment page) and decide whether the calendar is a main nav item (default) or a Home tile only.",
     "Mobile: add a Calendar tab if scheduling is a primary destination (default: a Home entry); booking pages themselves are web pages shared by URL (EXPO_PUBLIC_WEB_URL).",
     "Hand scheduling started in other features to the calendar: open calendarNewEventLink({ title, guests, video: true }) (web dialog and mobile form, prefilled) so the event lands on calendars with invitations, RSVP and .ics; and give features that word times for people (calls invitations) each person's zone with calendar.UserZone (e.g. calls.SetUserZone); on the client, pass the settings' zone (useCalendarSettings: timezone when timezone_set) to features that show times (setCallsTimeZone) so every screen reads the same clock.",
-    "Privacy policy: subscribed calendar addresses are fetched by your server; booking emails go to addresses bookers type in. Name your mail provider."
+    "Focus time: call calendar.SetFocusHook(func(ctx, userID, until)) from stitching to turn on Do Not Disturb until `until` (e.g. over the presence feature); calendar.FocusUntil(ctx, q, userID) answers whether someone is in focus time now. Without the hook, focus time still declines invitations.",
+    "Rooms: decide who holds calendar.manage_rooms (default org owners and admins); everyone in the workspace books new rooms until a room's Who can book… narrows it.",
+    "Embeds: web/next.config.ts sends frame-ancestors 'self' for the app (template) and frame-ancestors * only for /book/<slug>/embed (this feature's wire line). Keep embeddable pages free of secrets.",
+    "Privacy policy: subscribed calendar addresses are fetched by your server; booking emails go to addresses bookers type in. Name your mail provider.",
+    "Link cards: calendar.EventRef(ctx, q, viewer, eventID, occurrence) (same checks as GET /calendar/events/{id}; free/busy viewers get Busy with the times only; agent-capped like calendar_get_event) and calendar.EventFromURL: register channels.RegisterUnfurler(\"/calendar/event/\", …) in the app's stitching, returning nil on calendar.ErrEventNotFound and never showing more than \"Busy\" and the time when Busy is set.",
+    "Meetings and booking pages for other features: calendar.MeetingsWith(ctx, caller, orgID, emails, from, to) (the caller's own and connected events with those guests) and calendar.PublicBookingLinks(ctx, caller, orgID) (external links only, absolute URLs): wire them into e.g. crm.SetMeetingSource / crm.SetBookingLinks in the app's stitching."
   ],
   "deps": {
     "mobile": {

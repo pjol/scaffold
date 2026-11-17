@@ -113,3 +113,64 @@ export interface McpAdminConnectionListParams {
   cursor?: string;
   limit?: number;
 }
+
+// ---- AAuth: agents that sign their requests, vouched for by a person server ----
+
+/** A person server as pages show it: its verified address and the name it gives itself ("" when none). */
+export interface McpAAuthServer {
+  issuer: string;
+  host: string;
+  name: string;
+}
+
+/** A link request on /connect/aauth, as the signed-in person deciding it sees it. */
+export interface McpAAuthInteraction {
+  id: string;
+  person_server: McpAAuthServer;
+  /** The verified email the person server asserted for its account, or null. */
+  email: string | null;
+  /** How `email` compares with the signed-in account's. */
+  email_match: "match" | "mismatch" | "none";
+  /** Host the browser returns to after the decision, when the agent gave a callback. */
+  return_host: string | null;
+  status: "interacting" | "linked" | "denied";
+  expires_at: string;
+}
+
+/** `POST /v1/mcp/aauth/interactions`: the code the agent showed, and its callback if any. */
+export interface McpAAuthClaimRequest {
+  code: string;
+  callback?: string;
+}
+
+export interface McpAAuthDecision {
+  status: "linked" | "denied";
+  /** Where to send the browser next: the agent's callback, or null to stay. */
+  redirect_url: string | null;
+}
+
+/** A linked person server as its owner sees it. */
+export interface McpAAuthLink {
+  id: string;
+  person_server: McpAAuthServer;
+  email: string | null;
+  /** Agents (signing keys) that used it in the last 30 days. */
+  agents: number;
+  linked_at: string;
+  last_used_at: string | null;
+}
+
+/** A link as staff see it. */
+export interface McpAdminAAuthLink extends McpAAuthLink {
+  user_id: string;
+  user_email: string;
+  revoked_at: string | null;
+  revoke_reason: "user" | "staff" | null;
+}
+
+export interface McpAdminAAuthLinkListParams {
+  user_id?: string;
+  status?: "active" | "revoked";
+  cursor?: string;
+  limit?: number;
+}

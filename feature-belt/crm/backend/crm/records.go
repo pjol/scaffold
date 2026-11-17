@@ -61,10 +61,24 @@ func (s *Service) bootstrap(ctx context.Context, orgID uuid.UUID) error {
 			return err
 		}
 		if tag.RowsAffected() == 1 {
-			_, err := createPipelineTx(ctx, tx, orgID, uuid.Nil, "Sales pipeline", defaultStages())
+			if _, err := createPipelineTx(ctx, tx, orgID, uuid.Nil, "Sales pipeline", defaultStages()); err != nil {
+				return err
+			}
+		}
+		// The service pipeline, once (orgs from before tickets get it now).
+		var ready bool
+		if err := tx.QueryRow(ctx, `UPDATE crm_settings SET tickets_ready = true WHERE org_id = $1 AND NOT tickets_ready RETURNING false`, orgID).Scan(&ready); err != nil {
+			if db.IsNoRows(err) {
+				return nil
+			}
 			return err
 		}
-		return nil
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM crm_pipelines WHERE org_id = $1 AND object_type = 'ticket'`, orgID).Scan(&n); err != nil || n > 0 {
+			return err
+		}
+		_, err = createPipelineOf(ctx, tx, orgID, uuid.Nil, objTicket, "Support pipeline", defaultTicketStages())
+		return err
 	})
 	if err == nil {
 		s.booted.Store(orgID, true)
@@ -247,12 +261,14 @@ type stageInfo struct {
 	ID, PipelineID        uuid.UUID
 	Name, Outcome         string
 	Probability, Position int
+	Object                objectType // the pipeline's record type
 }
 
 func loadStage(ctx context.Context, q db.Querier, orgID, stageID uuid.UUID) (*stageInfo, error) {
 	st := &stageInfo{ID: stageID}
-	err := q.QueryRow(ctx, `SELECT pipeline_id, name, outcome, probability, position FROM crm_stages WHERE id = $1 AND org_id = $2`,
-		stageID, orgID).Scan(&st.PipelineID, &st.Name, &st.Outcome, &st.Probability, &st.Position)
+	err := q.QueryRow(ctx, `SELECT s.pipeline_id, s.name, s.outcome, s.probability, s.position, p.object_type
+		FROM crm_stages s JOIN crm_pipelines p ON p.id = s.pipeline_id WHERE s.id = $1 AND s.org_id = $2`,
+		stageID, orgID).Scan(&st.PipelineID, &st.Name, &st.Outcome, &st.Probability, &st.Position, &st.Object)
 	if db.IsNoRows(err) {
 		return nil, verr("Choose a stage from this %s's pipelines.", orgs.Noun())
 	}
@@ -325,6 +341,11 @@ func currentValue(rec recordish, p Property) (any, string) {
 			return v.JobTitle, v.JobTitle
 		case "lifecycle_stage":
 			return v.LifecycleStage, optionLabel(lifecycleOptions, v.LifecycleStage)
+		case "lead_status":
+			if v.LeadStatus == nil {
+				return nil, ""
+			}
+			return *v.LeadStatus, optionLabel(leadStatusOptions, *v.LeadStatus)
 		case "city":
 			return v.City, v.City
 		case "country":
@@ -350,6 +371,36 @@ func currentValue(rec recordish, p Property) (any, string) {
 				return nil, ""
 			}
 			return v.Company.ID.String(), v.Company.Name
+		case "forecast_category":
+			if !v.ForecastSet {
+				return nil, ""
+			}
+			return v.ForecastCategory, optionLabel(forecastOptions, v.ForecastCategory)
+		}
+	case *Ticket:
+		switch p.Key {
+		case "name":
+			return v.Name, v.Name
+		case "description":
+			return v.Description, clip(v.Description, 140)
+		case "priority":
+			return v.Priority, optionLabel(priorityOptions, v.Priority)
+		case "category":
+			return v.Category, v.Category
+		case "channel":
+			return v.Channel, optionLabel(channelOptions, v.Channel)
+		case "stage":
+			return v.Stage.ID.String(), v.Stage.Name
+		case "company":
+			if v.Company == nil {
+				return nil, ""
+			}
+			return v.Company.ID.String(), v.Company.Name
+		case "deal":
+			if v.Deal == nil {
+				return nil, ""
+			}
+			return v.Deal.ID.String(), v.Deal.Name
 		}
 	}
 	return nil, ""
@@ -385,6 +436,21 @@ func (s *Service) applyFields(ctx context.Context, q db.Querier, orgID, userID u
 	}
 	if d, ok := cur.(*Deal); ok {
 		p.currency = d.Currency
+		if _, has := in["amount"]; has && d.AmountFromItems {
+			return verr("The amount follows this deal's line items. Turn that off to type an amount.")
+		}
+		if raw, has := in["currency"]; has {
+			var v string
+			if json.Unmarshal(raw, &v) == nil && !strings.EqualFold(strings.TrimSpace(v), d.Currency) {
+				var items bool
+				if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM crm_line_items WHERE deal_id = $1)`, d.ID).Scan(&items); err != nil {
+					return err
+				}
+				if items {
+					return verr("This deal has line items in %s. Remove them to change its currency.", d.Currency)
+				}
+			}
+		}
 	}
 	keys := make([]string, 0, len(in))
 	for k := range in {
@@ -718,6 +784,9 @@ func (s *Service) parseField(ctx context.Context, q db.Querier, orgID, userID uu
 		if err != nil {
 			return nil, "", err
 		}
+		if st.Object != o {
+			return nil, "", verr("Choose a stage from a %s pipeline.", o.label())
+		}
 		p.stage = st
 		return st.ID.String(), st.Name, nil
 	case "company":
@@ -753,6 +822,61 @@ func (s *Service) parseField(ctx context.Context, q db.Querier, orgID, userID uu
 		}
 		p.cols["lifecycle_stage"] = v
 		return v, optionLabel(lifecycleOptions, v), nil
+	case "lead_status", "forecast_category":
+		opts := leadStatusOptions
+		if prop.Key == "forecast_category" {
+			opts = forecastOptions
+		}
+		v, err := str(30)
+		if err != nil {
+			return nil, "", err
+		}
+		if v == "" {
+			p.cols[prop.Key] = nil
+			return nil, "", nil
+		}
+		if !hasOption(opts, v) {
+			return nil, "", verr("Choose a %s.", strings.ToLower(prop.Label))
+		}
+		p.cols[prop.Key] = v
+		return v, optionLabel(opts, v), nil
+	case "priority", "channel":
+		opts := priorityOptions
+		if prop.Key == "channel" {
+			opts = channelOptions
+		}
+		v, err := str(20)
+		if err != nil {
+			return nil, "", err
+		}
+		if !hasOption(opts, v) {
+			return nil, "", verr("Choose a %s.", strings.ToLower(prop.Label))
+		}
+		p.cols[prop.Key] = v
+		return v, optionLabel(opts, v), nil
+	case "deal":
+		id, err := optUUID()
+		if err != nil {
+			return nil, "", err
+		}
+		if id == nil {
+			p.cols["deal_id"] = nil
+			return nil, "", nil
+		}
+		refs, err := s.visibleRefs(ctx, q, userID, objDeal, []uuid.UUID{*id})
+		if err != nil {
+			return nil, "", err
+		}
+		ref, ok := refs[*id]
+		var dOrg uuid.UUID
+		if ok {
+			_ = q.QueryRow(ctx, `SELECT org_id FROM crm_deals WHERE id = $1`, *id).Scan(&dOrg)
+		}
+		if !ok || dOrg != orgID {
+			return nil, "", verr("Choose a deal you can see in this %s.", orgs.Noun())
+		}
+		p.cols["deal_id"] = *id
+		return id.String(), ref.Name, nil
 	}
 	// Plain text columns.
 	max := 200
@@ -875,9 +999,16 @@ func (s *Service) create(ctx context.Context, userID, orgID uuid.UUID, o objectT
 	if err != nil {
 		return nil, asHTTP(err)
 	}
-	if o == objDeal && companyID != nil {
+	dealID, err := takeUUID(in, "deal_id")
+	if err != nil {
+		return nil, asHTTP(err)
+	}
+	if o.pipelined() && companyID != nil {
 		in["company"] = json.RawMessage(`"` + companyID.String() + `"`)
 		companyID = nil
+	}
+	if o == objTicket && dealID != nil {
+		in["deal"] = json.RawMessage(`"` + dealID.String() + `"`)
 	}
 	var id uuid.UUID
 	var p pending
@@ -942,6 +1073,24 @@ func (s *Service) create(ctx context.Context, userID, orgID uuid.UUID, o objectT
 				cols["currency"] = cur
 			}
 			stagePipelines = append(stagePipelines, p.stage.PipelineID)
+		case objTicket:
+			if n, _ := cols["name"].(string); n == "" {
+				return httpx.BadRequest("Enter the ticket's subject.")
+			}
+			if p.stage == nil {
+				st, err := s.defaultStageOf(ctx, tx, orgID, objTicket, pipelineID)
+				if err != nil {
+					return err
+				}
+				p.stage = st
+			} else if pipelineID != nil && *pipelineID != p.stage.PipelineID {
+				return httpx.BadRequest("That status belongs to another pipeline.")
+			}
+			cols["pipeline_id"], cols["stage_id"] = p.stage.PipelineID, p.stage.ID
+			if p.stage.Outcome != "open" {
+				cols["closed_at"] = true
+			}
+			stagePipelines = append(stagePipelines, p.stage.PipelineID)
 		}
 		if !allowDup {
 			if dups, err := s.findDuplicates(ctx, tx, userID, orgID, o, cols, uuid.Nil); err != nil {
@@ -986,11 +1135,15 @@ func (s *Service) create(ctx context.Context, userID, orgID uuid.UUID, o objectT
 			}
 		}
 		for _, cid := range contactIDs {
-			if o != objDeal {
-				break
-			}
-			if err := s.linkDealContact(ctx, tx, userID, orgID, id, cid); err != nil {
-				return asHTTP(err)
+			switch o {
+			case objDeal:
+				if err := s.linkDealContact(ctx, tx, userID, orgID, id, cid); err != nil {
+					return asHTTP(err)
+				}
+			case objTicket:
+				if err := s.linkTicketContact(ctx, tx, userID, orgID, id, cid); err != nil {
+					return asHTTP(err)
+				}
 			}
 		}
 		return nil
@@ -1002,6 +1155,7 @@ func (s *Service) create(ctx context.Context, userID, orgID uuid.UUID, o objectT
 	if p.owner != nil && *p.owner != userID && !imported {
 		s.notifyAssigned(ctx, userID, *p.owner, o, id)
 	}
+	s.afterWrite(ctx, orgID, o, id, "created", p.changes)
 	return s.getOne(ctx, s.d.Pool, userID, o, id)
 }
 
@@ -1033,21 +1187,29 @@ func insertRecord(ctx context.Context, tx pgx.Tx, o objectType, cols map[string]
 
 var columns = map[objectType][]string{
 	objCompany: {"org_id", "created_by", "team_id", "props", "tag_ids", "name", "domain", "industry", "employees", "phone", "city", "country", "description"},
-	objContact: {"org_id", "created_by", "team_id", "props", "tag_ids", "first_name", "last_name", "emails", "phones", "job_title", "lifecycle_stage", "city", "country"},
+	objContact: {"org_id", "created_by", "team_id", "props", "tag_ids", "first_name", "last_name", "emails", "phones", "job_title", "lifecycle_stage",
+		"lead_status", "city", "country"},
 	objDeal: {"org_id", "created_by", "team_id", "props", "tag_ids", "name", "amount", "currency", "pipeline_id", "stage_id", "close_date", "company_id",
-		"closed_at", "stage_entered_at"},
+		"closed_at", "stage_entered_at", "forecast_category", "amount_from_items"},
+	objTicket: {"org_id", "created_by", "team_id", "props", "tag_ids", "name", "description", "priority", "category", "channel", "pipeline_id", "stage_id",
+		"company_id", "deal_id", "closed_at", "stage_entered_at"},
 }
 
 func validColumn(o objectType, c string) bool { return slices.Contains(columns[o], c) }
 
 func (s *Service) defaultStage(ctx context.Context, q db.Querier, orgID uuid.UUID, pipelineID *uuid.UUID) (*stageInfo, error) {
+	return s.defaultStageOf(ctx, q, orgID, objDeal, pipelineID)
+}
+
+// defaultStageOf is the first open stage of o's first pipeline (or of pipelineID).
+func (s *Service) defaultStageOf(ctx context.Context, q db.Querier, orgID uuid.UUID, o objectType, pipelineID *uuid.UUID) (*stageInfo, error) {
 	var stageID uuid.UUID
 	err := q.QueryRow(ctx, `
 		SELECT st.id FROM crm_stages st JOIN crm_pipelines pl ON pl.id = st.pipeline_id
-		WHERE pl.org_id = $1 AND ($2::uuid IS NULL OR pl.id = $2) AND st.outcome = 'open'
-		ORDER BY pl.position, pl.id, st.position, st.id LIMIT 1`, orgID, pipelineID).Scan(&stageID)
+		WHERE pl.org_id = $1 AND pl.object_type = $3 AND ($2::uuid IS NULL OR pl.id = $2) AND st.outcome = 'open'
+		ORDER BY pl.position, pl.id, st.position, st.id LIMIT 1`, orgID, pipelineID, string(o)).Scan(&stageID)
 	if db.IsNoRows(err) {
-		return nil, httpx.BadRequest("Add a pipeline with an open stage in CRM settings first.")
+		return nil, httpx.BadRequest("Add a " + o.label() + " pipeline with an open stage in CRM settings first.")
 	}
 	if err != nil {
 		return nil, err
@@ -1153,12 +1315,26 @@ func (s *Service) updateWith(ctx context.Context, userID uuid.UUID, o objectType
 		}
 		var stageChange *change
 		if p.stage != nil {
-			d := cur.(*Deal)
-			if p.stage.ID != d.Stage.ID {
-				pipelines = append(pipelines, d.PipelineID, p.stage.PipelineID)
-				if err := moveDealStageTx(ctx, tx, userID, orgID, d, p.stage); err != nil {
-					return err
+			moved := false
+			switch c := cur.(type) {
+			case *Deal:
+				if p.stage.ID != c.Stage.ID {
+					pipelines = append(pipelines, c.PipelineID, p.stage.PipelineID)
+					if err := moveDealStageTx(ctx, tx, userID, orgID, c, p.stage); err != nil {
+						return err
+					}
+					moved = true
 				}
+			case *Ticket:
+				if p.stage.ID != c.Stage.ID {
+					pipelines = append(pipelines, c.PipelineID, p.stage.PipelineID)
+					if err := moveTicketStageTx(ctx, tx, userID, orgID, c, p.stage); err != nil {
+						return err
+					}
+					moved = true
+				}
+			}
+			if moved {
 				for i, c := range p.changes {
 					if c.Key == "stage" {
 						stageChange = &p.changes[i]
@@ -1203,8 +1379,11 @@ func (s *Service) updateWith(ctx context.Context, userID uuid.UUID, o objectType
 				return err
 			}
 		}
-		if d, ok := cur.(*Deal); ok {
-			pipelines = append(pipelines, d.PipelineID)
+		switch c := cur.(type) {
+		case *Deal:
+			pipelines = append(pipelines, c.PipelineID)
+		case *Ticket:
+			pipelines = append(pipelines, c.PipelineID)
 		}
 		return nil
 	})
@@ -1212,6 +1391,7 @@ func (s *Service) updateWith(ctx context.Context, userID uuid.UUID, o objectType
 		return nil, err
 	}
 	if len(p.changes) > 0 {
+		s.afterWrite(ctx, orgID, o, id, "updated", p.changes)
 		s.recordChanged(ctx, o, id, true)
 		s.boardChanged(ctx, pipelines...)
 		if accessMove {
@@ -1284,8 +1464,8 @@ func (s *Service) deleteRecord(o objectType) func(http.ResponseWriter, *http.Req
 				return permissionRequired(PermDelete)
 			}
 			title, _ := recordTitle(ctx, tx, o, id)
-			if o == objDeal {
-				_ = tx.QueryRow(ctx, `SELECT pipeline_id FROM crm_deals WHERE id = $1`, id).Scan(&pipeline)
+			if o.pipelined() {
+				_ = tx.QueryRow(ctx, `SELECT pipeline_id FROM `+o.table()+` WHERE id = $1`, id).Scan(&pipeline)
 			}
 			if err := deleteRecordTx(ctx, tx, o, id); err != nil {
 				return err
@@ -1327,6 +1507,22 @@ func deleteRecordTx(ctx context.Context, tx pgx.Tx, o objectType, id uuid.UUID) 
 	for _, q := range stmts {
 		if _, err := tx.Exec(ctx, q, string(o), id); err != nil {
 			return err
+		}
+	}
+	if o == objDeal {
+		// Its quotes go with it (rows cascade; their access resources don't).
+		rows, err := tx.Query(ctx, `SELECT id FROM crm_quotes WHERE deal_id = $1`, id)
+		if err != nil {
+			return err
+		}
+		quotes, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		for _, q := range quotes {
+			if err := access.DeleteResource(ctx, tx, access.Ref{Kind: KindQuote, ID: q}); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM `+o.table()+` WHERE id = $1`, id); err != nil {

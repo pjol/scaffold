@@ -17,6 +17,8 @@ import {
   type CalendarColor,
   type CalendarHoursInterval,
   type CalendarSubscription,
+  type CalendarWorkLocation,
+  calendarZoneOptions,
 } from "@scaffoldapp/shared";
 import { Banner, Button, Card, Chip, ConfirmDialog, ErrorState, Field, IconButton, Input, ListRow, Select, Skeleton, SkeletonGroup, Switch, toast } from "@scaffoldapp/ui-web";
 import { CalendarSync, Copy, RefreshCw, Trash2, X } from "lucide-react";
@@ -70,6 +72,33 @@ export function CalendarSettingsScreen() {
             </div>
           </Section>
 
+          <Section title="Second time zone" info="A second clock beside the hours in the day and week views, and world clocks in the sidebar.">
+            <div className="grid max-w-form gap-4 sm:grid-cols-2">
+              <Field label="Second zone">
+                <Select
+                  value={settings.data.secondary_timezone ?? "none"}
+                  onValueChange={(v) => save({ secondary_timezone: v === "none" ? "" : v }, "Second zone saved")}
+                  options={[{ value: "none", label: "None" }, ...calendarZoneOptions(settings.data.secondary_timezone ? [settings.data.secondary_timezone] : []).map((z) => ({ value: z, label: z.replace(/_/g, " ") }))]}
+                />
+              </Field>
+            </div>
+            <div className="flex max-w-form flex-wrap items-center gap-2">
+              {settings.data.world_clocks.map((z) => (
+                <Chip key={z} icon={<X />} aria-label={`Remove ${z}`} onClick={() => save({ world_clocks: settings.data.world_clocks.filter((x) => x !== z) }, "World clocks saved")}>
+                  {z.replace(/_/g, " ")}
+                </Chip>
+              ))}
+              {settings.data.world_clocks.length < 6 ? (
+                <Select
+                  value=""
+                  placeholder="Add a world clock"
+                  onValueChange={(v) => save({ world_clocks: [...settings.data.world_clocks, v] }, "World clocks saved")}
+                  options={calendarZoneOptions().filter((z) => !settings.data.world_clocks.includes(z)).map((z) => ({ value: z, label: z.replace(/_/g, " ") }))}
+                />
+              ) : null}
+            </div>
+          </Section>
+
           <Section title="Working hours" info="Used when finding times with colleagues, and as the starting hours of new booking links.">
             <div className="flex max-w-form flex-col gap-4">
               <HoursEditor value={hours ?? settings.data.working_hours} onChange={setHours} weekStart={settings.data.week_start} />
@@ -84,6 +113,10 @@ export function CalendarSettingsScreen() {
                 </div>
               ) : null}
             </div>
+          </Section>
+
+          <Section title="Where you work" info="Colleagues see it when they find a time with you.">
+            <WorkLocations value={settings.data.work_locations} weekStart={settings.data.week_start} onSave={(v) => save({ work_locations: v }, "Work locations saved")} />
           </Section>
 
           <Section title="Default reminders" info="Added to new timed events. Change them per event.">
@@ -105,10 +138,84 @@ export function CalendarSettingsScreen() {
             </div>
           </Section>
 
+          <Section title="Morning agenda" info="Your day's events by email at 6 AM your time. Nothing is sent on days with nothing on them.">
+            <Switch
+              checked={settings.data.agenda_email}
+              onCheckedChange={(v) => save({ agenda_email: v }, v ? "You'll get your agenda each morning" : "Morning agenda off")}
+              label="Email me my day each morning"
+            />
+          </Section>
+
           <OtherCalendars available={settings.data.subscriptions_available} />
           <PersonalFeed />
         </>
       )}
+    </div>
+  );
+}
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** Where someone works each weekday: office (which), home, elsewhere, or not set. */
+function WorkLocations({ value, weekStart, onSave }: { value: CalendarWorkLocation[]; weekStart: number; onSave: (v: CalendarWorkLocation[]) => void }) {
+  const [draft, setDraft] = useState<CalendarWorkLocation[] | null>(null);
+  const list = draft ?? value;
+  const days = Array.from({ length: 7 }, (_, i) => (weekStart + i) % 7);
+  const setDay = (day: number, patch: Partial<CalendarWorkLocation> | null) => {
+    const rest = list.filter((l) => l.day !== day);
+    const cur = list.find((l) => l.day === day);
+    const next: CalendarWorkLocation = { day, type: "office", label: "", ...cur, ...patch };
+    setDraft(patch === null ? rest : [...rest, next].sort((a, b) => a.day - b.day));
+  };
+  return (
+    <div className="flex max-w-form flex-col gap-3">
+      <ul className="flex flex-col gap-2">
+        {days.map((d) => {
+          const l = list.find((x) => x.day === d);
+          return (
+            <li key={d} className="grid grid-cols-[6rem_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[7rem_10rem_minmax(0,1fr)]">
+              <span className="type-label text-fg">{DAY_NAMES[d]}</span>
+              <Select
+                aria-label={`${DAY_NAMES[d]}: where`}
+                value={l?.type ?? "none"}
+                onValueChange={(v) => setDay(d, v === "none" ? null : { type: v as CalendarWorkLocation["type"] })}
+                options={[
+                  { value: "none", label: "Not set" },
+                  { value: "office", label: "Office" },
+                  { value: "home", label: "Home" },
+                  { value: "other", label: "Elsewhere" },
+                ]}
+              />
+              {l && l.type !== "home" ? (
+                <Input
+                  className="col-span-2 sm:col-span-1"
+                  aria-label={`${DAY_NAMES[d]}: which ${l.type === "office" ? "office" : "place"}`}
+                  value={l.label}
+                  maxLength={60}
+                  placeholder={l.type === "office" ? "Which office" : "Where"}
+                  onChange={(e) => setDay(d, { label: e.target.value })}
+                />
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {draft ? (
+        <div className="flex gap-2">
+          <Button
+            size="auto"
+            onClick={() => {
+              onSave(draft);
+              setDraft(null);
+            }}
+          >
+            Save
+          </Button>
+          <Button variant="ghost" size="auto" onClick={() => setDraft(null)}>
+            Discard
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

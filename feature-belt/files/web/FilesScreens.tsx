@@ -14,6 +14,7 @@ import {
   useFilesEmptyTrash,
   useFilesItem,
   useFilesSection,
+  useMe,
   type FilesCrumb,
   type FilesItemDetail,
   type FilesSection,
@@ -21,12 +22,13 @@ import {
 import { Banner, Button, ConfirmDialog, EmptyState, ErrorState, InfoTip, Skeleton, SkeletonGroup, SkeletonRow, cn, toast } from "@scaffoldapp/ui-web";
 import { ChevronRight, Clock, Download, FolderOpen, HardDrive, RotateCcw, Star, Trash, UserPlus, Users } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, type DragEvent } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { ShareButton } from "@/features/access";
 import { useFilesActions, useFilesItemMenu } from "./actions";
 import { FilesDetails } from "./DetailsPanel";
+import { LockBanner } from "./depth";
 import { DriveListing, useFilesSortParam } from "./DriveListing";
 import { FILES_SECTION_PATH, SectionTitle } from "./FilesLayout";
 import { FILES_DRAG_TYPE } from "./ItemList";
@@ -277,6 +279,8 @@ function FolderView({ detail }: { detail: FilesItemDetail }) {
 function FileView({ detail }: { detail: FilesItemDetail }) {
   const item = detail.item;
   const a = useFilesActions();
+  const me = useMe();
+  const commentId = useSearchParams().get("comment");
   const actions = useFilesItemMenu(item, { showOpen: false, showDetails: false });
   return (
     <div className="flex flex-col gap-6">
@@ -314,12 +318,13 @@ function FileView({ detail }: { detail: FilesItemDetail }) {
           This file is in the trash.
         </Banner>
       ) : null}
+      {item.trashed_at ? null : <LockBanner item={item} myId={me.data?.id} />}
       <div className="flex flex-col gap-section xl:grid xl:grid-cols-[minmax(0,1fr)_20rem] xl:gap-8">
         <div className="min-w-0" aria-label={`${filesKindLabel(item)} preview`}>
           <FilesPreview item={item} source={{ kind: "app" }} onDownload={() => a.download([item])} link={item.link} />
         </div>
         <aside className="min-w-0" aria-label="Details">
-          <FilesDetails item={item} path={detail.path.map((c) => c.name)} />
+          <FilesDetails item={item} path={detail.path.map((c) => c.name)} initialTab={commentId ? "comments" : undefined} />
         </aside>
       </div>
     </div>

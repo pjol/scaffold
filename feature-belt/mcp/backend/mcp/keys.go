@@ -13,13 +13,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/aauth"
 	"scaffoldapp/backend/internal/audit"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 )
 
-// Personal API keys. A key is "agt_scaffoldapp_sk_" + 40 random base62
+// Personal API keys. A key is "agt_forum_sk_" + 40 random base62
 // characters, shown once at creation. The agt_ prefix (auth.AgentCredentialPrefix)
 // marks it as an agent credential: the core auth middleware refuses it on
 // every user route, so it opens /mcp and nothing else. Only its SHA-256 is stored, with a
@@ -27,7 +28,7 @@ import (
 // (Clerk), never with another API key.
 
 const (
-	keyPrefix    = auth.AgentCredentialPrefix + "scaffoldapp_sk_"
+	keyPrefix    = auth.AgentCredentialPrefix + "forum_sk_"
 	secretLength = 40
 	shownChars   = 6
 	maxKeys      = 10
@@ -301,15 +302,16 @@ func (s *Service) adminRevokeKey(w http.ResponseWriter, r *http.Request) error {
 
 // ---- resolution ------------------------------------------------------------
 
-// principal is an authenticated MCP caller: an API key's owner, or the
-// person behind an OAuth grant.
+// principal is an authenticated MCP caller: an API key's owner, the
+// person behind an OAuth grant, or the account an AAuth identity is linked to.
 type principal struct {
 	identity *auth.Identity
-	via      string    // "key" or "oauth"
-	id       uuid.UUID // the key or the grant: rate limits and last-use writes
+	via      string    // "key", "oauth" or "aauth"
+	id       uuid.UUID // the key, the grant or the AAuth link: rate limits and last-use writes
 	scopes   []string
-	client   string // the key's name or the OAuth client's name
-	clientID string // the key id or the OAuth client_id
+	client   string                 // the key's name, the OAuth client's name, or "Agents via <person server>"
+	clientID string                 // the key id, the OAuth client_id, or aauth:<link id>
+	signed   *aauth.VerifiedRequest // AAuth: the verified signature and auth token
 }
 
 func (p *principal) canWrite() bool { return slices.Contains(p.scopes, ScopeWrite) }

@@ -1,6 +1,6 @@
 import { ApiError, clientErrorMessage, parseErrorResponse } from "../api/errors";
 import { normalizeBaseUrl } from "../api/http";
-import type { AssistantStreamEvent } from "./types";
+import type { AssistantContextRequest, AssistantStreamEvent } from "./types";
 
 /**
  * Streaming a reply: `POST /v1/assistant/conversations/{id}/messages` (send) or `GET` with
@@ -31,6 +31,8 @@ export interface StreamAssistantOptions {
   conversationId: string;
   /** Send this message; omit to resume the running reply. */
   text?: string;
+  /** Attach a resource to the message (read on the server as the person). */
+  context?: AssistantContextRequest;
   signal?: AbortSignal;
   onEvent: (event: AssistantStreamEvent) => void;
 }
@@ -50,7 +52,7 @@ export async function streamAssistant(o: StreamAssistantOptions): Promise<void> 
   const init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal } = { method: o.text === undefined ? "GET" : "POST", headers };
   if (o.text !== undefined) {
     headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify({ text: o.text });
+    init.body = JSON.stringify(o.context ? { text: o.text, context: o.context } : { text: o.text });
   }
   if (o.signal) init.signal = o.signal;
 

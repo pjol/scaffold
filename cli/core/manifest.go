@@ -71,6 +71,8 @@ type Project struct {
 	Surfaces []string          `json:"surfaces"`
 	Features map[string]string `json:"features"`
 	Env      []EnvVar          `json:"env"`
+	// Layout is set only for adopted projects (layout.go); nil = the template's layout.
+	Layout *Layout `json:"layout,omitempty"`
 }
 
 func readJSON(path string, v any) error {
@@ -142,22 +144,23 @@ func surfaceOf(rel string) string {
 	return ""
 }
 
-// wants reports whether a project-relative path belongs in the project.
+// wants reports whether a template-relative path belongs in the project. Paths of a
+// custom surface (Layout.Custom) never do: scaffold doesn't write into code it didn't shape.
 func (p *Project) wants(rel string) bool {
 	switch s := surfaceOf(rel); s {
 	case "":
 		return true
 	case "client":
-		return p.HasSurface("web") || p.HasSurface("mobile")
+		return (p.HasSurface("web") && !p.isCustom("web")) || (p.HasSurface("mobile") && !p.isCustom("mobile"))
 	default:
-		return p.HasSurface(s)
+		return p.HasSurface(s) && !p.isCustom(s)
 	}
 }
 
 func (p *Project) wantsTier(tier string) bool {
 	switch tier {
 	case "backend", "web", "mobile":
-		return p.HasSurface(tier)
+		return p.HasSurface(tier) && !p.isCustom(tier)
 	}
 	return true
 }

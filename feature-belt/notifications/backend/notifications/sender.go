@@ -69,6 +69,9 @@ func (s *Sender) PushMode() string { return s.expo.mode }
 // Send implements notify.Sender.
 func (s *Sender) Send(ctx context.Context, n notify.Notification) error {
 	_, err := s.deliver(ctx, n, deliverOpts{})
+	if errors.Is(err, errMuted) {
+		return nil
+	}
 	return err
 }
 
@@ -88,6 +91,10 @@ type delivery struct {
 // errRecipientGone means the user is deleted; nothing was stored.
 var errRecipientGone = errors.New("notifications: recipient deleted")
 
+// errMuted means the person muted what the notification is about; nothing
+// was stored. Send treats it as success.
+var errMuted = errors.New("notifications: resource muted")
+
 func (s *Sender) deliver(ctx context.Context, n notify.Notification, opts deliverOpts) (*delivery, error) {
 	n.Kind = strings.TrimSpace(n.Kind)
 	n.Title = truncate(strings.TrimSpace(n.Title), maxTitleRunes)
@@ -103,16 +110,34 @@ func (s *Sender) deliver(ctx context.Context, n notify.Notification, opts delive
 		return nil, fmt.Errorf("notifications: data: %w", err)
 	}
 
+	// What it is about, for grouping and muting. A muted resource gets
+	// nothing at all: the person asked not to hear about it.
+	// Read from the stored form: callers may put uuids or numbers in Data.
+	var plain map[string]any
+	if err := json.Unmarshal(data, &plain); err != nil || plain == nil {
+		plain = map[string]any{}
+	}
+	resource := resourceOf(ctx, n.Kind, plain, n.Link)
+	if n.Kind != kindTest && !opts.forcePush && muteAllowed(resource) {
+		muted, err := s.isMuted(ctx, n.UserID, resource)
+		if err != nil {
+			slog.WarnContext(ctx, "notifications: mute lookup", "err", err)
+		} else if muted {
+			slog.DebugContext(ctx, "notifications: resource muted, dropped", "kind", n.Kind, "user_id", n.UserID)
+			return nil, errMuted
+		}
+	}
+
 	// Inbox row (always). Deleted users get nothing.
-	item := Item{Kind: n.Kind, Title: n.Title, Body: n.Body, Link: n.Link, Data: n.Data}
+	item := Item{Kind: n.Kind, Title: n.Title, Body: n.Body, Link: n.Link, Data: n.Data, Resource: resource, Mutable: muteAllowed(resource)}
 	var email string
 	err = s.pool.QueryRow(ctx, `
 		WITH u AS (SELECT id, email FROM users WHERE id = $1 AND status <> 'deleted')
-		INSERT INTO notifications (user_id, kind, title, body, link, data)
-		SELECT u.id, $2, $3, $4, $5, $6 FROM u
-		RETURNING id, created_at, (SELECT email FROM u)`,
-		n.UserID, n.Kind, n.Title, n.Body, n.Link, data,
-	).Scan(&item.ID, &item.CreatedAt, &email)
+		INSERT INTO notifications (user_id, kind, title, body, link, data, resource)
+		SELECT u.id, $2, $3, $4, $5, $6, $7 FROM u
+		RETURNING id, created_at, sort_at, (SELECT email FROM u)`,
+		n.UserID, n.Kind, n.Title, n.Body, n.Link, data, resource,
+	).Scan(&item.ID, &item.CreatedAt, &item.SortAt, &email)
 	if db.IsNoRows(err) {
 		slog.DebugContext(ctx, "notifications: recipient deleted, dropped", "kind", n.Kind, "user_id", n.UserID)
 		return nil, errRecipientGone
@@ -302,9 +327,11 @@ func (s *Sender) publishUnread(ctx context.Context, userID uuid.UUID, unread int
 	s.publish(ctx, userID, EventUnread, UnreadCount{UnreadCount: unread})
 }
 
+// unreadCount counts unread notifications in the inbox (snoozed ones wait).
 func unreadCount(ctx context.Context, q db.Querier, userID uuid.UUID) (int, error) {
 	var n int
-	err := q.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL`, userID).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT count(*) FROM notifications
+		WHERE user_id = $1 AND read_at IS NULL AND (snoozed_until IS NULL OR snoozed_until <= now())`, userID).Scan(&n)
 	return n, err
 }
 

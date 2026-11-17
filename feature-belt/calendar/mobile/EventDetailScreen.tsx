@@ -8,14 +8,17 @@ import {
   useDeleteCalendarEvent,
   useEndpoints,
   useRespondCalendarEvent,
+  useAnswerCalendarProposal,
+  useWithdrawCalendarProposal,
   type CalendarScope,
 } from "@scaffoldapp/shared";
 import { Avatar, Badge, Body, Button, ConfirmDialog, EmptyState, ErrorState, ListGroup, ListRow, Screen, SegmentedControl, Sheet, Skeleton, Text, Title, toast, useTheme } from "@scaffoldapp/ui-native";
 import { File, Paths } from "expo-file-system";
 import { router, Stack } from "expo-router";
 import * as Sharing from "expo-sharing";
-import { CalendarClock, CalendarPlus, CalendarX, MapPin, Pencil, Repeat, Trash2, UserRound, Video } from "lucide-react-native";
+import { CalendarClock, CalendarDays, CalendarPlus, CalendarX, DoorOpen, Focus, MapPin, Pencil, Plane, Repeat, Trash2, UserRound, Video } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
+import { NoteSheet, ProposeSheet } from "./ReplySheets";
 import { Linking, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { CalendarDot, RESPONSE_LABEL, RESPONSE_TONE, calendarColors, useCalendarZone } from "./parts";
@@ -38,6 +41,10 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
   const { zone } = useCalendarZone();
   const event = useCalendarEvent(id, occurrence);
   const respond = useRespondCalendarEvent();
+  const answer = useAnswerCalendarProposal();
+  const withdraw = useWithdrawCalendarProposal();
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [proposeOpen, setProposeOpen] = useState(false);
   const remove = useDeleteCalendarEvent();
   const api = useEndpoints(calendarEndpoints);
   const [confirm, setConfirm] = useState(false);
@@ -65,7 +72,9 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
   }
   const e = event.data;
   const owner = e.role === "owner";
+  const editable = e.can_edit;
   const col = calendarColors(theme, e.color);
+  const mine = e.attendees.find((a) => a.proposed_start) ?? null;
 
   const del = async (scope: CalendarScope) => {
     await remove.mutateAsync({ id: e.event_id, scope, occurrence: e.occurrence_start });
@@ -99,9 +108,9 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
               id={e.event_id}
               title={e.title}
               actions={[
-                ...(owner ? [{ id: "edit", label: "Edit", icon: Pencil, onSelect: edit }] : []),
+                ...(editable ? [{ id: "edit", label: "Edit", icon: Pencil, onSelect: edit }] : []),
                 { id: "ics", label: "Add to another calendar", icon: CalendarPlus, onSelect: () => void shareIcs() },
-                ...(owner ? [{ id: "delete", label: e.booking_id ? "Cancel booking" : "Delete", icon: Trash2, destructive: true, onSelect: () => (e.recurring ? setScopeOpen(true) : setConfirm(true)) }] : []),
+                ...(editable ? [{ id: "delete", label: e.booking_id ? "Cancel booking" : "Delete", icon: Trash2, destructive: true, onSelect: () => (e.recurring ? setScopeOpen(true) : setConfirm(true)) }] : []),
               ]}
             />
           ),
@@ -139,9 +148,25 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
             </Button>
           </Row>
         ) : null}
+        {e.rooms.length > 0 ? (
+          <Row icon={<DoorOpen size={20} color={c.textMuted} />}>
+            <Body>{e.rooms.map((r) => r.name).join(", ")}</Body>
+          </Row>
+        ) : null}
+        {e.event_type && e.event_type !== "default" ? (
+          <Row icon={e.event_type === "focus" ? <Focus size={20} color={c.textMuted} /> : <Plane size={20} color={c.textMuted} />}>
+            <Body>{e.auto_decline === "none" ? "Invitations aren't declined" : e.auto_decline === "all" ? "Declines new and existing invitations" : "Declines new invitations"}</Body>
+            {e.decline_message ? <Text role="label" tone="muted">{`“${e.decline_message}”`}</Text> : null}
+          </Row>
+        ) : null}
         <Row icon={<UserRound size={20} color={c.textMuted} />}>
           <Body>{owner ? "You're the organizer" : `Organized by ${e.owner.display_name || "a deleted account"}`}</Body>
         </Row>
+        {e.calendar ? (
+          <Row icon={<CalendarDays size={20} color={c.textMuted} />}>
+            <Body>{e.calendar.is_primary && owner ? "Your calendar" : e.calendar.name}</Body>
+          </Row>
+        ) : null}
       </View>
       {e.description ? <Body selectable>{e.description}</Body> : null}
 
@@ -162,8 +187,31 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
               { value: "declined", label: "No" },
             ]}
           />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[2] }}>
+            <Button variant="ghost" size="md" onPress={() => setNoteOpen(true)}>
+              Add a note
+            </Button>
+            {!e.recurring && !e.all_day ? (
+              <Button variant="ghost" size="md" leftIcon={CalendarClock} onPress={() => setProposeOpen(true)}>
+                Propose a new time
+              </Button>
+            ) : null}
+          </View>
+          {mine?.proposed_start && mine.proposed_end ? (
+            <ListGroup>
+              <ListRow
+                title={`You proposed ${formatCalendarRange({ starts_at: mine.proposed_start, ends_at: mine.proposed_end, all_day: false, start_date: null, end_date: null }, zone)}`}
+                trailing={
+                  <Button variant="ghost" size="md" onPress={() => withdraw.mutate(e.event_id, { onSuccess: () => toast.success("Proposal withdrawn"), onError: (err) => toast.error(errorMessage(err)) })}>
+                    Withdraw
+                  </Button>
+                }
+                chevron={false}
+              />
+            </ListGroup>
+          ) : null}
         </View>
-      ) : owner ? (
+      ) : editable ? (
         <Button variant="secondary" leftIcon={Pencil} onPress={edit}>
           Edit
         </Button>
@@ -175,6 +223,7 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
             <ListRow
               key={a.id}
               title={a.name || a.email}
+              {...(a.note ? { info: `“${a.note}”` } : {})}
               leading={<Avatar name={a.name || a.email} src={a.avatar_url} size="sm" />}
               trailing={<Badge tone={RESPONSE_TONE[a.response]}>{RESPONSE_LABEL[a.response]}</Badge>}
               chevron={false}
@@ -182,6 +231,32 @@ export function EventDetailScreen({ id, occurrence }: { id: string; occurrence: 
           ))}
         </ListGroup>
       ) : null}
+      {editable
+        ? e.attendees
+            .filter((a) => a.proposed_start && a.proposed_end)
+            .map((a) => (
+              <View key={`p-${a.id}`} style={{ gap: s[2], padding: s[3], borderRadius: theme.radius.md, backgroundColor: c.sunken }}>
+                <Body>{`${a.name || a.email} proposed ${formatCalendarRange({ starts_at: a.proposed_start!, ends_at: a.proposed_end!, all_day: false, start_date: null, end_date: null }, zone)}`}</Body>
+                <View style={{ flexDirection: "row", gap: s[2] }}>
+                  <Button
+                    size="md"
+                    loading={answer.isPending && answer.variables?.attendeeId === a.id && answer.variables.accept}
+                    onPress={() => answer.mutate({ id: e.event_id, attendeeId: a.id, accept: true }, { onSuccess: () => toast.success("Moved. Guests were told."), onError: (err) => toast.error(errorMessage(err)) })}
+                  >
+                    Accept
+                  </Button>
+                  <Button variant="ghost" size="md" onPress={() => answer.mutate({ id: e.event_id, attendeeId: a.id, accept: false }, { onSuccess: () => toast.success("Kept the current time"), onError: (err) => toast.error(errorMessage(err)) })}>
+                    Keep time
+                  </Button>
+                </View>
+              </View>
+            ))
+        : null}
+      <NoteSheet open={noteOpen} onClose={() => setNoteOpen(false)} initial={e.attendees.find((a) => a.note)?.note ?? ""} onSend={(note) => {
+        const r = e.my_response && e.my_response !== "needs_action" ? e.my_response : "accepted";
+        respond.mutate({ id: e.event_id, response: r, note }, { onSuccess: () => { toast.success("Note sent"); setNoteOpen(false); }, onError: (err) => toast.error(errorMessage(err, "Couldn't send your note.")) });
+      }} />
+      <ProposeSheet open={proposeOpen} onClose={() => setProposeOpen(false)} event={e} zone={zone} />
 
       <ConfirmDialog
         open={confirm}

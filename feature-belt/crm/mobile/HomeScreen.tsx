@@ -1,7 +1,7 @@
 import { CRM_SOURCE_ALL, CRM_TYPE_LABEL, useCrmSearch, useCrmTaskSummary, type CrmObjectType, type CrmSources } from "@scaffoldapp/shared";
 import { Badge, EmptyState, ErrorState, Input, ListGroup, ListRow, Screen, SegmentedControl, SkeletonRow, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
-import { Building2, CheckSquare, Handshake, KanbanSquare, Search, SearchX, UserRound } from "lucide-react-native";
+import { BarChart3, Building2, CheckSquare, Handshake, KanbanSquare, LifeBuoy, Search, SearchX, UserRound } from "lucide-react-native";
 import { useState } from "react";
 import { View } from "react-native";
 import { CrmGate, TYPE_ICON, recordPath } from "./parts";
@@ -88,6 +88,8 @@ function Home({ orgId, orgName, sources }: { orgId: string; orgName: string; sou
             <ListRow title="Contacts" leading={<UserRound size={20} color={theme.colors.textMuted} />} onPress={() => router.push("/crm/contacts")} />
             <ListRow title="Companies" leading={<Building2 size={20} color={theme.colors.textMuted} />} onPress={() => router.push("/crm/companies")} />
             <ListRow title="Deals" leading={<Handshake size={20} color={theme.colors.textMuted} />} onPress={() => router.push("/crm/deals")} />
+            <ListRow title="Tickets" leading={<LifeBuoy size={20} color={theme.colors.textMuted} />} onPress={() => router.push("/crm/tickets")} />
+            <ListRow title="Reports" leading={<BarChart3 size={20} color={theme.colors.textMuted} />} onPress={() => router.push("/crm/reports")} />
           </ListGroup>
         </>
       )}

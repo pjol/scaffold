@@ -377,13 +377,6 @@ func (s *Service) xChecks(w http.ResponseWriter, r *http.Request, src RepoSource
 }
 
 // getChecks is the app's own repositories' answer: they have no CI.
-func (s *Service) getChecks(w http.ResponseWriter, r *http.Request) error {
-	if _, err := s.repoFromRoute(r, levelView); err != nil {
-		return err
-	}
-	httpx.OK(w, Checks{SHA: chi.URLParam(r, "sha"), State: "none", Items: []Check{}})
-	return nil
-}
 
 func (s *Service) xCompare(w http.ResponseWriter, r *http.Request, src RepoSource, _ *remoteRepo) error {
 	q := r.URL.Query()

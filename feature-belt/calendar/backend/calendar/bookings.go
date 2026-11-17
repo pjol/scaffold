@@ -18,7 +18,6 @@ import (
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
-	"scaffoldapp/backend/internal/jobs"
 	"scaffoldapp/backend/internal/legal"
 	"scaffoldapp/backend/internal/mail"
 	"scaffoldapp/backend/internal/notify"
@@ -58,6 +57,12 @@ type PublicLink struct {
 	MaxDaysAhead  int        `json:"max_days_ahead"`
 	Color         string     `json:"color"`
 	Booker        *Booker    `json:"booker"`
+	// Kind: personal, round_robin or collective. Team links name the team
+	// (TeamName) and, for collective links, every host.
+	Kind        string   `json:"kind"`
+	TeamName    *string  `json:"team_name"`
+	Hosts       []Person `json:"hosts"`
+	AllowGuests bool     `json:"allow_guests"`
 }
 
 // Booker is the signed-in visitor (prefilled, not editable).
@@ -116,6 +121,14 @@ func (s *Service) linkForVisitor(ctx context.Context, q db.Querier, slug string,
 	if !l.Active {
 		return l, host, errLinkPaused
 	}
+	if l.SingleUse && l.UsedAt != nil {
+		return l, host, errLinkUsed
+	}
+	if l.TeamID != nil {
+		if l.Hosts, err = loadHosts(ctx, q, l.ID); err != nil {
+			return l, host, err
+		}
+	}
 	if l.Audience == "internal" {
 		var hostMember bool
 		if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM org_members WHERE org_id = $1 AND user_id = $2)`, l.OrgID, l.ownerID).Scan(&hostMember); err != nil {
@@ -158,6 +171,15 @@ func (s *Service) publicLink(w http.ResponseWriter, r *http.Request) error {
 		Slug: l.Slug, Title: l.Title, Description: l.Description, Durations: l.Durations, LocationType: l.LocationType,
 		LocationLabel: locationLabel(l), NeedsPhone: l.LocationType == LocationPhone && l.LocationValue == "",
 		Timezone: l.Timezone, Audience: l.Audience, Host: host, Questions: l.Questions, MaxDaysAhead: l.MaxDaysAhead, Color: l.Color,
+		Kind: l.Kind, Hosts: []Person{}, AllowGuests: l.AllowGuests,
+	}
+	if l.TeamID != nil {
+		out.TeamName = l.TeamName
+		for _, h := range l.Hosts {
+			if h.Active {
+				out.Hosts = append(out.Hosts, h.User)
+			}
+		}
 	}
 	if l.Audience == "internal" {
 		out.OrgName = l.OrgName
@@ -238,6 +260,7 @@ type bookInput struct {
 	Phone    string        `json:"phone"`
 	Timezone string        `json:"timezone"`
 	Answers  []answerInput `json:"answers"`
+	Guests   []string      `json:"guests"`
 }
 
 // BookingConfirmation answers a successful booking. ManageURL is the
@@ -246,6 +269,8 @@ type BookingConfirmation struct {
 	Booking             PublicBooking `json:"booking"`
 	ManageURL           string        `json:"manage_url"`
 	ConfirmationMessage string        `json:"confirmation_message"`
+	// RedirectURL: the link sends the booker on to this page.
+	RedirectURL string `json:"redirect_url"`
 }
 
 func validateAnswers(qs []Question, in []answerInput) ([]Answer, error) {
@@ -266,8 +291,37 @@ func validateAnswers(qs []Question, in []answerInput) ([]Answer, error) {
 			}
 			continue
 		}
-		if q.Type == "choice" && !slices.Contains(q.Options, v) {
-			return nil, httpx.BadRequest("Pick one of the options for: " + q.Label)
+		switch q.Type {
+		case "choice":
+			if !slices.Contains(q.Options, v) {
+				return nil, httpx.BadRequest("Pick one of the options for: " + q.Label)
+			}
+		case "multi_choice":
+			var picked []string
+			for _, o := range strings.Split(v, "\n") {
+				if o = strings.TrimSpace(o); o == "" || slices.Contains(picked, o) {
+					continue
+				}
+				if !slices.Contains(q.Options, o) {
+					return nil, httpx.BadRequest("Pick from the options for: " + q.Label)
+				}
+				picked = append(picked, o)
+			}
+			if len(picked) == 0 {
+				if q.Required {
+					return nil, httpx.BadRequest("Answer: " + q.Label)
+				}
+				continue
+			}
+			v = strings.Join(picked, "\n")
+		case "checkbox":
+			if v != "yes" {
+				return nil, httpx.BadRequest("Tick the box or leave it: " + q.Label)
+			}
+		case "email":
+			if v = normalizeEmail(v); v == "" {
+				return nil, httpx.BadRequest("Enter a valid email address for: " + q.Label)
+			}
 		}
 		out = append(out, Answer{QuestionID: q.ID, Label: q.Label, Value: v})
 	}
@@ -288,7 +342,7 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if !legal.Current(viewer.TermsVersion, viewer.PrivacyVersion) {
 			return legal.ErrConsentRequired()
 		}
-		if viewer.UserID == l.ownerID {
+		if viewer.UserID == l.ownerID && l.Kind == LinkPersonal {
 			return httpx.BadRequest("This is your own booking link.")
 		}
 	}
@@ -328,6 +382,10 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	guests, err := bookerGuests(l, in.Guests, email)
+	if err != nil {
+		return err
+	}
 	var today, upcoming int
 	if err := s.d.Pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE created_at > now() - interval '24 hours'),
@@ -348,11 +406,27 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 	} else if !ok {
 		return errSlotTaken
 	}
+	team := l.Kind == LinkRoundRobin || l.Kind == LinkCollective
+	hostIDs := []uuid.UUID{l.ownerID}
+	if team {
+		if hostIDs, err = s.assignHosts(ctx, s.d.Pool, l, start, in.Duration, uuid.Nil, uuidOr(bookerID)); err != nil {
+			return err
+		}
+		if err := s.d.Pool.QueryRow(ctx, `SELECT id, display_name, avatar_url FROM users WHERE id = $1`, hostIDs[0]).
+			Scan(&host.ID, &host.DisplayName, &host.AvatarURL); err != nil {
+			return err
+		}
+	}
+	hostCal, err := s.ensurePrimary(ctx, hostIDs[0], uuidOr(l.OrgID))
+	if err != nil {
+		return err
+	}
 
 	b := bookingRow{
-		ID: uuid.New(), LinkID: &l.ID, HostID: l.ownerID, Title: l.Title, BookerUserID: bookerID, BookerName: name,
+		ID: uuid.New(), LinkID: &l.ID, HostID: hostIDs[0], Title: l.Title, BookerUserID: bookerID, BookerName: name,
 		BookerEmail: email, BookerTimezone: in.Timezone, StartsAt: start, EndsAt: start.Add(dur),
 		LocationType: l.LocationType, LocationValue: l.LocationValue, Answers: answers, Status: "confirmed",
+		Guests: guests, coHosts: hostIDs[1:],
 	}
 	if l.LocationType == LocationPhone && l.LocationValue == "" {
 		b.LocationValue = phone
@@ -393,11 +467,30 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		b.ConferenceProvider = &provider
 	}
 	token, _ := s.tokenFor("manage", b.ID)
+	firstHost := b.HostID
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		// One booking at a time per host: the check below and the insert
-		// can't interleave with another booking for the same person.
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, jobs.LockKey("calendar.host:"+l.ownerID.String())); err != nil {
+		// can't interleave with another booking for the same people (a
+		// team link locks its whole host pool, so round robin re-picks
+		// safely).
+		pool := []uuid.UUID{l.ownerID}
+		if team {
+			pool = pool[:0]
+			for _, h := range l.Hosts {
+				pool = append(pool, h.User.ID)
+			}
+		}
+		if err := lockHosts(ctx, tx, pool); err != nil {
 			return err
+		}
+		if l.SingleUse {
+			var used *time.Time
+			if err := tx.QueryRow(ctx, `SELECT used_at FROM calendar_booking_links WHERE id = $1 FOR UPDATE`, l.ID).Scan(&used); err != nil {
+				return err
+			}
+			if used != nil {
+				return errLinkUsed
+			}
 		}
 		ok, err := s.slotAvailable(withoutConnectedBusy(ctx), tx, l, start, in.Duration, uuid.Nil)
 		if err != nil {
@@ -406,12 +499,33 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if !ok {
 			return errSlotTaken
 		}
+		if team {
+			// Fresh counts under the lock, so concurrent bookings spread fairly.
+			if l.Hosts, err = loadHosts(ctx, tx, l.ID); err != nil {
+				return err
+			}
+			ids, err := s.assignHosts(withoutConnectedBusy(ctx), tx, l, start, in.Duration, uuid.Nil, uuidOr(bookerID))
+			if err != nil {
+				return err
+			}
+			if ids[0] != b.HostID {
+				b.HostID = ids[0]
+				if err := tx.QueryRow(ctx, `SELECT id, display_name, avatar_url FROM users WHERE id = $1`, ids[0]).
+					Scan(&host.ID, &host.DisplayName, &host.AvatarURL); err != nil {
+					return err
+				}
+			}
+			b.coHosts = ids[1:]
+		}
 		ev := eventRow{
-			ID: eventID, OwnerID: l.ownerID, Title: bookingTitle(l.Title, host.DisplayName, name), StartsAt: b.StartsAt, EndsAt: b.EndsAt,
+			ID: eventID, OwnerID: b.HostID, Title: bookingTitle(l.Title, host.DisplayName, name), StartsAt: b.StartsAt, EndsAt: b.EndsAt,
 			Timezone: l.Timezone, Status: "confirmed", Visibility: "busy", ShowAs: "busy", Color: l.Color,
 			Location: bookingLocation(b), Description: bookingNotes(b, phone), ConferenceURL: b.ConferenceURL, ConferenceID: b.ConferenceID,
 		}
-		st, err := s.loadSettings(ctx, tx, l.ownerID)
+		if b.HostID == firstHost {
+			ev.CalendarID = &hostCal
+		}
+		st, err := s.loadSettings(ctx, tx, b.HostID)
 		if err != nil {
 			return err
 		}
@@ -423,20 +537,53 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		if bookerID == nil {
 			att = resolvedAttendee{email: email, name: name}
 		}
-		if _, err := s.insertAttendees(ctx, tx, ev.ID, []resolvedAttendee{att}, ResponseAccepted); err != nil {
+		accepted := []resolvedAttendee{att}
+		for _, id := range b.coHosts {
+			accepted = append(accepted, resolvedAttendee{userID: &id})
+		}
+		if _, err := s.insertAttendees(ctx, tx, ev.ID, accepted, ResponseAccepted); err != nil {
+			return err
+		}
+		var guestAtts []resolvedAttendee
+		for _, g := range guests {
+			guestAtts = append(guestAtts, resolvedAttendee{email: g})
+		}
+		addedGuests, err := s.insertAttendees(ctx, tx, ev.ID, guestAtts, ResponseNeedsAction)
+		if err != nil {
 			return err
 		}
 		b.EventID = &ev.ID
 		answersJSON, _ := json.Marshal(answers)
+		var assignment *string
+		if team {
+			a := l.Kind
+			assignment = &a
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO calendar_bookings (id, link_id, host_id, event_id, title, booker_user_id, booker_name, booker_email,
 			  booker_timezone, starts_at, ends_at, block, location_type, location_value, conference_url, conference_id,
-			  answers, manage_token_hash, ext_connection_id, ext_calendar_id, ext_event_id, conference_provider)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, tstzrange($12, $13), $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+			  answers, manage_token_hash, ext_connection_id, ext_calendar_id, ext_event_id, conference_provider, guests, assignment)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, tstzrange($12, $13), $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
 			b.ID, b.LinkID, b.HostID, b.EventID, b.Title, b.BookerUserID, b.BookerName, b.BookerEmail, b.BookerTimezone,
 			b.StartsAt, b.EndsAt, b.StartsAt.Add(-time.Duration(l.BufferBefore)*time.Minute), b.EndsAt.Add(time.Duration(l.BufferAfter)*time.Minute),
 			b.LocationType, b.LocationValue, b.ConferenceURL, b.ConferenceID, answersJSON, hashToken(token),
-			b.ExtConnectionID, b.ExtCalendarID, b.ExtEventID, b.ConferenceProvider); err != nil {
+			b.ExtConnectionID, b.ExtCalendarID, b.ExtEventID, b.ConferenceProvider, b.Guests, assignment); err != nil {
+			return err
+		}
+		for _, id := range b.coHosts {
+			if _, err := tx.Exec(ctx, `INSERT INTO calendar_booking_hosts (booking_id, user_id) VALUES ($1, $2)`, b.ID, id); err != nil {
+				return err
+			}
+		}
+		if l.SingleUse {
+			if _, err := tx.Exec(ctx, `UPDATE calendar_booking_links SET used_at = now(), updated_at = now() WHERE id = $1`, l.ID); err != nil {
+				return err
+			}
+		}
+		if err := s.notifyAttendees(ctx, tx, ev, nil, addedGuests, inviteNew); err != nil {
+			return err
+		}
+		if err := s.tellCoHosts(ctx, tx, b, l, "new"); err != nil {
 			return err
 		}
 		return s.tellBooking(ctx, tx, b, l, host, "new", token, "")
@@ -452,13 +599,24 @@ func (s *Service) bookHandler(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	kickOutbox()
+	if conf != nil && b.HostID != firstHost {
+		// Round robin re-picked inside the transaction: the room follows.
+		if _, err := s.bookingConference(ctx, l, b, b.ConferenceID); err != nil {
+			slog.WarnContext(ctx, "calendar: conference host change failed", "err", err)
+		}
+	}
 	if b.ExtEventID != nil {
 		s.changed(ctx, "connected", l.ownerID)
 	}
-	s.changed(ctx, "events", l.ownerID, uuidOr(bookerID))
-	s.changed(ctx, "bookings", l.ownerID, uuidOr(bookerID))
+	everyone := append([]uuid.UUID{b.HostID, uuidOr(bookerID)}, b.coHosts...)
+	s.changed(ctx, "events", everyone...)
+	s.changed(ctx, "bookings", everyone...)
+	if l.SingleUse {
+		s.changed(ctx, "links", append(s.linkWatchers(ctx, l), l.ownerID)...)
+	}
 	pb := s.publicBooking(b, l, host)
-	httpx.JSON(w, http.StatusCreated, BookingConfirmation{Booking: pb, ManageURL: s.webURL("/book/manage/" + token), ConfirmationMessage: l.ConfirmationMessage})
+	httpx.JSON(w, http.StatusCreated, BookingConfirmation{Booking: pb, ManageURL: s.webURL("/book/manage/" + token),
+		ConfirmationMessage: l.ConfirmationMessage, RedirectURL: l.RedirectURL})
 	return nil
 }
 
@@ -514,7 +672,11 @@ func (s *Service) bookingConference(ctx context.Context, l BookingLink, b bookin
 	if c == nil {
 		return nil, httpx.NewError(http.StatusConflict, "video_unavailable", "Video calls aren't available for this link right now.")
 	}
-	req := ConferenceRequest{EventID: uuidOr(b.EventID), HostID: l.ownerID, Title: l.Title, StartsAt: b.StartsAt, EndsAt: b.EndsAt, Audience: AudienceExternal,
+	hostID := b.HostID
+	if hostID == uuid.Nil {
+		hostID = l.ownerID
+	}
+	req := ConferenceRequest{EventID: uuidOr(b.EventID), HostID: hostID, Title: l.Title, StartsAt: b.StartsAt, EndsAt: b.EndsAt, Audience: AudienceExternal,
 		Provider: trimProvider(l.ConferenceProvider), ConnectionID: ptrStr(l.ConferenceConnectionID)}
 	if b.BookerUserID == nil && b.BookerEmail != "" {
 		req.GuestEmails = []string{b.BookerEmail}
@@ -525,6 +687,8 @@ func (s *Service) bookingConference(ctx context.Context, l BookingLink, b bookin
 	if b.BookerUserID != nil {
 		req.ParticipantIDs = []uuid.UUID{*b.BookerUserID}
 	}
+	req.ParticipantIDs = append(req.ParticipantIDs, b.coHosts...)
+	req.GuestEmails = append(req.GuestEmails, b.Guests...)
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var conf Conference
@@ -575,13 +739,17 @@ type bookingRow struct {
 	ExtCalendarID      *string
 	ExtEventID         *string
 	ConferenceProvider *string
+	Guests             []string
+	Assignment         *string
+
+	coHosts []uuid.UUID // collective links: the other hosts (set when booking)
 }
 
 const bookingCols = `b.id, b.link_id, b.host_id, b.event_id, b.title, b.booker_user_id, b.booker_name, b.booker_email,
 	b.booker_timezone, b.starts_at, b.ends_at, b.location_type, b.location_value, b.conference_url, b.conference_id,
 	b.answers, b.status, b.cancelled_at, b.cancelled_by, b.cancel_reason, b.created_at,
 	COALESCE((SELECT sequence FROM calendar_events e WHERE e.id = b.event_id), b.reschedule_count),
-	b.ext_connection_id, b.ext_calendar_id, b.ext_event_id, b.conference_provider`
+	b.ext_connection_id, b.ext_calendar_id, b.ext_event_id, b.conference_provider, b.guests, b.assignment`
 
 func scanBooking(row pgx.Row) (bookingRow, error) {
 	var b bookingRow
@@ -589,7 +757,7 @@ func scanBooking(row pgx.Row) (bookingRow, error) {
 	err := row.Scan(&b.ID, &b.LinkID, &b.HostID, &b.EventID, &b.Title, &b.BookerUserID, &b.BookerName, &b.BookerEmail,
 		&b.BookerTimezone, &b.StartsAt, &b.EndsAt, &b.LocationType, &b.LocationValue, &b.ConferenceURL, &b.ConferenceID,
 		&answers, &b.Status, &b.CancelledAt, &b.CancelledBy, &b.CancelReason, &b.CreatedAt, &b.Sequence,
-		&b.ExtConnectionID, &b.ExtCalendarID, &b.ExtEventID, &b.ConferenceProvider)
+		&b.ExtConnectionID, &b.ExtCalendarID, &b.ExtEventID, &b.ConferenceProvider, &b.Guests, &b.Assignment)
 	if err == nil {
 		b.Answers = []Answer{}
 		_ = json.Unmarshal(answers, &b.Answers)
@@ -728,6 +896,7 @@ func (s *Service) manageSlots(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	keepHost(&l, b)
 	slots, err := s.linkSlots(r.Context(), s.d.Pool, l, from, to, int(b.EndsAt.Sub(b.StartsAt)/time.Minute), b.ID)
 	if err != nil {
 		return err
@@ -782,6 +951,11 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 	}
 	dur := int(b.EndsAt.Sub(b.StartsAt) / time.Minute)
 	start := in.StartsAt.UTC()
+	keepHost(&l, b)
+	coHosts, err := bookingCoHosts(ctx, s.d.Pool, b.ID)
+	if err != nil {
+		return err
+	}
 	if ok, err := s.slotAvailable(ctx, s.d.Pool, l, start, dur, b.ID); err != nil {
 		return err
 	} else if !ok {
@@ -793,7 +967,7 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 		moved.BookerTimezone = in.Timezone
 	}
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, jobs.LockKey("calendar.host:"+b.HostID.String())); err != nil {
+		if err := lockHosts(ctx, tx, append([]uuid.UUID{b.HostID}, coHosts...)); err != nil {
 			return err
 		}
 		cur, _, _, err := s.bookingByToken(ctx, tx, token, true)
@@ -827,6 +1001,12 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 		if err := enqueueCopyMove(ctx, tx, b, moved.StartsAt, moved.EndsAt, l.Timezone); err != nil {
 			return err
 		}
+		if err := s.tellGuests(ctx, tx, moved, inviteUpdated); err != nil {
+			return err
+		}
+		if err := s.tellCoHosts(ctx, tx, moved, l, "rescheduled"); err != nil {
+			return err
+		}
 		mt, stable := s.tokenFor("manage", b.ID)
 		if !stable {
 			if _, err := tx.Exec(ctx, `UPDATE calendar_bookings SET manage_token_hash = $2 WHERE id = $1`, b.ID, hashToken(mt)); err != nil {
@@ -847,8 +1027,8 @@ func (s *Service) manageReschedule(w http.ResponseWriter, r *http.Request) error
 			slog.WarnContext(ctx, "calendar: conference update failed", "err", err)
 		}
 	}
-	s.changed(ctx, "events", b.HostID, uuidOr(b.BookerUserID))
-	s.changed(ctx, "bookings", b.HostID, uuidOr(b.BookerUserID))
+	s.changed(ctx, "events", append([]uuid.UUID{b.HostID, uuidOr(b.BookerUserID)}, coHosts...)...)
+	s.changed(ctx, "bookings", append([]uuid.UUID{b.HostID, uuidOr(b.BookerUserID)}, coHosts...)...)
 	b, l, host, err = s.bookingByToken(ctx, s.d.Pool, token, false)
 	if err != nil {
 		// Without a stable token the old link stops working after a move.
@@ -902,6 +1082,16 @@ func (s *Service) cancelBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, 
 	}
 	b.Status, b.CancelledBy, b.CancelReason = "cancelled", &by, reason
 	b.Sequence++
+	coHosts, err := bookingCoHosts(ctx, tx, b.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.tellGuests(ctx, tx, b, inviteCancelled); err != nil {
+		return nil, err
+	}
+	if err := s.tellCoHosts(ctx, tx, b, l, "cancelled"); err != nil {
+		return nil, err
+	}
 	if b.EventID != nil {
 		if _, err := tx.Exec(ctx, `DELETE FROM calendar_events WHERE id = $1`, *b.EventID); err != nil {
 			return nil, err
@@ -919,7 +1109,7 @@ func (s *Service) cancelBookingTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, 
 	if err := s.tellBooking(ctx, tx, b, l, host, "cancelled", "", by); err != nil {
 		return nil, err
 	}
-	return []uuid.UUID{b.HostID, uuidOr(b.BookerUserID)}, nil
+	return append([]uuid.UUID{b.HostID, uuidOr(b.BookerUserID)}, coHosts...), nil
 }
 
 // bookingVEvent is the booking as one VEVENT (UID of its calendar event,
@@ -1093,6 +1283,10 @@ type Booking struct {
 	CancelledBy    *string    `json:"cancelled_by"`
 	CancelReason   string     `json:"cancel_reason"`
 	CreatedAt      time.Time  `json:"created_at"`
+	Guests         []string   `json:"guests"`
+	// Assignment: round_robin, collective or reassigned (team links).
+	Assignment *string `json:"assignment"`
+	LinkKind   string  `json:"link_kind"`
 }
 
 func (s *Service) bookingView(ctx context.Context, b bookingRow, viewer uuid.UUID) (Booking, error) {
@@ -1107,8 +1301,18 @@ func (s *Service) bookingView(ctx context.Context, b bookingRow, viewer uuid.UUI
 		LocationType: b.LocationType, LocationValue: b.LocationValue, ConferenceURL: b.ConferenceURL, Answers: b.Answers,
 		Status: b.Status, CancelledAt: b.CancelledAt, CancelledBy: b.CancelledBy, CancelReason: b.CancelReason, CreatedAt: b.CreatedAt,
 	}
-	if b.HostID == viewer {
+	if b.HostID == viewer || (b.BookerUserID == nil || *b.BookerUserID != viewer) {
 		out.Role = "host"
+	}
+	out.Guests, out.Assignment = b.Guests, b.Assignment
+	if out.Guests == nil {
+		out.Guests = []string{}
+	}
+	if b.LinkID != nil {
+		var kind string
+		if err := s.d.Pool.QueryRow(ctx, `SELECT kind FROM calendar_booking_links WHERE id = $1`, *b.LinkID).Scan(&kind); err == nil {
+			out.LinkKind = kind
+		}
 	}
 	return out, nil
 }
@@ -1125,7 +1329,7 @@ func (s *Service) listBookingsFor(ctx context.Context, userID uuid.UUID, role, w
 	if !c.T.IsZero() {
 		cursorT = &c.T
 	}
-	who := "b.host_id = $1"
+	who := "(b.host_id = $1 OR b.id IN (SELECT booking_id FROM calendar_booking_hosts WHERE user_id = $1))"
 	if role == "booker" {
 		who = "b.booker_user_id = $1"
 	}
@@ -1190,7 +1394,8 @@ func (s *Service) listBookings(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Service) loadVisibleBooking(ctx context.Context, viewer, id uuid.UUID) (bookingRow, error) {
 	b, err := scanBooking(s.d.Pool.QueryRow(ctx, `SELECT `+bookingCols+` FROM calendar_bookings b
-		WHERE b.id = $1 AND (b.host_id = $2 OR b.booker_user_id = $2)`, id, viewer))
+		WHERE b.id = $1 AND (b.host_id = $2 OR b.booker_user_id = $2
+		  OR b.id IN (SELECT booking_id FROM calendar_booking_hosts WHERE user_id = $2))`, id, viewer))
 	if db.IsNoRows(err) {
 		return b, httpx.NotFound("That booking doesn't exist.")
 	}
@@ -1237,7 +1442,11 @@ func (s *Service) hostCancelBooking(w http.ResponseWriter, r *http.Request) erro
 		return httpx.Conflict("This booking is already cancelled.")
 	}
 	by := "host"
-	if b.HostID != id.UserID {
+	coHosts, err := bookingCoHosts(r.Context(), s.d.Pool, b.ID)
+	if err != nil {
+		return err
+	}
+	if b.HostID != id.UserID && !slices.Contains(coHosts, id.UserID) {
 		l, host, err := s.bookingContext(r.Context(), s.d.Pool, b)
 		if err != nil {
 			return err
@@ -1261,4 +1470,12 @@ func (s *Service) hostCancelBooking(w http.ResponseWriter, r *http.Request) erro
 	}
 	httpx.OK(w, v)
 	return nil
+}
+
+// keepHost: rescheduling a round-robin booking keeps its host.
+func keepHost(l *BookingLink, b bookingRow) {
+	if l.Kind == LinkRoundRobin {
+		h := b.HostID
+		l.onlyHost = &h
+	}
 }

@@ -2,6 +2,7 @@
 
 import {
   CHANNELS_QUICK_REACTIONS,
+  CHANNELS_REMIND_OPTIONS,
   activeCustomStatus,
   channelsFullTime,
   channelsReplyCount,
@@ -13,14 +14,16 @@ import {
   type ChannelsCachedMessage,
 } from "@scaffoldapp/shared";
 import { Badge, Button, IconButton, Tooltip, cn } from "@scaffoldapp/ui-web";
-import { Bookmark, BookmarkCheck, Bot, Copy, Flag, Link2, MessageSquareReply, Pencil, Pin, PinOff, SmilePlus, Trash2, UserPlus, LogIn, LogOut, Info } from "lucide-react";
+import { AlarmClock, Bookmark, BookmarkCheck, Bot, Copy, EyeOff, Flag, Forward, Link2, MailOpen, MessageSquareReply, Pencil, Pin, PinOff, SmilePlus, Trash2, UserPlus, LogIn, LogOut, Info, Webhook } from "lucide-react";
 import { memo, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { PresenceDot } from "@/features/presence";
 import { Attachments } from "./Attachments";
+import { EmojiGlyph } from "./emoji";
 import { Markdown } from "./Markdown";
+import { ForwardCard, LinkPreviews, PollCard } from "./MessageExtras";
 
 export interface MessageActions {
   onReplyInThread: (m: ChannelsCachedMessage) => void;
@@ -36,6 +39,12 @@ export interface MessageActions {
   onDiscard: (m: ChannelsCachedMessage) => void;
   onOpenImage: (m: ChannelsCachedMessage, attachmentId: string) => void;
   onOpenThread: (rootId: string, messageId?: string) => void;
+  /** `when` is a phrase the server reads ("in 20 minutes"), or "custom" to pick a time. */
+  onRemind: (m: ChannelsCachedMessage, when: string) => void;
+  onMarkUnread: (m: ChannelsCachedMessage) => void;
+  onForward: (m: ChannelsCachedMessage) => void;
+  onHidePreviews: (m: ChannelsCachedMessage) => void;
+  onOpenProfile: (userId: string) => void;
 }
 
 export interface MessageItemProps {
@@ -56,6 +65,8 @@ export interface MessageItemProps {
   inThread?: boolean;
   /** Edit is offered this long after sending (0 = always). */
   editWindowMs: number;
+  /** /collapse: link previews and media hidden in this conversation. */
+  collapsed?: boolean;
 }
 
 const SYSTEM_ICON: Record<string, ReactNode> = {
@@ -65,20 +76,27 @@ const SYSTEM_ICON: Record<string, ReactNode> = {
 };
 
 /** Name, presence and status emoji in a message header. */
-function AuthorName({ m }: { m: ChannelsCachedMessage }) {
+function AuthorName({ m, onOpenProfile }: { m: ChannelsCachedMessage; onOpenProfile: (id: string) => void }) {
   const presence = useUserPresence(m.sender && !m.sender.deleted ? m.sender.id : null);
   const status = activeCustomStatus(presence);
   if (!m.sender) {
     return (
       <span className="flex items-center gap-1.5">
         <span className="type-label font-semibold text-fg">{m.bot_name}</span>
-        <Badge size="sm">App</Badge>
+        <Badge size="sm" icon={m.integration ? <Webhook aria-hidden /> : undefined}>{m.integration ? "Integration" : "App"}</Badge>
       </span>
     );
   }
+  const sender = m.sender;
   return (
     <span className="flex min-w-0 items-center gap-1.5">
-      <span className={cn("truncate type-label font-semibold text-fg", m.sender.deleted && "text-fg-muted")}>{m.sender.display_name}</span>
+      {sender.deleted ? (
+        <span className="truncate type-label font-semibold text-fg-muted">{sender.display_name}</span>
+      ) : (
+        <button type="button" onClick={() => onOpenProfile(sender.id)} className="truncate type-label font-semibold text-fg underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          {sender.display_name}
+        </button>
+      )}
       <PresenceDot presence={presence} />
       {status && (
         <Tooltip content={presenceStatusText(status)}>
@@ -92,7 +110,7 @@ function AuthorName({ m }: { m: ChannelsCachedMessage }) {
 }
 
 /** One message in a channel or thread: header, body, files, reactions, thread summary and its actions. */
-export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, grouped, highlighted, names, actions, canInteract, canModerate, inThread, editWindowMs }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, grouped, highlighted, names, actions, canInteract, canModerate, inThread, editWindowMs, collapsed }: MessageItemProps) {
   if (m.kind === "system") {
     return (
       <div id={`message-${m.id}`} className="flex items-center gap-3 px-gutter py-1 lg:px-5">
@@ -119,6 +137,15 @@ export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, 
     ...(canInteract ? [{ id: "react", label: "Add reaction", icon: SmilePlus, onSelect: () => actions.onPickEmoji(m) }] : []),
     { id: "link", label: "Copy link", icon: Link2, onSelect: () => actions.onCopyLink(m) },
     ...(m.body ? [{ id: "copy", label: "Copy text", icon: Copy, onSelect: () => void navigator.clipboard?.writeText(m.body) }] : []),
+    {
+      id: "remind",
+      label: "Remind me about this",
+      icon: AlarmClock,
+      choices: [...CHANNELS_REMIND_OPTIONS.map((o) => ({ id: o.when, label: o.label, onSelect: () => actions.onRemind(m, o.when) })), { id: "custom", label: "Custom…", onSelect: () => actions.onRemind(m, "custom") }],
+    },
+    { id: "unread", label: "Mark unread", icon: MailOpen, onSelect: () => actions.onMarkUnread(m) },
+    ...(canInteract ? [{ id: "forward", label: "Forward…", icon: Forward, onSelect: () => actions.onForward(m) }] : []),
+    ...(own && m.links.some((l) => l.kind === "external") && !m.links_hidden ? [{ id: "previews", label: "Remove previews", icon: EyeOff, onSelect: () => actions.onHidePreviews(m) }] : []),
     ...(canInteract ? [{ id: "pin", label: m.pinned ? "Unpin from channel" : "Pin to channel", icon: m.pinned ? PinOff : Pin, onSelect: () => actions.onTogglePin(m) }] : []),
     { id: "save", label: m.saved ? "Remove from Later" : "Save for later", icon: m.saved ? BookmarkCheck : Bookmark, onSelect: () => actions.onToggleSave(m) },
     ...(canEdit ? [{ id: "edit", label: "Edit message", icon: Pencil, onSelect: () => actions.onEdit(m) }] : []),
@@ -144,7 +171,13 @@ export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, 
             </time>
           </Tooltip>
         ) : m.sender ? (
-          <AppAvatar name={m.sender.display_name} src={m.sender.avatar_url} size="sm" />
+          m.sender.deleted ? (
+            <AppAvatar name={m.sender.display_name} src={m.sender.avatar_url} size="sm" />
+          ) : (
+            <button type="button" onClick={() => m.sender && actions.onOpenProfile(m.sender.id)} aria-label={`${m.sender.display_name}'s profile`} className="rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+              <AppAvatar name={m.sender.display_name} src={m.sender.avatar_url} size="sm" />
+            </button>
+          )
         ) : (
           <span aria-hidden className="flex size-8 items-center justify-center rounded-md bg-primary-soft text-primary-strong [&_svg]:size-5">
             <Bot />
@@ -154,7 +187,7 @@ export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, 
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {!grouped && (
           <div className="flex min-w-0 items-baseline gap-2">
-            <AuthorName m={m} />
+            <AuthorName m={m} onOpenProfile={actions.onOpenProfile} />
             <Tooltip content={channelsFullTime(m.created_at)}>
               <time dateTime={m.created_at} tabIndex={0} className="shrink-0 type-caption text-fg-muted focus-visible:outline-2 focus-visible:outline-ring">
                 {channelsShortTime(m.created_at) === channelsTime(m.created_at) ? channelsTime(m.created_at) : `${channelsShortTime(m.created_at)}, ${channelsTime(m.created_at)}`}
@@ -186,13 +219,24 @@ export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, 
                 ))}
               </ul>
             )}
-            {m.body && (
-              <div className={cn((pending || failed) && "opacity-70")}>
-                <Markdown body={m.body} mentions={m.mentions} meId={meId} />
-              </div>
+            {m.poll ? (
+              <PollCard message={m} meId={meId} canVote={canInteract} canClose={canInteract && (own || canModerate)} names={names} />
+            ) : (
+              m.body && (
+                <div className={cn((pending || failed) && "opacity-70")}>
+                  <Markdown body={m.body} mentions={m.mentions} meId={meId} />
+                </div>
+              )
             )}
             {m.edited_at && <span className="type-caption text-fg-subtle">(edited)</span>}
-            {m.attachments.length > 0 && <Attachments attachments={m.attachments} pending={pending} onOpenImage={(id) => actions.onOpenImage(m, id)} />}
+            {m.forward && <ForwardCard messageId={m.forward.message_id} meId={meId} />}
+            {m.attachments.length > 0 &&
+              (collapsed ? (
+                <span className="type-caption text-fg-muted">{m.attachments.length === 1 ? "1 file (collapsed)" : `${m.attachments.length} files (collapsed)`}</span>
+              ) : (
+                <Attachments attachments={m.attachments} pending={pending} onOpenImage={(id) => actions.onOpenImage(m, id)} />
+              ))}
+            {!collapsed && <LinkPreviews message={m} own={own} onRemove={() => actions.onHidePreviews(m)} />}
           </>
         )}
         {m.reactions.length > 0 && !m.deleted && (
@@ -214,7 +258,7 @@ export const MessageItem = memo(function MessageItem({ message: m, meId, orgId, 
                         mine ? "border-primary bg-primary-soft text-primary-strong" : "border-border bg-surface text-fg hover:bg-sunken",
                       )}
                     >
-                      <span>{r.emoji}</span>
+                      <EmojiGlyph value={r.emoji} />
                       <span className="tabular-nums">{r.count}</span>
                     </button>
                   </Tooltip>

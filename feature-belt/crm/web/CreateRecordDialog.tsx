@@ -2,6 +2,7 @@
 
 import {
   CRM_LIFECYCLE_LABEL,
+  CRM_TICKET_PRIORITY_LABEL,
   CRM_SOURCE_APP,
   CRM_TYPE_LABEL,
   crmParseMoney,
@@ -14,17 +15,40 @@ import {
   type CrmLifecycleStage,
   type CrmObjectType,
   type CrmSearchHit,
+  type CrmTicketPriority,
 } from "@scaffoldapp/shared";
-import { Banner, Button, Dialog, EmptyState, Field, IconButton, Input, ProviderIcon, Select, sourcePlatformName, toast } from "@scaffoldapp/ui-web";
+import { Banner, Button, Dialog, EmptyState, Field, IconButton, Input, ProviderIcon, Select, TextArea, sourcePlatformName, toast } from "@scaffoldapp/ui-web";
 import { X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useCrm } from "./CrmFrame";
-import { RecordPicker, TYPE_ICON, recordHref } from "./parts";
+import { RecordPicker, TYPE_ICON, pipelinesFor, recordHref } from "./parts";
 
 /** What the create endpoint takes (field values by property key, plus associations). */
-type CreateBody = Partial<Record<"name" | "domain" | "phone" | "first_name" | "last_name" | "emails" | "phones" | "job_title" | "lifecycle_stage" | "company_id" | "amount" | "stage" | "close_date" | "contact_ids" | "allow_duplicate", unknown>>;
+type CreateBody = Partial<
+  Record<
+    | "name"
+    | "domain"
+    | "phone"
+    | "first_name"
+    | "last_name"
+    | "emails"
+    | "phones"
+    | "job_title"
+    | "lifecycle_stage"
+    | "company_id"
+    | "deal_id"
+    | "amount"
+    | "stage"
+    | "close_date"
+    | "contact_ids"
+    | "priority"
+    | "description"
+    | "allow_duplicate",
+    unknown
+  >
+>;
 
 interface Draft {
   name: string;
@@ -40,11 +64,31 @@ interface Draft {
   closeDate: string;
   company: CrmSearchHit | null;
   contacts: CrmSearchHit[];
+  deal: CrmSearchHit | null;
+  priority: CrmTicketPriority;
+  description: string;
 }
 
-const empty: Draft = { name: "", domain: "", first: "", last: "", email: "", phone: "", title: "", lifecycle: "lead", amount: "", stageId: "", closeDate: "", company: null, contacts: [] };
+const empty: Draft = {
+  name: "",
+  domain: "",
+  first: "",
+  last: "",
+  email: "",
+  phone: "",
+  title: "",
+  lifecycle: "lead",
+  amount: "",
+  stageId: "",
+  closeDate: "",
+  company: null,
+  contacts: [],
+  deal: null,
+  priority: "medium",
+  description: "",
+};
 
-/** New company, contact or deal: the key fields, a duplicate warning while typing, then the record page. */
+/** New company, contact, deal or ticket: the key fields, a duplicate warning while typing, then the record page. */
 export function CreateRecordDialog({
   type,
   open,
@@ -56,7 +100,7 @@ export function CreateRecordDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
   /** Prefill associations (a contact from a company page, a deal from a contact page). */
-  initial?: { company?: CrmSearchHit; contact?: CrmSearchHit };
+  initial?: { company?: CrmSearchHit; contact?: CrmSearchHit; deal?: CrmSearchHit };
   /** Where it goes: the app (default), a connected account (connection id), or null when the screen's source takes no new records. */
   source?: string | null;
 }) {
@@ -69,13 +113,15 @@ export function CreateRecordDialog({
   const [error, setError] = useState<string | null>(null);
   const [dups, setDups] = useState<CrmDuplicate[]>([]);
   const create = useCrmCreateRecord(orgId, type, source ?? CRM_SOURCE_APP);
-  const pipelines = useCrmPipelines(type === "deal" ? orgId : null, source ?? CRM_SOURCE_APP);
-  const stages = useMemo(() => (pipelines.data ?? []).flatMap((p) => p.stages.filter((s) => s.outcome === "open").map((s) => ({ ...s, pipeline: p }))), [pipelines.data]);
+  const pipelined = type === "deal" || type === "ticket";
+  const pipelines = useCrmPipelines(pipelined ? orgId : null, source ?? CRM_SOURCE_APP);
+  const ofType = useMemo(() => (pipelined ? pipelinesFor(pipelines.data, type) : []), [pipelines.data, pipelined, type]);
+  const stages = useMemo(() => ofType.flatMap((p) => p.stages.filter((s) => s.outcome === "open").map((s) => ({ ...s, pipeline: p }))), [ofType]);
   const live = useCrmDuplicates(external ? null : orgId, type === "contact" ? { object: "contact", emails: d.email.includes("@") ? [d.email.trim()] : [] } : { object: "company", domain: type === "company" ? d.domain.trim() : "" });
 
   useEffect(() => {
     if (open) {
-      setD({ ...empty, company: initial?.company ?? null, contacts: initial?.contact ? [initial.contact] : [] });
+      setD({ ...empty, company: initial?.company ?? null, contacts: initial?.contact ? [initial.contact] : [], deal: initial?.deal ?? null });
       setError(null);
       setDups([]);
     }
@@ -103,6 +149,15 @@ export function CreateRecordDialog({
       if (d.title.trim()) body.job_title = d.title.trim();
       if (!external) body.lifecycle_stage = d.lifecycle;
       if (d.company && !external) body.company_id = d.company.id;
+    } else if (type === "ticket") {
+      if (!d.name.trim()) return setError("Enter the ticket's subject.");
+      body.name = d.name.trim();
+      body.priority = d.priority;
+      if (d.description.trim()) body.description = d.description.trim();
+      if (d.stageId) body.stage = d.stageId;
+      if (d.company) body.company_id = d.company.id;
+      if (d.deal) body.deal_id = d.deal.id;
+      if (d.contacts.length) body.contact_ids = d.contacts.map((c) => c.id);
     } else {
       if (!d.name.trim()) return setError("Enter the deal's name.");
       body.name = d.name.trim();
@@ -250,6 +305,39 @@ export function CreateRecordDialog({
               </Field>
             ) : null}
           </>
+        ) : type === "ticket" ? (
+          <>
+            <Field label="Subject" required error={error}>
+              <Input value={d.name} maxLength={200} autoFocus onChange={(e) => set("name", e.target.value)} placeholder="Badge won't scan at the front desk" />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Priority">
+                <Select value={d.priority} onValueChange={(v) => set("priority", v as CrmTicketPriority)} options={(Object.keys(CRM_TICKET_PRIORITY_LABEL) as CrmTicketPriority[]).map((k) => ({ value: k, label: CRM_TICKET_PRIORITY_LABEL[k] }))} />
+              </Field>
+              <Field label="Status">
+                <Select value={d.stageId} onValueChange={(v) => set("stageId", v)} options={stages.map((s) => ({ value: s.id, label: ofType.length > 1 ? `${s.pipeline.name} · ${s.name}` : s.name }))} />
+              </Field>
+            </div>
+            <Field label="Description">
+              <TextArea value={d.description} maxLength={5000} rows={3} onChange={(e) => set("description", e.target.value)} />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Company">
+                <AssocPick orgId={orgId} type="company" value={d.company} onChange={(v) => set("company", v)} />
+              </Field>
+              <Field label="Deal">
+                <AssocPick orgId={orgId} type="deal" value={d.deal} onChange={(v) => set("deal", v)} />
+              </Field>
+            </div>
+            <Field label="Contacts">
+              <div className="flex flex-col gap-2">
+                {d.contacts.map((c) => (
+                  <Picked key={c.id} hit={c} onRemove={() => set("contacts", d.contacts.filter((x) => x.id !== c.id))} />
+                ))}
+                <RecordPicker orgId={orgId} types={["contact"]} exclude={new Set(d.contacts.map((c) => c.id))} label="Add a contact" onPick={(h) => set("contacts", [...d.contacts, h])} />
+              </div>
+            </Field>
+          </>
         ) : (
           <>
             <Field label="Name" required error={error}>
@@ -273,7 +361,7 @@ export function CreateRecordDialog({
               <Select
                 value={d.stageId}
                 onValueChange={(v) => set("stageId", v)}
-                options={stages.map((s) => ({ value: s.id, label: (pipelines.data?.length ?? 0) > 1 ? `${s.pipeline.name} · ${s.name}` : s.name }))}
+                options={stages.map((s) => ({ value: s.id, label: ofType.length > 1 ? `${s.pipeline.name} · ${s.name}` : s.name }))}
               />
             </Field>
             {!external ? (

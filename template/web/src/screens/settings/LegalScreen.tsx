@@ -1,7 +1,7 @@
 "use client";
 
 import { PRIVACY_VERSION, TERMS_VERSION, useMe } from "@scaffoldapp/shared";
-import { Card, ListRow } from "@scaffoldapp/ui-web";
+import { ListGroup, ListRow } from "@scaffoldapp/ui-web";
 import { FileText, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { Screen } from "@/components/shell/PageHeader";
@@ -17,7 +17,7 @@ export function LegalScreen() {
   ];
   return (
     <Screen title="Legal">
-      <Card padding="none" className="p-1">
+      <ListGroup>
         <ul className="flex flex-col">
           {rows.map((r) => {
             const Icon = r.icon;
@@ -39,7 +39,7 @@ export function LegalScreen() {
             );
           })}
         </ul>
-      </Card>
+      </ListGroup>
     </Screen>
   );
 }

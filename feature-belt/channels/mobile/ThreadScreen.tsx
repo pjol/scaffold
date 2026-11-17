@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { Composer } from "./Composer";
+import { ChannelsEmojiProvider } from "./emoji";
 import { useMessageActions } from "./MessageActions";
 import { MessageRow } from "./MessageRow";
 
@@ -84,7 +85,11 @@ export function ThreadScreen() {
       </Screen>
     );
   }
-  return <Thread key={rootId} rootId={rootId} c={channel.data} around={around} meId={me.data?.id} suspended={me.data?.status === "suspended"} />;
+  return (
+    <ChannelsEmojiProvider orgId={channel.data.org_id}>
+      <Thread key={rootId} rootId={rootId} c={channel.data} around={around} meId={me.data?.id} suspended={me.data?.status === "suspended"} />
+    </ChannelsEmojiProvider>
+  );
 }
 
 function Thread({ rootId, c, around, meId, suspended }: { rootId: string; c: ChannelsDetail; around: string | null; meId: string | undefined; suspended: boolean }) {
@@ -108,7 +113,7 @@ function Thread({ rootId, c, around, meId, suspended }: { rootId: string; c: Cha
   const [highlight, setHighlight] = useState<string | null>(around);
   const listRef = useRef<FlatList<ChannelsCachedMessage>>(null);
   const actions = useMessageActions({ channel: c, meId, onEdit: setEditing });
-  const canPost = c.permissions.post && !suspended;
+  const canPost = c.permissions.reply && !suspended;
 
   const latest = data.find((m) => !m.status);
   const [focused, setFocused] = useState(false);
@@ -196,7 +201,7 @@ function Thread({ rootId, c, around, meId, suspended }: { rootId: string; c: Cha
               grouped={!newDay && channelsGroupsWith(older, item)}
               dayLabel={newDay && older ? channelsDayLabel(item.created_at) : undefined}
               highlighted={highlight === item.id}
-              canInteract={!suspended}
+              canInteract={c.member && !c.archived && !suspended}
               showThread={false}
               onLongPress={actions.open}
               onReact={onReact}
@@ -221,7 +226,7 @@ function Thread({ rootId, c, around, meId, suspended }: { rootId: string; c: Cha
                 meId={meId}
                 grouped={false}
                 highlighted={highlight === root.id}
-                canInteract={!suspended}
+                canInteract={c.member && !c.archived && !suspended}
                 showThread={false}
                 onLongPress={actions.open}
                 onReact={onReact}

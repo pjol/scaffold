@@ -97,3 +97,6 @@ export function calendarDraftTimes(draft: Pick<CalendarNewEventDraft, "startsAt"
   const end = draft.endsAt ? Date.parse(draft.endsAt) : start + (draft.durationMinutes ?? 30) * 60_000;
   return { startsAt: new Date(start).toISOString(), endsAt: new Date(end).toISOString() };
 }
+
+/** The postMessage the embedded booking page sends its parent: its height, and once booked. */
+export const CALENDAR_EMBED_MESSAGE = "scaffoldapp:booking";

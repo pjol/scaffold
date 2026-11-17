@@ -1,8 +1,20 @@
 "use client";
 
-import { errorMessage, reposPlatformName, reposRelativeTime, reposShortSha, reposSupports, useReposCodeSearch, useReposCommit, useReposCommits, type ApiError, type ReposCommit } from "@scaffoldapp/shared";
+import {
+  errorMessage,
+  reposPlatformName,
+  reposRelativeTime,
+  reposShortSha,
+  reposSupports,
+  useReposCodeSearch,
+  useReposCommit,
+  useReposCommits,
+  useReposCommitStates,
+  type ApiError,
+  type ReposCommit,
+} from "@scaffoldapp/shared";
 import { Button, Card, EmptyState, ErrorState, IconButton, InfoTip, Input, Skeleton, SkeletonGroup, Tooltip } from "@scaffoldapp/ui-web";
-import { Copy, FileCode, GitCommitHorizontal, Search } from "lucide-react";
+import { Check, CircleX, Clock, Copy, FileCode, GitCommitHorizontal, Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -25,6 +37,9 @@ export function CommitsScreen() {
   const [gitRef] = useUrlState("ref", repo.default_branch);
   const [path] = useUrlState("path", "");
   const commits = useReposCommits(repo.id, { ref: gitRef, path });
+  // The combined CI status of the latest 100 commits shown (the app's own repositories).
+  const shas = useMemo(() => (commits.data?.items ?? []).slice(0, 100).map((c) => c.sha), [commits.data]);
+  const states = useReposCommitStates(repo.id, shas, !repo.source);
   const groups = useMemo(() => {
     const out: { day: string; items: ReposCommit[] }[] = [];
     for (const c of commits.data?.items ?? []) {
@@ -71,7 +86,7 @@ export function CommitsScreen() {
               </h2>
               <Card padding="none" className="divide-y divide-border">
                 {g.items.map((c) => (
-                  <CommitRow key={c.sha} repoId={repo.id} commit={c} />
+                  <CommitRow key={c.sha} repoId={repo.id} commit={c} state={states.data?.states[c.sha]} />
                 ))}
               </Card>
             </section>
@@ -83,13 +98,42 @@ export function CommitsScreen() {
   );
 }
 
-function CommitRow({ repoId, commit: c }: { repoId: string; commit: ReposCommit }) {
+const STATE_LABEL = { success: "All checks passed", failure: "Some checks failed", pending: "Checks are running" } as const;
+
+/** A commit's combined CI status as an icon with a tooltip, linking to the commit's checks. */
+export function CommitStateIcon({ repoId, sha, state }: { repoId: string; sha: string; state: "success" | "failure" | "pending" | undefined }) {
+  if (!state) return null;
+  const icon =
+    state === "success" ? (
+      <Check className="size-4 text-success-strong" aria-hidden />
+    ) : state === "failure" ? (
+      <CircleX className="size-4 text-danger-strong" aria-hidden />
+    ) : (
+      <Clock className="size-4 text-warning-strong" aria-hidden />
+    );
+  return (
+    <Tooltip content={STATE_LABEL[state]}>
+      <Link
+        href={repoHref(repoId, `commits/${sha}`)}
+        aria-label={STATE_LABEL[state]}
+        className="flex size-6 shrink-0 items-center justify-center rounded-xs focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        {icon}
+      </Link>
+    </Tooltip>
+  );
+}
+
+function CommitRow({ repoId, commit: c, state }: { repoId: string; commit: ReposCommit; state?: "success" | "failure" | "pending" | undefined }) {
   return (
     <div className="flex min-h-row items-center gap-3 px-4 py-2">
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <Link href={repoHref(repoId, `commits/${c.sha}`)} className="truncate type-label font-semibold text-fg hover:underline">
-          {c.subject}
-        </Link>
+        <span className="flex min-w-0 items-center gap-2">
+          <Link href={repoHref(repoId, `commits/${c.sha}`)} className="truncate type-label font-semibold text-fg hover:underline">
+            {c.subject}
+          </Link>
+          <CommitStateIcon repoId={repoId} sha={c.sha} state={state} />
+        </span>
         <span className="truncate type-caption text-fg-muted">
           {c.author.name} committed {reposRelativeTime(c.committer.at)}
         </span>
@@ -155,7 +199,7 @@ export function CommitScreen({ sha }: { sha: string }) {
             <Link href={repoHref(repo.id, "", { ref: c.sha })}>Browse files</Link>
           </Button>
         </div>
-        {reposSupports(repo, "checks") ? <ChecksList repoId={repo.id} sha={c.sha} /> : null}
+        {reposSupports(repo, "checks") || !repo.source ? <ChecksList repoId={repo.id} sha={c.sha} /> : null}
       </Card>
       <div className="flex flex-wrap items-center gap-3">
         <span className="type-label text-fg-muted">

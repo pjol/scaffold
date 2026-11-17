@@ -1,10 +1,15 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { AssistantScreen } from "@/features/assistant/AssistantScreen";
 
 export const metadata: Metadata = { title: "Assistant" };
 
-/** /assistant/new starts a conversation; /assistant/<id> opens one. */
+/** /assistant/new starts a conversation (?ctx_kind=…&mode=summarise attaches a resource, ?q= asks); /assistant/<id> opens one. */
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <AssistantScreen conversationId={id} />;
+  return (
+    <Suspense>
+      <AssistantScreen conversationId={id} />
+    </Suspense>
+  );
 }

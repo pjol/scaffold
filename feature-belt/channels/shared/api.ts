@@ -3,7 +3,29 @@ import type { PageParams } from "../api/params";
 import { seg } from "../api/query-string";
 import type { Page } from "../types";
 import type {
+  ChannelsActivityItem,
+  ChannelsActivityKind,
   ChannelsAdminChannel,
+  ChannelsBookmark,
+  ChannelsCard,
+  ChannelsCustomEmoji,
+  ChannelsDraft,
+  ChannelsEmojiList,
+  ChannelsForwardRequest,
+  ChannelsNewWebhook,
+  ChannelsPollRequest,
+  ChannelsProfileCard,
+  ChannelsReminder,
+  ChannelsReminderRequest,
+  ChannelsScheduleRequest,
+  ChannelsScheduled,
+  ChannelsSentItem,
+  ChannelsSidebarSection,
+  ChannelsUnreadChannel,
+  ChannelsUserPrefs,
+  ChannelsUserPrefsRequest,
+  ChannelsWebhook,
+  ChannelsWorkspaceSettings,
   ChannelsAttachmentUrl,
   ChannelsBrowseChannel,
   ChannelsConfig,
@@ -55,9 +77,35 @@ export function channelsEndpoints(http: HttpClient) {
       http.get<Page<ChannelsThreadSummary>>(`${org(orgId)}/threads`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
     later: (orgId: string, params: PageParams & { state?: "open" | "done" } = {}, o?: CallOptions) =>
       http.get<Page<ChannelsLaterItem>>(`${org(orgId)}/later`, { ...o, query: { state: params.state, cursor: params.cursor, limit: params.limit } }),
-    /** `q` may carry in:#channel, from:@person, from:me, has:file, is:thread. */
-    search: (orgId: string, params: PageParams & { q: string; channel_id?: string }, o?: CallOptions) =>
-      http.get<Page<ChannelsSearchHit>>(`${org(orgId)}/search`, { ...o, query: { q: params.q, channel_id: params.channel_id, cursor: params.cursor, limit: params.limit } }),
+    /** `q` may carry in:, from:, with:, to:me, has:file|link|pin|reaction, is:thread|saved, before:, after:, on:, during: (dates in `tz`). */
+    search: (orgId: string, params: PageParams & { q: string; channel_id?: string; tz?: string }, o?: CallOptions) =>
+      http.get<Page<ChannelsSearchHit>>(`${org(orgId)}/search`, { ...o, query: { q: params.q, channel_id: params.channel_id, tz: params.tz, cursor: params.cursor, limit: params.limit } }),
+    activity: (orgId: string, params: PageParams & { filter?: ChannelsActivityKind } = {}, o?: CallOptions) =>
+      http.get<Page<ChannelsActivityItem>>(`${org(orgId)}/activity`, { ...o, query: { filter: params.filter, cursor: params.cursor, limit: params.limit } }),
+    markActivityRead: (orgId: string, o?: CallOptions) => http.post<void>(`${org(orgId)}/activity/read`, undefined, o),
+    unreads: (orgId: string, o?: CallOptions) => http.get<{ items: ChannelsUnreadChannel[] }>(`${org(orgId)}/unreads`, o),
+    drafts: (orgId: string, params: PageParams = {}, o?: CallOptions) => http.get<Page<ChannelsDraft>>(`${org(orgId)}/drafts`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    sent: (orgId: string, params: PageParams = {}, o?: CallOptions) => http.get<Page<ChannelsSentItem>>(`${org(orgId)}/sent`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    scheduledList: (orgId: string, params: PageParams = {}, o?: CallOptions) =>
+      http.get<Page<ChannelsScheduled>>(`${org(orgId)}/scheduled`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    reminders: (orgId: string, params: PageParams & { state?: "open" | "done" } = {}, o?: CallOptions) =>
+      http.get<Page<ChannelsReminder>>(`${org(orgId)}/reminders`, { ...o, query: { state: params.state, cursor: params.cursor, limit: params.limit } }),
+    createReminder: (orgId: string, body: ChannelsReminderRequest, o?: CallOptions) => http.post<ChannelsReminder>(`${org(orgId)}/reminders`, body, o),
+    updateReminder: (id: string, body: { at?: string; when?: string; tz?: string; done?: boolean }, o?: CallOptions) => http.patch<ChannelsReminder>(`${C}/reminders/${seg(id)}`, body, o),
+    deleteReminder: (id: string, o?: CallOptions) => http.delete<void>(`${C}/reminders/${seg(id)}`, o),
+    updatePrefs: (orgId: string, body: ChannelsUserPrefsRequest, o?: CallOptions) => http.put<ChannelsUserPrefs>(`${org(orgId)}/prefs`, body, o),
+    createSection: (orgId: string, name: string, o?: CallOptions) => http.post<ChannelsSidebarSection>(`${org(orgId)}/sections`, { name }, o),
+    updateSection: (id: string, body: { name?: string; position?: number; collapsed?: boolean }, o?: CallOptions) => http.patch<ChannelsSidebarSection>(`${C}/sections/${seg(id)}`, body, o),
+    deleteSection: (id: string, o?: CallOptions) => http.delete<void>(`${C}/sections/${seg(id)}`, o),
+    emoji: (orgId: string, o?: CallOptions) => http.get<ChannelsEmojiList>(`${org(orgId)}/emoji`, o),
+    createEmoji: (orgId: string, body: { name: string; key?: string; alias_of?: string }, o?: CallOptions) => http.post<ChannelsCustomEmoji>(`${org(orgId)}/emoji`, body, o),
+    deleteEmoji: (id: string, o?: CallOptions) => http.delete<void>(`${C}/emoji/${seg(id)}`, o),
+    settings: (orgId: string, o?: CallOptions) => http.get<ChannelsWorkspaceSettings>(`${org(orgId)}/settings`, o),
+    /** Owners and admins; `retention_days` 0 = keep forever. */
+    updateSettings: (orgId: string, body: { unfurl_links?: boolean; retention_days?: number }, o?: CallOptions) => http.patch<ChannelsWorkspaceSettings>(`${org(orgId)}/settings`, body, o),
+    profile: (orgId: string, userId: string, o?: CallOptions) => http.get<ChannelsProfileCard>(`${org(orgId)}/people/${seg(userId)}`, o),
+    /** Your card for a link to the app; 404 when there is none or it isn't yours to see. */
+    card: (url: string, o?: CallOptions) => http.get<ChannelsCard>(`${C}/card`, { ...o, query: { url } }),
 
     channel: (id: string, o?: CallOptions) => http.get<ChannelsDetail>(ch(id), o),
     update: (id: string, body: ChannelsUpdateRequest, o?: CallOptions) => http.patch<ChannelsDetail>(ch(id), body, o),
@@ -83,6 +131,29 @@ export function channelsEndpoints(http: HttpClient) {
     files: (id: string, params: PageParams = {}, o?: CallOptions) => http.get<Page<ChannelsFile>>(`${ch(id)}/files`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
     /** Start or join the channel's call; resolves to the app path to open. */
     startCall: (id: string, o?: CallOptions) => http.post<{ path: string }>(`${ch(id)}/call`, undefined, o),
+    bookmarks: (id: string, o?: CallOptions) => http.get<{ items: ChannelsBookmark[] }>(`${ch(id)}/bookmarks`, o),
+    createBookmark: (id: string, body: { url: string; title?: string }, o?: CallOptions) => http.post<ChannelsBookmark>(`${ch(id)}/bookmarks`, body, o),
+    updateBookmark: (bookmarkId: string, body: { url?: string; title?: string; position?: number }, o?: CallOptions) => http.patch<ChannelsBookmark>(`${C}/bookmarks/${seg(bookmarkId)}`, body, o),
+    deleteBookmark: (bookmarkId: string, o?: CallOptions) => http.delete<void>(`${C}/bookmarks/${seg(bookmarkId)}`, o),
+    /** 204 (undefined) when there is none. */
+    draft: (id: string, threadRootId?: string | null, o?: CallOptions) => http.get<ChannelsDraft | undefined>(`${ch(id)}/draft`, { ...o, query: { thread_root_id: threadRootId ?? undefined } }),
+    /** An empty body deletes the draft. */
+    saveDraft: (id: string, body: string, threadRootId?: string | null, o?: CallOptions) =>
+      http.put<void>(`${ch(id)}/draft`, { body, ...(threadRootId ? { thread_root_id: threadRootId } : {}) }, o),
+    deleteDraft: (id: string, threadRootId?: string | null, o?: CallOptions) => http.delete<void>(`${ch(id)}/draft`, { ...o, query: { thread_root_id: threadRootId ?? undefined } }),
+    /** This message and everything after it become unread (a thread reply: the thread). */
+    markUnread: (id: string, messageId: string, o?: CallOptions) => http.post<void>(`${ch(id)}/unread`, { message_id: messageId }, o),
+    schedule: (id: string, body: ChannelsScheduleRequest, o?: CallOptions) => http.post<ChannelsScheduled>(`${ch(id)}/scheduled`, body, o),
+    updateScheduled: (scheduledId: string, body: { body?: string; send_at?: string; when?: string; tz?: string }, o?: CallOptions) =>
+      http.patch<ChannelsScheduled>(`${C}/scheduled/${seg(scheduledId)}`, body, o),
+    deleteScheduled: (scheduledId: string, o?: CallOptions) => http.delete<void>(`${C}/scheduled/${seg(scheduledId)}`, o),
+    sendScheduledNow: (scheduledId: string, o?: CallOptions) => http.post<ChannelsMessage>(`${C}/scheduled/${seg(scheduledId)}/send`, undefined, o),
+    createPoll: (id: string, body: ChannelsPollRequest, o?: CallOptions) => http.post<ChannelsMessage>(`${ch(id)}/polls`, body, o),
+    /** A group DM becomes a private channel. */
+    convert: (id: string, name: string, o?: CallOptions) => http.post<ChannelsDetail>(`${ch(id)}/convert`, { name }, o),
+    webhooks: (id: string, o?: CallOptions) => http.get<{ items: ChannelsWebhook[] }>(`${ch(id)}/webhooks`, o),
+    createWebhook: (id: string, name: string, o?: CallOptions) => http.post<ChannelsNewWebhook>(`${ch(id)}/webhooks`, { name }, o),
+    deleteWebhook: (webhookId: string, o?: CallOptions) => http.delete<void>(`${C}/webhooks/${seg(webhookId)}`, o),
 
     message: (id: string, o?: CallOptions) => http.get<ChannelsMessageContext>(msg(id), o),
     thread: (id: string, params: ChannelsWindowParams = {}, o?: CallOptions) => http.get<ChannelsThread>(`${msg(id)}/thread`, { ...o, query: windowQuery(params) }),
@@ -99,6 +170,12 @@ export function channelsEndpoints(http: HttpClient) {
     saveLater: (id: string, done = false, o?: CallOptions) => http.put<void>(`${msg(id)}/later`, { done }, o),
     unsaveLater: (id: string, o?: CallOptions) => http.delete<void>(`${msg(id)}/later`, o),
     attachmentUrl: (attachmentId: string, o?: CallOptions) => http.get<ChannelsAttachmentUrl>(`${C}/attachments/${seg(attachmentId)}`, o),
+    forward: (id: string, body: ChannelsForwardRequest, o?: CallOptions) => http.post<ChannelsMessage>(`${msg(id)}/forward`, body, o),
+    /** Replaces your votes; [] clears them. */
+    vote: (id: string, optionIds: string[], o?: CallOptions) => http.put<ChannelsMessage>(`${msg(id)}/vote`, { option_ids: optionIds }, o),
+    closePoll: (id: string, o?: CallOptions) => http.post<ChannelsMessage>(`${msg(id)}/poll/close`, undefined, o),
+    /** The author removes link previews. */
+    hidePreviews: (id: string, o?: CallOptions) => http.delete<ChannelsMessage>(`${msg(id)}/previews`, o),
 
     admin: {
       /** Staff view with hidden content; each call is audited. */

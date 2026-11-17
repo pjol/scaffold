@@ -9,9 +9,22 @@ import { registerRealtimeHandler, registerReconnectRefetch } from "../hooks/real
 import { topic } from "../realtime/topics";
 import type { Page } from "../types";
 import { useActiveOrgId } from "../orgs/hooks";
-import { callsEndpoints, type CallsLobbyTarget, type CallsMuteTarget } from "./api";
+import { callsEndpoints, type CallsLobbyTarget, type CallsMuteTarget, type CallsRoomTarget } from "./api";
 import { callsTimeZone, subscribeCallsTimeZone } from "./format";
 import type {
+  CallsBreakout,
+  CallsChatMessage,
+  CallsCreateBreakoutsRequest,
+  CallsOrgSettings,
+  CallsPoll,
+  CallsPollInput,
+  CallsPollUpdate,
+  CallsQuestion,
+  CallsRecording,
+  CallsRoomState,
+  CallsSessionSummary,
+  CallsTranscript,
+  CallsUpdateBreakoutsRequest,
   CallsMeetingProviders,
   CallsPlatformMeetings,
   CallsCallDetail,
@@ -49,6 +62,15 @@ export const callsKeys = {
   knock: (lobbyId: string) => ["calls", "knock", lobbyId] as const,
   guestMeeting: (code: string) => ["calls", "guest", "meeting", code] as const,
   guestStatus: (lobbyId: string) => ["calls", "guest", "status", lobbyId] as const,
+  room: (meetingId: string, as: string) => ["calls", "room", meetingId, as] as const,
+  breakouts: (meetingId: string) => ["calls", "breakouts", meetingId] as const,
+  recordingsAll: () => ["calls", "recordings"] as const,
+  meetingRecordings: (meetingId: string) => ["calls", "recordings", "meeting", meetingId] as const,
+  recording: (id: string) => ["calls", "recordings", "one", id] as const,
+  sessions: (meetingId: string) => ["calls", "sessions", meetingId] as const,
+  transcript: (sessionId: string) => ["calls", "transcript", sessionId] as const,
+  savedChat: (sessionId: string) => ["calls", "saved-chat", sessionId] as const,
+  orgSettings: (orgId: string) => ["calls", "org-settings", orgId] as const,
 };
 
 registerReconnectRefetch(callsKeys.all());
@@ -388,3 +410,196 @@ registerRealtimeHandler("calls.lobby_decided", (qc, e) => {
 registerRealtimeHandler("calls.meeting_updated", (qc) => {
   void afterMeetingChange(qc);
 });
+
+registerRealtimeHandler("calls.recording_updated", (qc, e) => {
+  void qc.invalidateQueries({ queryKey: callsKeys.recordingsAll() });
+  void qc.invalidateQueries({ queryKey: callsKeys.sessions(e.data.meeting_id) });
+  void qc.invalidateQueries({ queryKey: ["calls", "call"] });
+});
+
+// ───────────────────────────────────────────────────────────── room (polls, questions, breakouts) ──
+
+function roomKey(t: CallsRoomTarget) {
+  return callsKeys.room(t.meetingId, t.guest?.lobbyId ?? "me");
+}
+
+/**
+ * What someone in the call needs beyond the room metadata: polls, questions and their
+ * breakout room. Refetch it when a `polls`, `questions` or `breakout` signal arrives
+ * (`useInvalidateCallsRoom`); it also refreshes every 30 s as a fallback.
+ */
+export function useCallsRoomState(t: CallsRoomTarget | null, enabled = true): UseQueryResult<CallsRoomState, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(t ? roomKey(t) : ["calls", "room", "none"], ({ signal }) => c.room(t!).state({ signal }), { refetchInterval: 30_000, retry: 1 }, !!t && enabled);
+}
+
+export function useInvalidateCallsRoom(t: CallsRoomTarget | null): () => void {
+  const qc = useQueryClient();
+  return () => {
+    if (t) void qc.invalidateQueries({ queryKey: roomKey(t) });
+  };
+}
+
+function useRoomMutation<V, R>(t: CallsRoomTarget, fn: (room: ReturnType<ReturnType<typeof callsEndpoints>["room"]>, v: V) => Promise<R>): UseMutationResult<R, ApiError, V> {
+  const c = useEndpoints(callsEndpoints);
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (v: V) => fn(c.room(t), v), onSettled: () => qc.invalidateQueries({ queryKey: roomKey(t) }) });
+}
+
+export function useVoteCallsPoll(t: CallsRoomTarget): UseMutationResult<CallsPoll, ApiError, { pollId: string; choices: number[] }> {
+  return useRoomMutation(t, (r, v: { pollId: string; choices: number[] }) => r.vote(v.pollId, v.choices));
+}
+
+export function useAskCallsQuestion(t: CallsRoomTarget): UseMutationResult<CallsQuestion, ApiError, { body: string; anonymous: boolean }> {
+  return useRoomMutation(t, (r, v: { body: string; anonymous: boolean }) => r.ask(v.body, v.anonymous));
+}
+
+export function useVoteCallsQuestion(t: CallsRoomTarget): UseMutationResult<CallsQuestion, ApiError, { questionId: string; up: boolean }> {
+  return useRoomMutation(t, (r, v: { questionId: string; up: boolean }) => r.voteQuestion(v.questionId, v.up));
+}
+
+export function useDeleteCallsQuestion(t: CallsRoomTarget): UseMutationResult<void, ApiError, string> {
+  return useRoomMutation(t, (r, id: string) => r.deleteQuestion(id));
+}
+
+/** A token for a breakout room (yours, or `roomId`). */
+export function useJoinCallsBreakout(t: CallsRoomTarget): UseMutationResult<CallsJoinToken, ApiError, string | null | undefined> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: (roomId) => c.room(t).joinBreakout(roomId) });
+}
+
+export function useAskCallsHelp(t: CallsRoomTarget): UseMutationResult<void, ApiError, void> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: () => c.room(t).askForHelp() });
+}
+
+// Hosts.
+
+function useHostMutation<V, R>(meetingId: string, fn: (c: ReturnType<typeof callsEndpoints>, v: V) => Promise<R>, also?: readonly unknown[]): UseMutationResult<R, ApiError, V> {
+  const c = useEndpoints(callsEndpoints);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: V) => fn(c, v),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["calls", "room", meetingId] });
+      if (also) void qc.invalidateQueries({ queryKey: also });
+    },
+  });
+}
+
+export function useCreateCallsPoll(meetingId: string): UseMutationResult<CallsPoll, ApiError, CallsPollInput> {
+  return useHostMutation(meetingId, (c, body: CallsPollInput) => c.createPoll(meetingId, body));
+}
+
+export function useUpdateCallsPoll(meetingId: string): UseMutationResult<CallsPoll, ApiError, { pollId: string } & CallsPollUpdate> {
+  return useHostMutation(meetingId, (c, { pollId, ...body }: { pollId: string } & CallsPollUpdate) => c.updatePoll(meetingId, pollId, body));
+}
+
+export function useDeleteCallsPoll(meetingId: string): UseMutationResult<void, ApiError, string> {
+  return useHostMutation(meetingId, (c, pollId: string) => c.deletePoll(meetingId, pollId));
+}
+
+export function useModerateCallsQuestion(meetingId: string): UseMutationResult<CallsQuestion, ApiError, { questionId: string; status: "open" | "answered" | "hidden" }> {
+  return useHostMutation(meetingId, (c, v: { questionId: string; status: "open" | "answered" | "hidden" }) => c.moderateQuestion(meetingId, v.questionId, v.status));
+}
+
+/** The open breakout rooms with who is where (hosts); polled while shown. */
+export function useCallsBreakouts(meetingId: string, enabled = true): UseQueryResult<CallsBreakout | null, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.breakouts(meetingId), ({ signal }) => c.breakouts(meetingId, { signal }), { refetchInterval: 5_000 }, enabled);
+}
+
+export function useCreateCallsBreakouts(meetingId: string): UseMutationResult<CallsBreakout, ApiError, CallsCreateBreakoutsRequest> {
+  return useHostMutation(meetingId, (c, body: CallsCreateBreakoutsRequest) => c.createBreakouts(meetingId, body), callsKeys.breakouts(meetingId));
+}
+
+export function useUpdateCallsBreakouts(meetingId: string): UseMutationResult<CallsBreakout, ApiError, CallsUpdateBreakoutsRequest> {
+  return useHostMutation(meetingId, (c, body: CallsUpdateBreakoutsRequest) => c.updateBreakouts(meetingId, body), callsKeys.breakouts(meetingId));
+}
+
+export function useBroadcastCallsBreakouts(meetingId: string): UseMutationResult<void, ApiError, string> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: (text) => c.broadcastBreakouts(meetingId, text) });
+}
+
+export function useCloseCallsBreakouts(meetingId: string): UseMutationResult<void, ApiError, boolean | undefined> {
+  return useHostMutation(meetingId, (c, now: boolean | undefined) => c.closeBreakouts(meetingId, !!now), callsKeys.breakouts(meetingId));
+}
+
+export function useStartCallsRecording(meetingId: string): UseMutationResult<CallsRecording, ApiError, void> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: () => c.startRecording(meetingId) });
+}
+
+export function useStopCallsRecording(meetingId: string): UseMutationResult<CallsRecording, ApiError, void> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: () => c.stopRecording(meetingId) });
+}
+
+export function useSetCallsSpotlight(meetingId: string): UseMutationResult<void, ApiError, string> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: (identity) => c.spotlight(meetingId, identity) });
+}
+
+export function useAskCallsUnmute(meetingId: string): UseMutationResult<void, ApiError, string> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: (identity) => c.askUnmute(meetingId, identity) });
+}
+
+export function useSetCallsTranscribing(meetingId: string): UseMutationResult<void, ApiError, boolean> {
+  const c = useEndpoints(callsEndpoints);
+  return useMutation({ mutationFn: (on) => c.setTranscribing(meetingId, on) });
+}
+
+// ───────────────────────────────────────────────────────────── records ──
+
+/** A meeting's recordings you may open; kept live by `calls.recording_updated`. */
+export function useCallsMeetingRecordings(meetingId: string | null | undefined): UseQueryResult<Page<CallsRecording>, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.meetingRecordings(meetingId ?? ""), ({ signal }) => c.meetingRecordings(meetingId ?? "", { signal }), undefined, !!meetingId);
+}
+
+/** One recording with playback links (valid for an hour, refreshed every 50 minutes). */
+export function useCallsRecording(id: string | null | undefined): UseQueryResult<CallsRecording, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.recording(id ?? ""), ({ signal }) => c.recording(id ?? "", { signal }), { staleTime: 50 * 60_000, refetchInterval: 50 * 60_000, retry: false }, !!id);
+}
+
+export function useDeleteCallsRecording(): UseMutationResult<void, ApiError, string> {
+  const c = useEndpoints(callsEndpoints);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => c.deleteRecording(id),
+    onSuccess: (_, id) => {
+      qc.removeQueries({ queryKey: callsKeys.recording(id) });
+      void qc.invalidateQueries({ queryKey: callsKeys.recordingsAll() });
+      void qc.invalidateQueries({ queryKey: ["calls", "call"] });
+    },
+  });
+}
+
+export function useCallsMeetingSessions(meetingId: string | null | undefined): PagedQueryResult<CallsSessionSummary> {
+  const c = useEndpoints(callsEndpoints);
+  return usePagedQuery(callsKeys.sessions(meetingId ?? ""), (cursor, signal) => c.sessions(meetingId ?? "", { cursor }, { signal }), undefined, !!meetingId);
+}
+
+export function useCallsTranscript(sessionId: string | null | undefined, enabled = true): UseQueryResult<CallsTranscript, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.transcript(sessionId ?? ""), ({ signal }) => c.transcript(sessionId ?? "", { signal }), undefined, !!sessionId && enabled);
+}
+
+export function useCallsSavedChat(sessionId: string | null | undefined, enabled = true): UseQueryResult<Page<CallsChatMessage>, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.savedChat(sessionId ?? ""), ({ signal }) => c.savedChat(sessionId ?? "", { signal }), undefined, !!sessionId && enabled);
+}
+
+export function useCallsOrgSettings(orgId: string | null | undefined): UseQueryResult<CallsOrgSettings, ApiError> {
+  const c = useEndpoints(callsEndpoints);
+  return useApiQuery(callsKeys.orgSettings(orgId ?? ""), ({ signal }) => c.orgSettings(orgId ?? "", { signal }), undefined, !!orgId);
+}
+
+export function useUpdateCallsOrgSettings(orgId: string): UseMutationResult<CallsOrgSettings, ApiError, Partial<Pick<CallsOrgSettings, "captions" | "transcripts" | "recording">>> {
+  const c = useEndpoints(callsEndpoints);
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (body) => c.updateOrgSettings(orgId, body), onSuccess: (d) => qc.setQueryData(callsKeys.orgSettings(orgId), d) });
+}

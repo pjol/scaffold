@@ -60,6 +60,8 @@ import { Section } from "@/components/shell/PageHeader";
 import { APP_NAME } from "@/lib/app";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
+import { ScoringSection } from "./ScoringSection";
+import { pipelinesFor } from "./parts";
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "CHF", "SEK", "NOK", "DKK", "JPY", "INR", "SGD", "BRL", "MXN", "ZAR"];
 
@@ -93,8 +95,10 @@ function Settings() {
     <div className="flex flex-col gap-section">
       <SourcesSection can={can} />
       <AccessSection can={can} />
-      <PipelinesSection can={can} />
+      <PipelinesSection can={can} type="deal" />
+      <PipelinesSection can={can} type="ticket" />
       <PropertiesSection can={can} />
+      <ScoringSection can={can} />
       <TagsSection can={can} />
     </div>
   );
@@ -224,14 +228,19 @@ function AccessSection({ can }: { can: boolean }) {
 
 // ---- pipelines ---------------------------------------------------------------------------
 
-function PipelinesSection({ can }: { can: boolean }) {
+function PipelinesSection({ can, type }: { can: boolean; type: "deal" | "ticket" }) {
   const { orgId } = useCrm();
-  const list = useCrmPipelines(orgId);
+  const query = useCrmPipelines(orgId);
+  const list = { ...query, data: query.data ? pipelinesFor(query.data, type) : undefined };
   const [editing, setEditing] = useState<CrmPipeline | "new" | null>(null);
   return (
     <Section
-      title="Pipelines"
-      info="Stages in order, each with the chance a deal there closes. Won and lost stages close deals."
+      title={type === "deal" ? "Deal pipelines" : "Ticket pipelines"}
+      info={
+        type === "deal"
+          ? "Stages in order, each with the chance a deal there closes. Won and lost stages close deals."
+          : "Statuses in order. Moving a ticket into a closed status sets its resolution time."
+      }
       action={
         can ? (
           <Button variant="secondary" size="sm" leftIcon={<Plus />} onClick={() => setEditing("new")}>
@@ -246,8 +255,8 @@ function PipelinesSection({ can }: { can: boolean }) {
             <SkeletonRow leading={false} />
           </SkeletonGroup>
         </Card>
-      ) : list.isError ? (
-        <ErrorState compact title="Couldn't load pipelines" onRetry={() => void list.refetch()} />
+      ) : list.isError || !list.data ? (
+        <ErrorState compact title="Couldn't load pipelines" onRetry={() => void query.refetch()} />
       ) : (
         <div className="flex flex-col gap-3">
           {list.data.map((p) => (
@@ -263,8 +272,8 @@ function PipelinesSection({ can }: { can: boolean }) {
               <ol className="flex flex-wrap gap-2">
                 {p.stages.map((s) => (
                   <li key={s.id}>
-                    <Badge tone={s.outcome === "won" ? "success" : s.outcome === "lost" ? "danger" : "neutral"}>
-                      {s.name} · {s.probability}%
+                    <Badge tone={s.outcome === "won" || s.outcome === "closed" ? "success" : s.outcome === "lost" ? "danger" : "neutral"}>
+                      {type === "deal" ? `${s.name} · ${s.probability}%` : s.outcome === "closed" && s.name.trim().toLowerCase() !== "closed" ? `${s.name} · closed` : s.name}
                     </Badge>
                   </li>
                 ))}
@@ -273,24 +282,31 @@ function PipelinesSection({ can }: { can: boolean }) {
           ))}
         </div>
       )}
-      {editing ? <PipelineDialog pipeline={editing === "new" ? null : editing} canDelete={(list.data?.length ?? 0) > 1} onClose={() => setEditing(null)} /> : null}
+      {editing ? <PipelineDialog type={type} pipeline={editing === "new" ? null : editing} canDelete={(list.data?.length ?? 0) > 1} onClose={() => setEditing(null)} /> : null}
     </Section>
   );
 }
 
-function PipelineDialog({ pipeline, canDelete, onClose }: { pipeline: CrmPipeline | null; canDelete: boolean; onClose: () => void }) {
+function PipelineDialog({ type, pipeline, canDelete, onClose }: { type: "deal" | "ticket"; pipeline: CrmPipeline | null; canDelete: boolean; onClose: () => void }) {
   const { orgId } = useCrm();
   const create = useCrmCreatePipeline(orgId);
   const update = useCrmUpdatePipeline(orgId);
   const del = useCrmDeletePipeline(orgId);
   const [name, setName] = useState(pipeline?.name ?? "");
   const [stages, setStages] = useState<CrmStageInput[]>(
-    pipeline?.stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability, outcome: s.outcome })) ?? [
-      { name: "Qualified", probability: 10, outcome: "open" },
-      { name: "Proposal", probability: 50, outcome: "open" },
-      { name: "Won", probability: 100, outcome: "won" },
-      { name: "Lost", probability: 0, outcome: "lost" },
-    ],
+    pipeline?.stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability, outcome: s.outcome })) ??
+      (type === "deal"
+        ? [
+            { name: "Qualified", probability: 10, outcome: "open" },
+            { name: "Proposal", probability: 50, outcome: "open" },
+            { name: "Won", probability: 100, outcome: "won" },
+            { name: "Lost", probability: 0, outcome: "lost" },
+          ]
+        : [
+            { name: "New", probability: 0, outcome: "open" },
+            { name: "Waiting on contact", probability: 0, outcome: "open" },
+            { name: "Closed", probability: 0, outcome: "closed" },
+          ]),
   );
   const [moves, setMoves] = useState<Record<string, string>>({});
   const [blocked, setBlocked] = useState<{ stageId: string; count: number } | null>(null);
@@ -306,7 +322,7 @@ function PipelineDialog({ pipeline, canDelete, onClose }: { pipeline: CrmPipelin
   };
   const save = () => {
     setError(null);
-    const body = { name: name.trim(), stages, ...(Object.keys(moves).length ? { stage_moves: moves } : {}) };
+    const body = { name: name.trim(), stages, ...(Object.keys(moves).length ? { stage_moves: moves } : {}), ...(pipeline ? {} : { object_type: type }) };
     const done = { onSuccess: () => (toast.success("Pipeline saved"), onClose()), onError: (e: unknown) => onFail(e) };
     if (pipeline) update.mutate({ id: pipeline.id, ...body }, done);
     else create.mutate(body, done);
@@ -355,24 +371,33 @@ function PipelineDialog({ pipeline, canDelete, onClose }: { pipeline: CrmPipelin
                 aria-label={`Stage ${i + 1} outcome`}
                 className="w-28"
                 value={s.outcome}
-                onValueChange={(v) => setStage(i, { outcome: v as CrmStageInput["outcome"], probability: v === "won" ? 100 : v === "lost" ? 0 : s.probability })}
-                options={[
-                  { value: "open", label: "Open" },
-                  { value: "won", label: "Won" },
-                  { value: "lost", label: "Lost" },
-                ]}
+                onValueChange={(v) => setStage(i, { outcome: v as CrmStageInput["outcome"], probability: v === "won" ? 100 : v === "lost" || v === "closed" ? 0 : s.probability })}
+                options={
+                  type === "deal"
+                    ? [
+                        { value: "open", label: "Open" },
+                        { value: "won", label: "Won" },
+                        { value: "lost", label: "Lost" },
+                      ]
+                    : [
+                        { value: "open", label: "Open" },
+                        { value: "closed", label: "Closed" },
+                      ]
+                }
               />
-              <Input
-                aria-label={`Stage ${i + 1} probability`}
-                type="number"
-                min={0}
-                max={100}
-                disabled={s.outcome !== "open"}
-                value={s.probability}
-                onChange={(e) => setStage(i, { probability: Math.max(0, Math.min(100, Number(e.target.value))) })}
-                trailing={<span className="px-2 type-caption">%</span>}
-                wrapperClassName="w-28"
-              />
+              {type === "deal" ? (
+                <Input
+                  aria-label={`Stage ${i + 1} probability`}
+                  type="number"
+                  min={0}
+                  max={100}
+                  disabled={s.outcome !== "open"}
+                  value={s.probability}
+                  onChange={(e) => setStage(i, { probability: Math.max(0, Math.min(100, Number(e.target.value))) })}
+                  trailing={<span className="px-2 type-caption">%</span>}
+                  wrapperClassName="w-28"
+                />
+              ) : null}
               <IconButton label="Move up" size="sm" icon={<ArrowUp />} disabled={i === 0} onClick={() => move(i, -1)} />
               <IconButton label="Move down" size="sm" icon={<ArrowDown />} disabled={i === stages.length - 1} onClick={() => move(i, 1)} />
               <IconButton label={`Remove ${s.name || "stage"}`} size="sm" icon={<X />} disabled={stages.length <= 1} onClick={() => setStages(stages.filter((_, j) => j !== i))} />
@@ -383,7 +408,7 @@ function PipelineDialog({ pipeline, canDelete, onClose }: { pipeline: CrmPipelin
           </Button>
         </fieldset>
         {blocked && removed ? (
-          <Field label={`Move the ${blocked.count} deals in “${removed.name}” to`}>
+          <Field label={`Move the ${blocked.count} ${type === "deal" ? "deals" : "tickets"} in “${removed.name}” to`}>
             <Select
               value={moves[blocked.stageId]}
               onValueChange={(v) => setMoves({ ...moves, [blocked.stageId]: v })}
@@ -415,7 +440,7 @@ function PipelineDialog({ pipeline, canDelete, onClose }: { pipeline: CrmPipelin
             )
           }
         >
-          Only a pipeline without deals can be deleted.
+          Only a pipeline without {type === "deal" ? "deals" : "tickets"} can be deleted.
         </ConfirmDialog>
       ) : null}
     </Dialog>
@@ -453,6 +478,7 @@ function PropertiesSection({ can }: { can: boolean }) {
           { value: "contact", label: "Contacts" },
           { value: "company", label: "Companies" },
           { value: "deal", label: "Deals" },
+          { value: "ticket", label: "Tickets" },
         ]}
       />
       <Card padding="none" className="p-1">

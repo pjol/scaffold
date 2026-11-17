@@ -2,18 +2,14 @@ package docs
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
@@ -21,118 +17,21 @@ import (
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
-	"scaffoldapp/backend/internal/orgs"
 )
-
-// Property is one column of a database. The title property (id "title") is
-// the row page's title; every other value lives in the row's props.
-type Property struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	Options      []Option `json:"options,omitempty"`       // select, multi_select, status
-	NumberFormat string   `json:"number_format,omitempty"` // number, percent, dollar, euro, pound
-	// ReadOnly: shown but not changed here (a connected database's
-	// formulas, rollups, relations, people…). Never set on the app's own.
-	ReadOnly bool `json:"read_only,omitempty"`
-	// Source is the platform's property type for a connected database.
-	Source string `json:"-"`
-}
-
-// Option is a select, multi-select or status choice. Status options belong
-// to a group: todo, doing or done.
-type Option struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Color string `json:"color"`
-	Group string `json:"group,omitempty"`
-}
-
-var (
-	propTypes     = []string{"title", "text", "number", "select", "multi_select", "status", "date", "person", "checkbox", "url", "email"}
-	numberFormats = []string{"number", "percent", "dollar", "euro", "pound"}
-	optionColors  = []string{"neutral", "primary", "accent", "success", "warning", "danger", "info"}
-	statusGroups  = []string{"todo", "doing", "done"}
-	propIDRE      = regexp.MustCompile(`^[A-Za-z0-9_-]{1,24}$`)
-	emailRE       = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	dateValueRE   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$`)
-)
-
-const (
-	maxProperties = 50
-	maxOptions    = 100
-	maxViews      = 30
-	maxRows       = 10000
-	maxTextValue  = 2000
-)
-
-// shortID makes a property or option id.
-func shortID() string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	for i := range b {
-		b[i] = alphabet[int(b[i])%len(alphabet)]
-	}
-	return string(b[:])
-}
-
-func defaultSchema() []Property {
-	return []Property{
-		{ID: "title", Name: "Name", Type: "title"},
-		{ID: shortID(), Name: "Tags", Type: "multi_select", Options: []Option{}},
-	}
-}
-
-func statusProperty(name string) Property {
-	return Property{ID: shortID(), Name: name, Type: "status", Options: []Option{
-		{ID: shortID(), Name: "Not started", Color: "neutral", Group: "todo"},
-		{ID: shortID(), Name: "In progress", Color: "info", Group: "doing"},
-		{ID: shortID(), Name: "Done", Color: "success", Group: "done"},
-	}}
-}
-
-func findProp(schema []Property, id string) (Property, bool) {
-	for _, p := range schema {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return Property{}, false
-}
-
-func hasOption(p Property, id string) bool {
-	return slices.ContainsFunc(p.Options, func(o Option) bool { return o.ID == id })
-}
-
-// personValues returns the people a row's person properties name.
-func personValues(schema []Property, props map[string]any) []uuid.UUID {
-	var out []uuid.UUID
-	for _, p := range schema {
-		if p.Type != "person" {
-			continue
-		}
-		list, _ := props[p.ID].([]any)
-		for _, v := range list {
-			if s, ok := v.(string); ok {
-				if id, err := uuid.Parse(s); err == nil {
-					out = append(out, id)
-				}
-			}
-		}
-	}
-	return out
-}
 
 // ---- schema ----------------------------------------------------------------------
 
 type schemaReq struct {
 	Properties []Property `json:"properties"`
+	TZ         string     `json:"tz"`
 }
 
 // putSchema: PUT /docs/databases/{id}/schema (edit) replaces the property
 // list. Values of removed properties, removed options and properties whose
-// type changed are cleared; views drop references to removed properties.
+// type changed are cleared (text kinds convert, currencies rescale); views
+// drop references to removed properties; relations get or lose their other
+// side; formulas and rollups are checked and typed; a new unique ID numbers
+// the existing rows.
 func (s *Service) putSchema(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
@@ -154,138 +53,108 @@ func (s *Service) putSchema(w http.ResponseWriter, r *http.Request) error {
 	if err := editable(dbp, true); err != nil {
 		return err
 	}
-	schema, err := validateSchema(req.Properties)
+	out, err := s.saveSchema(ctx, me, dbp, req.Properties, req.TZ)
 	if err != nil {
 		return err
 	}
-	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		cur, err := loadPage(ctx, tx, id, true)
-		if err != nil {
-			return err
-		}
-		if err := s.migrateValues(ctx, tx, id, cur.Schema, schema); err != nil {
-			return err
-		}
-		raw, _ := json.Marshal(schema)
-		if _, err := tx.Exec(ctx, `UPDATE docs_pages SET schema = $2, updated_at = now(), updated_by = $3 WHERE id = $1`, id, raw, me); err != nil {
-			return err
-		}
-		views, err := loadViews(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		for _, v := range views {
-			cfg := cleanConfig(schema, v.Type, v.Config)
-			b, _ := json.Marshal(cfg)
-			if _, err := tx.Exec(ctx, `UPDATE docs_views SET config = $2, updated_at = now() WHERE id = $1`, v.ID, b); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	s.publish(ctx, pageTopic(id), EventSchema, map[string]any{"database_id": id})
-	out, err := loadPage(ctx, s.d.Pool, id, false)
-	if err != nil {
-		return err
-	}
-	out.MyLevel = dbp.MyLevel
 	httpx.OK(w, out)
 	return nil
 }
 
-func validateSchema(in []Property) ([]Property, error) {
-	if len(in) == 0 || len(in) > maxProperties {
-		return nil, httpx.BadRequest(fmt.Sprintf("A database has 1 to %d properties.", maxProperties))
+// saveSchema validates and stores a database's new properties (the route,
+// CSV import and agent tools).
+func (s *Service) saveSchema(ctx context.Context, me uuid.UUID, dbp *Page, props []Property, tz string) (*Page, error) {
+	schema, err := validateSchema(props)
+	if err != nil {
+		return nil, err
 	}
-	seen := map[string]bool{}
-	titles := 0
-	out := make([]Property, 0, len(in))
-	for _, p := range in {
-		p.Name = strings.TrimSpace(cleanText(p.Name))
-		p.ReadOnly, p.Source = false, ""
-		if p.ID == "" {
-			p.ID = shortID()
+	agent := access.ViaAgent(ctx)
+	var touched []uuid.UUID
+	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		cur, err := loadPage(ctx, tx, dbp.ID, true)
+		if err != nil {
+			return err
 		}
-		if !propIDRE.MatchString(p.ID) || seen[p.ID] {
-			return nil, httpx.BadRequest("Each property needs its own id.")
-		}
-		seen[p.ID] = true
-		if p.Name == "" || utf8.RuneCountInString(p.Name) > 100 {
-			return nil, httpx.BadRequest("Give each property a name under 100 characters.")
-		}
-		if !slices.Contains(propTypes, p.Type) {
-			return nil, httpx.BadRequest("Unknown property type " + strconv.Quote(p.Type) + ".")
-		}
-		if p.Type == "title" {
-			titles++
-			if p.ID != "title" {
-				return nil, httpx.BadRequest("The title property's id is \"title\".")
-			}
-		}
-		if p.Type == "number" && !slices.Contains(numberFormats, p.NumberFormat) {
-			p.NumberFormat = "number"
-		}
-		if p.Type != "number" {
-			p.NumberFormat = ""
-		}
-		switch p.Type {
-		case "select", "multi_select", "status":
-			if len(p.Options) > maxOptions {
-				return nil, httpx.BadRequest(fmt.Sprintf("A property has up to %d options.", maxOptions))
-			}
-			ids := map[string]bool{}
-			opts := make([]Option, 0, len(p.Options))
-			for _, o := range p.Options {
-				o.Name = strings.TrimSpace(cleanText(o.Name))
-				if o.Name == "" || utf8.RuneCountInString(o.Name) > 100 {
-					return nil, httpx.BadRequest("Give each option a name under 100 characters.")
-				}
-				if o.ID == "" {
-					o.ID = shortID()
-				}
-				if !propIDRE.MatchString(o.ID) || ids[o.ID] {
-					return nil, httpx.BadRequest("Each option needs its own id.")
-				}
-				ids[o.ID] = true
-				if !slices.Contains(optionColors, o.Color) {
-					o.Color = "neutral"
-				}
-				if p.Type == "status" {
-					if !slices.Contains(statusGroups, o.Group) {
-						o.Group = "todo"
+		// Keep property renames flowing into formulas that name them.
+		for _, o := range cur.Schema {
+			if n, ok := findProp(schema, o.ID); ok && n.Name != o.Name {
+				for i, p := range schema {
+					if p.Type == "formula" && p.Formula != nil {
+						fc := *p.Formula
+						fc.Expression = renameFormulaProp(fc.Expression, o.Name, n.Name)
+						schema[i].Formula = &fc
 					}
-				} else {
-					o.Group = ""
 				}
-				opts = append(opts, o)
 			}
-			p.Options = opts
-		default:
-			p.Options = nil
 		}
-		out = append(out, p)
+		ch, err := s.applyRelations(ctx, tx, me, agent, cur, cur.Schema, &schema)
+		if err != nil {
+			return err
+		}
+		touched = ch.touched
+		if len(schema) > maxProperties {
+			return httpx.BadRequest(fmt.Sprintf("A database has 1 to %d properties.", maxProperties))
+		}
+		if err := s.checkComputed(ctx, memberViewer(ctx, me, tz), dbp.ID, schema); err != nil {
+			return err
+		}
+		if err := s.migrateValues(ctx, tx, dbp.ID, cur.Schema, schema); err != nil {
+			return err
+		}
+		raw, _ := json.Marshal(schema)
+		if _, err := tx.Exec(ctx, `UPDATE docs_pages SET schema = $2, updated_at = now(), updated_by = $3 WHERE id = $1`, dbp.ID, raw, me); err != nil {
+			return err
+		}
+		return s.cleanViews(ctx, tx, dbp.ID, schema)
+	})
+	if err != nil {
+		return nil, err
 	}
-	if titles != 1 {
-		return nil, httpx.BadRequest("A database has exactly one title property.")
+	s.publish(ctx, pageTopic(dbp.ID), EventSchema, map[string]any{"database_id": dbp.ID})
+	for _, t := range dedupeIDs(touched) {
+		s.publish(ctx, pageTopic(t), EventSchema, map[string]any{"database_id": t})
 	}
+	s.notifyRelated(ctx, dbp.ID)
+	out, err := loadPage(ctx, s.d.Pool, dbp.ID, false)
+	if err != nil {
+		return nil, err
+	}
+	out.MyLevel = dbp.MyLevel
+	c := s.newComputer(ctx, memberViewer(ctx, me, tz))
+	out.Schema = c.annotateSchema(out.ID, out.Schema)
 	return out, nil
 }
 
-// migrateValues clears row values the new schema can't hold.
+// migrateValues clears or converts row values the new schema can't hold.
 func (s *Service) migrateValues(ctx context.Context, tx pgx.Tx, dbID uuid.UUID, old, next []Property) error {
+	textish := func(t string) bool { return t == "text" || t == "url" || t == "email" || t == "phone" }
 	for _, o := range old {
 		if o.Type == "title" {
 			continue
 		}
 		n, ok := findProp(next, o.ID)
-		textish := func(t string) bool { return t == "text" || t == "url" || t == "email" }
+		sameRelation := ok && o.Type == "relation" && n.Type == "relation" && o.Relation != nil && n.Relation != nil && o.Relation.DatabaseID == n.Relation.DatabaseID
 		switch {
-		case !ok || (n.Type != o.Type && !(textish(n.Type) && textish(o.Type))):
+		case !ok || (n.Type != o.Type && !(textish(n.Type) && textish(o.Type))) || isComputed(n) || (o.Type == "relation" && !sameRelation):
 			if _, err := tx.Exec(ctx, `UPDATE docs_pages SET props = props - $2::text WHERE parent_id = $1 AND is_row AND props ? $2::text`, dbID, o.ID); err != nil {
 				return err
+			}
+			if o.Type == "date" {
+				if _, err := tx.Exec(ctx, `DELETE FROM docs_row_reminders WHERE property_id = $2 AND row_id IN (SELECT id FROM docs_pages WHERE parent_id = $1)`, dbID, o.ID); err != nil {
+					return err
+				}
+			}
+			if o.Type == "unique_id" {
+				if _, err := tx.Exec(ctx, `DELETE FROM docs_counters WHERE database_id = $1 AND property_id = $2`, dbID, o.ID); err != nil {
+					return err
+				}
+			}
+		case n.Type == "number":
+			if from, to := numberScale(o), numberScale(n); from != to {
+				if _, err := tx.Exec(ctx, `UPDATE docs_pages SET props = jsonb_set(props, ARRAY[$2::text], to_jsonb(round((props->>$2::text)::numeric * $3::numeric, $4::int)))
+					WHERE parent_id = $1 AND is_row AND jsonb_typeof(props->$2::text) = 'number'`, dbID, o.ID, to/from, scaleDigits(n)); err != nil {
+					return err
+				}
 			}
 		case n.Type == "select" || n.Type == "status":
 			keep := optionIDs(n)
@@ -303,7 +172,28 @@ func (s *Service) migrateValues(ctx context.Context, tx pgx.Tx, dbID uuid.UUID, 
 			}
 		}
 	}
+	// Number every row for a new unique ID (by creation, oldest first).
+	for _, n := range next {
+		if n.Type != "unique_id" {
+			continue
+		}
+		if o, ok := findProp(old, n.ID); ok && o.Type == "unique_id" {
+			continue
+		}
+		if err := numberRows(ctx, tx, dbID, n.ID); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// scaleDigits: decimals kept when rescaling into p's unit (0 for minor
+// units, a few otherwise).
+func scaleDigits(p Property) int {
+	if _, cur := currencyExp(p.NumberFormat); cur {
+		return 0
+	}
+	return 6
 }
 
 func optionIDs(p Property) []string {
@@ -314,121 +204,167 @@ func optionIDs(p Property) []string {
 	return out
 }
 
+// numberRows gives every row (templates too) a unique ID in creation order
+// and sets the counter past them.
+func numberRows(ctx context.Context, tx pgx.Tx, dbID uuid.UUID, propID string) error {
+	var n int64
+	err := tx.QueryRow(ctx, `
+		WITH ordered AS (
+		    SELECT id, row_number() OVER (ORDER BY created_at, id) AS n FROM docs_pages WHERE parent_id = $1 AND is_row AND NOT is_template
+		), done AS (
+		    UPDATE docs_pages p SET props = jsonb_set(p.props, ARRAY[$2::text], to_jsonb(o.n)) FROM ordered o WHERE p.id = o.id RETURNING o.n
+		)
+		SELECT COALESCE(max(n), 0) FROM done`, dbID, propID).Scan(&n)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO docs_counters (database_id, property_id, last) VALUES ($1, $2, $3)
+		ON CONFLICT (database_id, property_id) DO UPDATE SET last = GREATEST(docs_counters.last, EXCLUDED.last)`, dbID, propID, n)
+	return err
+}
+
+// assignUniqueIDs numbers a new row for each unique ID property (race-safe:
+// the counter row is updated atomically).
+func assignUniqueIDs(ctx context.Context, tx pgx.Tx, dbID, rowID uuid.UUID, schema []Property) error {
+	for _, p := range schema {
+		if p.Type != "unique_id" {
+			continue
+		}
+		var n int64
+		if err := tx.QueryRow(ctx, `INSERT INTO docs_counters (database_id, property_id, last) VALUES ($1, $2, 1)
+			ON CONFLICT (database_id, property_id) DO UPDATE SET last = docs_counters.last + 1 RETURNING last`, dbID, p.ID).Scan(&n); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE docs_pages SET props = jsonb_set(props, ARRAY[$2::text], to_jsonb($3::bigint)) WHERE id = $1`, rowID, p.ID, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rowCopyKey marks a copy made by insertRow (templates), which numbers and
+// links the new row itself.
+type rowCopyKey struct{}
+
+// afterRowCopy fixes a copied row (duplicate.go): files values point at the
+// copy's own uploads, unique IDs are fresh, and two-way relations point back
+// at it from the other side. The row's database is its parent.
+func (s *Service) afterRowCopy(ctx context.Context, tx pgx.Tx, newRowID uuid.UUID, fileMap map[string]string) error {
+	var dbID uuid.UUID
+	var raw, rawProps []byte
+	err := tx.QueryRow(ctx, `SELECT d.id, d.schema, r.props FROM docs_pages r JOIN docs_pages d ON d.id = r.parent_id AND d.kind = 'database' WHERE r.id = $1`, newRowID).Scan(&dbID, &raw, &rawProps)
+	if db.IsNoRows(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var schema []Property
+	_ = json.Unmarshal(raw, &schema)
+	props := map[string]any{}
+	_ = json.Unmarshal(rawProps, &props)
+	changed := false
+	for _, p := range schema {
+		list, ok := props[p.ID].([]any)
+		if p.Type != "files" || !ok {
+			continue
+		}
+		kept := []any{}
+		for _, x := range list {
+			m, _ := x.(map[string]any)
+			if id, _ := m["file_id"].(string); id != "" {
+				nid, ok := fileMap[id]
+				if !ok {
+					continue // an upload that didn't come along
+				}
+				m["file_id"] = nid
+			}
+			kept = append(kept, m)
+		}
+		props[p.ID], changed = kept, true
+	}
+	if changed {
+		b, _ := json.Marshal(props)
+		if _, err := tx.Exec(ctx, `UPDATE docs_pages SET props = $2 WHERE id = $1`, newRowID, b); err != nil {
+			return err
+		}
+	}
+	if ctx.Value(rowCopyKey{}) != nil {
+		return nil
+	}
+	if err := assignUniqueIDs(ctx, tx, dbID, newRowID, schema); err != nil {
+		return err
+	}
+	for _, p := range schema {
+		if p.Type != "relation" || p.Relation == nil || p.Relation.MirrorProperty == "" {
+			continue
+		}
+		ids := relationValues(props[p.ID])
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := syncMirror(ctx, tx, newRowID, p, s.mirrorOf(ctx, tx, p), nil, ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mirrorOf returns the other side of a two-way relation.
+func (s *Service) mirrorOf(ctx context.Context, q db.Querier, p Property) Property {
+	if p.Relation == nil || p.Relation.MirrorProperty == "" {
+		return Property{}
+	}
+	var raw []byte
+	if err := q.QueryRow(ctx, `SELECT schema FROM docs_pages WHERE id = $1`, p.Relation.DatabaseID).Scan(&raw); err != nil {
+		return Property{}
+	}
+	var schema []Property
+	_ = json.Unmarshal(raw, &schema)
+	m, _ := findProp(schema, p.Relation.MirrorProperty)
+	return m
+}
+
+// notifyRelated tells open views of databases whose relations point at db
+// that their computed values may have changed.
+func (s *Service) notifyRelated(ctx context.Context, dbID uuid.UUID) {
+	rows, err := s.d.Pool.Query(ctx, `SELECT id FROM docs_pages WHERE kind = 'database' AND id <> $1 AND deleted_at IS NULL
+		AND schema @> jsonb_build_array(jsonb_build_object('relation', jsonb_build_object('database_id', $1::text)))`, dbID)
+	if err != nil {
+		return
+	}
+	ids, _ := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	for _, id := range ids {
+		s.publish(ctx, pageTopic(id), EventRows, map[string]any{"database_id": id})
+	}
+}
+
+// databaseDetail adds what a page's detail needs for databases: a row's
+// computed values and related rows' titles for the viewer, and computed
+// properties' settings (rollup targets, formula errors) on the schema. A
+// public viewer (member false) gets no related rows: the rows list, which
+// knows the link, shows those the link opens.
+func (s *Service) databaseDetail(ctx context.Context, me uuid.UUID, member bool, out *PageDetail) error {
+	v := memberViewer(ctx, me, "")
+	if !member {
+		v = viewer{token: "-", loc: time.UTC}
+	}
+	p := out.Page
+	if p.Kind == "database" && p.Schema != nil {
+		c := s.newComputer(ctx, v)
+		p.Schema = c.annotateSchema(p.ID, p.Schema)
+	}
+	if p.IsRow && out.Database != nil {
+		if err := s.withComputed(ctx, v, p, out.Database.Schema, &out.Refs); err != nil {
+			return err
+		}
+		c := s.newComputer(ctx, v)
+		out.Database.Schema = c.annotateSchema(out.Database.ID, out.Database.Schema)
+	}
+	return nil
+}
+
 // ---- row values ------------------------------------------------------------------
-
-// cleanValue validates one row value for its property. nil clears it.
-func (s *Service) cleanValue(ctx context.Context, orgID uuid.UUID, p Property, raw json.RawMessage) (any, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-	bad := func(msg string) error { return httpx.BadRequest(p.Name + ": " + msg) }
-	switch p.Type {
-	case "text", "url", "email":
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, bad("enter text.")
-		}
-		v = strings.TrimSpace(cleanText(v))
-		if v == "" {
-			return nil, nil
-		}
-		if utf8.RuneCountInString(v) > maxTextValue {
-			return nil, bad(fmt.Sprintf("keep it under %d characters.", maxTextValue))
-		}
-		if p.Type == "url" {
-			if !strings.Contains(v, "://") {
-				v = "https://" + v
-			}
-			if v = safeLink(v); v == "" || strings.HasPrefix(v, "mailto:") {
-				return nil, bad("enter a web address.")
-			}
-		}
-		if p.Type == "email" && !emailRE.MatchString(v) {
-			return nil, bad("enter an email address.")
-		}
-		return v, nil
-	case "number":
-		var v float64
-		if err := json.Unmarshal(raw, &v); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
-			return nil, bad("enter a number.")
-		}
-		return v, nil
-	case "checkbox":
-		var v bool
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return nil, bad("must be true or false.")
-		}
-		return v, nil
-	case "select", "status":
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil || !hasOption(p, v) {
-			return nil, bad("choose one of its options.")
-		}
-		return v, nil
-	case "multi_select":
-		var v []string
-		if err := json.Unmarshal(raw, &v); err != nil || len(v) > maxOptions {
-			return nil, bad("choose from its options.")
-		}
-		out := []string{}
-		for _, id := range v {
-			if !hasOption(p, id) {
-				return nil, bad("choose from its options.")
-			}
-			if !slices.Contains(out, id) {
-				out = append(out, id)
-			}
-		}
-		return out, nil
-	case "date":
-		var v struct {
-			Start string `json:"start"`
-			End   string `json:"end,omitempty"`
-		}
-		if err := json.Unmarshal(raw, &v); err != nil || !validDateValue(v.Start) || (v.End != "" && (!validDateValue(v.End) || v.End < v.Start)) {
-			return nil, bad("enter a date (and an end after the start).")
-		}
-		out := map[string]string{"start": v.Start}
-		if v.End != "" {
-			out["end"] = v.End
-		}
-		return out, nil
-	case "person":
-		var v []uuid.UUID
-		if err := json.Unmarshal(raw, &v); err != nil || len(v) > 20 {
-			return nil, bad("choose up to 20 people.")
-		}
-		v = dedupeIDs(v)
-		if len(v) == 0 {
-			return []string{}, nil
-		}
-		var n int
-		if err := s.d.Pool.QueryRow(ctx, `SELECT count(*) FROM org_members WHERE org_id = $1 AND user_id = ANY ($2)`, orgID, v).Scan(&n); err != nil {
-			return nil, err
-		}
-		if n != len(v) {
-			return nil, bad("choose people in this " + orgs.Noun() + ".")
-		}
-		out := make([]string, len(v))
-		for i, id := range v {
-			out[i] = id.String()
-		}
-		return out, nil
-	}
-	return nil, bad("can't be set.")
-}
-
-func validDateValue(s string) bool {
-	if !dateValueRE.MatchString(s) {
-		return false
-	}
-	layout := "2006-01-02"
-	if len(s) > 10 {
-		layout = "2006-01-02T15:04"
-	}
-	_, err := time.Parse(layout, s)
-	return err == nil
-}
 
 type rowValuesReq struct {
 	Title    *string                    `json:"title"`
@@ -436,6 +372,7 @@ type rowValuesReq struct {
 	AfterID  *uuid.UUID                 `json:"after_id"` // reorder: after this row (nil with first=true: first)
 	First    bool                       `json:"first"`
 	Position string                     `json:"position"` // or an explicit position
+	TZ       string                     `json:"tz"`       // the writer's time zone (computed values in the answer)
 }
 
 // setRowValues: PATCH /docs/pages/{id}/properties (edit on the row): set
@@ -463,6 +400,11 @@ func (s *Service) setRowValues(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+type relChange struct {
+	p          Property
+	prev, next []uuid.UUID
+}
+
 func (s *Service) setRow(ctx context.Context, me uuid.UUID, row *Page, req rowValuesReq) (*Page, error) {
 	if !row.IsRow || row.ParentID == nil {
 		return nil, httpx.BadRequest("Only database rows have properties.")
@@ -477,8 +419,11 @@ func (s *Service) setRow(ctx context.Context, me uuid.UUID, row *Page, req rowVa
 	if dbp.Locked {
 		return nil, errLocked
 	}
+	agent := access.ViaAgent(ctx)
 	set := map[string]any{}
 	unset := []string{}
+	var rels []relChange
+	var changed []string
 	for key, raw := range req.Values {
 		p, ok := findProp(dbp.Schema, key)
 		if !ok {
@@ -492,16 +437,27 @@ func (s *Service) setRow(ctx context.Context, me uuid.UUID, row *Page, req rowVa
 			req.Title = &t
 			continue
 		}
-		v, err := s.cleanValue(ctx, row.OrgID, p, raw)
-		if err != nil {
+		var v any
+		if p.Type == "relation" {
+			ids, err := s.cleanRelation(ctx, s.d.Pool, me, agent, p, row.Props[p.ID], raw)
+			if err != nil {
+				return nil, err
+			}
+			rels = append(rels, relChange{p: p, prev: relationValues(row.Props[p.ID]), next: relationValues(ids)})
+			if len(ids) > 0 {
+				v = ids
+			}
+		} else if v, err = s.cleanRowValue(ctx, row.OrgID, row.ID, p, raw); err != nil {
 			return nil, err
 		}
+		changed = append(changed, key)
 		if v == nil {
 			unset = append(unset, key)
 		} else {
 			set[key] = v
 		}
 	}
+	var touchedRows []uuid.UUID
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		if len(set) > 0 || len(unset) > 0 {
 			b, _ := json.Marshal(set)
@@ -510,10 +466,33 @@ func (s *Service) setRow(ctx context.Context, me uuid.UUID, row *Page, req rowVa
 				return err
 			}
 		}
+		for _, rc := range rels {
+			mirror := s.mirrorOf(ctx, tx, rc.p)
+			ids, err := syncMirror(ctx, tx, row.ID, rc.p, mirror, rc.prev, rc.next)
+			if err != nil {
+				return err
+			}
+			touchedRows = append(touchedRows, ids...)
+		}
+		for key := range set {
+			if p, _ := findProp(dbp.Schema, key); p.Type == "date" {
+				if err := setReminder(ctx, tx, row.ID, p, set[key], me); err != nil {
+					return err
+				}
+			}
+		}
+		for _, key := range unset {
+			if _, err := tx.Exec(ctx, `DELETE FROM docs_row_reminders WHERE row_id = $1 AND property_id = $2`, row.ID, key); err != nil {
+				return err
+			}
+		}
 		if req.Title != nil {
 			t, err := cleanTitle(*req.Title)
 			if err != nil {
 				return err
+			}
+			if t != row.Title {
+				changed = append(changed, "title")
 			}
 			if _, err := tx.Exec(ctx, `UPDATE docs_pages SET title = $2, updated_at = now(), updated_by = $3 WHERE id = $1`, row.ID, t, me); err != nil {
 				return err
@@ -553,14 +532,80 @@ func (s *Service) setRow(ctx context.Context, me uuid.UUID, row *Page, req rowVa
 	}
 	out.MyLevel = row.MyLevel
 	s.pageChanged(ctx, out, false)
+	if len(rels) > 0 {
+		targets := map[uuid.UUID]bool{}
+		for _, rc := range rels {
+			if rc.p.Relation != nil && rc.p.Relation.MirrorProperty != "" && rc.p.Relation.DatabaseID != dbp.ID {
+				targets[rc.p.Relation.DatabaseID] = true
+			}
+		}
+		for t := range targets {
+			s.publish(ctx, pageTopic(t), EventRows, map[string]any{"database_id": t})
+		}
+		for _, id := range dedupeIDs(touchedRows) {
+			s.publish(ctx, pageTopic(id), EventPage, map[string]any{"row_id": id, "reload": true})
+		}
+	}
+	s.notifyRelated(ctx, dbp.ID)
+	if len(changed) > 0 {
+		s.rowChanged(ctx, dbp, row, out, changed, me)
+	}
+	if err := s.withComputed(ctx, memberViewer(ctx, me, req.TZ), out, dbp.Schema, nil); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
+// setReminder stores (or clears) the reminder of a date value: it notifies
+// the person who set it, at 09:00 on the day for dates without a time.
+func setReminder(ctx context.Context, tx pgx.Tx, rowID uuid.UUID, p Property, v any, me uuid.UUID) error {
+	m, _ := v.(map[string]any)
+	remind, _ := m["remind"].(string)
+	at, label, ok := reminderAt(m)
+	if remind == "" || !ok || at.Before(time.Now()) {
+		_, err := tx.Exec(ctx, `DELETE FROM docs_row_reminders WHERE row_id = $1 AND property_id = $2`, rowID, p.ID)
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO docs_row_reminders (row_id, property_id, user_id, fire_at, label) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (row_id, property_id) DO UPDATE SET user_id = EXCLUDED.user_id, fire_at = EXCLUDED.fire_at, label = EXCLUDED.label`,
+		rowID, p.ID, me, at, label)
+	return err
+}
+
+// reminderAt is when a date value's reminder fires, and the date as text.
+func reminderAt(m map[string]any) (time.Time, string, bool) {
+	start, _ := m["start"].(string)
+	remind, _ := m["remind"].(string)
+	tz, _ := m["tz"].(string)
+	off, ok := reminderOffsets[remind]
+	if !ok || start == "" {
+		return time.Time{}, "", false
+	}
+	loc := loadTZ(tz)
+	var t time.Time
+	var err error
+	if len(start) == 10 {
+		t, err = time.ParseInLocation("2006-01-02 15:04", start+" 09:00", loc)
+	} else {
+		t, err = time.ParseInLocation("2006-01-02T15:04", start, loc)
+	}
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	return t.Add(-off), strings.Replace(start, "T", " ", 1), true
+}
+
+// ---- new rows --------------------------------------------------------------------
+
 type createRowReq struct {
-	Title   string                     `json:"title"`
-	Values  map[string]json.RawMessage `json:"values"`
-	AfterID *uuid.UUID                 `json:"after_id"`
-	First   bool                       `json:"first"`
+	Title      string                     `json:"title"`
+	Values     map[string]json.RawMessage `json:"values"`
+	AfterID    *uuid.UUID                 `json:"after_id"`
+	First      bool                       `json:"first"`
+	TemplateID *uuid.UUID                 `json:"template_id"` // start from a row template of this database
+	ParentRow  *uuid.UUID                 `json:"parent_row"`  // a sub-item of this row (the view's sub-items relation)
+	ViewID     *uuid.UUID                 `json:"view_id"`     // the view adding it (its default template and sub-items)
+	TZ         string                     `json:"tz"`
 }
 
 // createRow: POST /docs/databases/{id}/rows (edit on the database).
@@ -594,14 +639,83 @@ func (s *Service) newRow(ctx context.Context, me, dbID uuid.UUID, req createRowR
 	if err := editable(dbp, true); err != nil {
 		return nil, err
 	}
-	title, err := cleanTitle(req.Title)
+	return s.insertRow(ctx, me, dbp, req, false)
+}
+
+// insertRow adds a row to dbp (the caller checked edit): values, a
+// template's values and content, a parent row, unique IDs, mirrors, and the
+// row-added automations. asTemplate makes a row template instead.
+func (s *Service) insertRow(ctx context.Context, me uuid.UUID, dbp *Page, req createRowReq, asTemplate bool) (*Page, error) {
+	agent := access.ViaAgent(ctx)
+	if req.ViewID != nil && !asTemplate {
+		var raw []byte
+		if err := s.d.Pool.QueryRow(ctx, `SELECT config FROM docs_views WHERE id = $1 AND database_id = $2`, *req.ViewID, dbp.ID).Scan(&raw); err == nil {
+			var cfg ViewConfig
+			_ = json.Unmarshal(raw, &cfg)
+			if req.TemplateID == nil {
+				req.TemplateID = cfg.TemplateID
+			}
+			if req.ParentRow != nil && cfg.SubItems != nil && selfRelation(dbp.Schema, dbp.ID, cfg.SubItems.Property) {
+				if req.Values == nil {
+					req.Values = map[string]json.RawMessage{}
+				}
+				req.Values[cfg.SubItems.Property], _ = json.Marshal([]uuid.UUID{*req.ParentRow})
+			}
+		}
+	}
+	var tpl *Page
+	if req.TemplateID != nil {
+		t, err := loadPage(ctx, s.d.Pool, *req.TemplateID, false)
+		if err != nil || !t.IsTemplate || t.ParentID == nil || *t.ParentID != dbp.ID || t.DeletedAt != nil {
+			return nil, httpx.NotFound("Template not found.")
+		}
+		tpl = t
+	}
+	title := req.Title
+	if title == "" && tpl != nil {
+		title = tpl.Title
+	}
+	title, err := cleanTitle(title)
 	if err != nil {
 		return nil, err
 	}
 	values := map[string]any{}
+	var rels []relChange
+	if tpl != nil {
+		// Template values as they still fit the schema; @me / @today resolve now.
+		for key, v := range tpl.Props {
+			p, ok := findProp(dbp.Schema, key)
+			if !ok || !writable(p) {
+				continue
+			}
+			raw, _ := json.Marshal(resolveDynamic(v, me, req.TZ))
+			if p.Type == "relation" {
+				ids, err := s.cleanRelation(ctx, s.d.Pool, me, agent, p, nil, raw)
+				if err == nil && len(ids) > 0 {
+					values[key] = ids
+				}
+				continue
+			}
+			if cv, err := s.cleanValue(ctx, dbp.OrgID, p, raw); err == nil && cv != nil {
+				values[key] = cv
+			}
+		}
+	}
 	for key, raw := range req.Values {
 		p, ok := findProp(dbp.Schema, key)
 		if !ok || p.Type == "title" {
+			continue
+		}
+		if p.Type == "relation" {
+			ids, err := s.cleanRelation(ctx, s.d.Pool, me, agent, p, nil, raw)
+			if err != nil {
+				return nil, err
+			}
+			if len(ids) > 0 {
+				values[key] = ids
+			} else {
+				delete(values, key)
+			}
 			continue
 		}
 		v, err := s.cleanValue(ctx, dbp.OrgID, p, raw)
@@ -610,12 +724,19 @@ func (s *Service) newRow(ctx context.Context, me, dbID uuid.UUID, req createRowR
 		}
 		if v != nil {
 			values[key] = v
+		} else {
+			delete(values, key)
+		}
+	}
+	for key, v := range values {
+		if p, ok := findProp(dbp.Schema, key); ok && p.Type == "relation" {
+			rels = append(rels, relChange{p: p, next: relationValues(v)})
 		}
 	}
 	var rowID uuid.UUID
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM docs_pages WHERE parent_id = $1 AND is_row AND deleted_at IS NULL`, dbID).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM docs_pages WHERE parent_id = $1 AND is_row AND deleted_at IS NULL`, dbp.ID).Scan(&n); err != nil {
 			return err
 		}
 		if n >= maxRows {
@@ -624,24 +745,78 @@ func (s *Service) newRow(ctx context.Context, me, dbID uuid.UUID, req createRowR
 		var pos string
 		if req.First {
 			var first string
-			if err := tx.QueryRow(ctx, `SELECT COALESCE(min(position), '') FROM docs_pages WHERE parent_id = $1`, dbID).Scan(&first); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(min(position), '') FROM docs_pages WHERE parent_id = $1`, dbp.ID).Scan(&first); err != nil {
 				return err
 			}
 			pos = keyBetween("", first)
 		} else {
 			var err error
-			if pos, err = siblingPosition(ctx, tx, dbp.OrgID, &dbID, req.AfterID); err != nil {
+			if pos, err = siblingPosition(ctx, tx, dbp.OrgID, &dbp.ID, req.AfterID); err != nil {
 				return err
 			}
 		}
 		rowID = uuid.New()
+		if tpl != nil {
+			// The template's content (blocks, files, subpages) first; values below.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO docs_pages (id, org_id, parent_id, kind, is_row, title, icon, position, props, created_by, updated_by, version)
+				VALUES ($1, $2, $3, 'page', true, $4, $5, $6, '{}', $7, $7, 1)`, rowID, dbp.OrgID, dbp.ID, title, tpl.Icon, pos, me); err != nil {
+				return err
+			}
+			if err := access.CreateResource(ctx, tx, access.NewResource{Kind: Kind, ID: rowID, OrgID: dbp.OrgID, OwnerID: me, Parent: &access.Ref{Kind: Kind, ID: dbp.ID}}); err != nil {
+				return err
+			}
+			budget := &dupBudget{pages: maxDuplicatePages, blocks: maxDuplicateBlocks}
+			if err := s.copyInto(context.WithValue(ctx, rowCopyKey{}, true), tx, me, tpl.ID, rowID, budget); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE docs_pages SET is_template = false, repeat = NULL, repeat_next_at = NULL WHERE id = $1`, rowID); err != nil {
+				return err
+			}
+			// Files the template holds were copied to the new row (afterRowCopy re-aimed them).
+			var copied []byte
+			if err := tx.QueryRow(ctx, `SELECT props FROM docs_pages WHERE id = $1`, rowID).Scan(&copied); err != nil {
+				return err
+			}
+			var cp map[string]any
+			_ = json.Unmarshal(copied, &cp)
+			for _, p := range dbp.Schema {
+				if _, set := values[p.ID]; p.Type == "files" && !set && cp[p.ID] != nil {
+					values[p.ID] = cp[p.ID]
+				}
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO docs_pages (id, org_id, parent_id, kind, is_row, title, position, props, created_by, updated_by)
+				VALUES ($1, $2, $3, 'page', true, $4, $5, '{}', $6, $6)`, rowID, dbp.OrgID, dbp.ID, title, pos, me); err != nil {
+				return err
+			}
+			if err := access.CreateResource(ctx, tx, access.NewResource{Kind: Kind, ID: rowID, OrgID: dbp.OrgID, OwnerID: me, Parent: &access.Ref{Kind: Kind, ID: dbp.ID}}); err != nil {
+				return err
+			}
+		}
 		b, _ := json.Marshal(values)
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO docs_pages (id, org_id, parent_id, kind, is_row, title, position, props, created_by, updated_by)
-			VALUES ($1, $2, $3, 'page', true, $4, $5, $6, $7, $7)`, rowID, dbp.OrgID, dbID, title, pos, b, me); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE docs_pages SET props = $2, title = $3, is_template = $4 WHERE id = $1`, rowID, b, title, asTemplate); err != nil {
 			return err
 		}
-		return access.CreateResource(ctx, tx, access.NewResource{Kind: Kind, ID: rowID, OrgID: dbp.OrgID, OwnerID: me, Parent: &access.Ref{Kind: Kind, ID: dbID}})
+		if !asTemplate {
+			if err := assignUniqueIDs(ctx, tx, dbp.ID, rowID, dbp.Schema); err != nil {
+				return err
+			}
+			for _, rc := range rels {
+				if _, err := syncMirror(ctx, tx, rowID, rc.p, s.mirrorOf(ctx, tx, rc.p), nil, rc.next); err != nil {
+					return err
+				}
+			}
+			for key, v := range values {
+				if p, _ := findProp(dbp.Schema, key); p.Type == "date" {
+					if err := setReminder(ctx, tx, rowID, p, v, me); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -651,358 +826,231 @@ func (s *Service) newRow(ctx context.Context, me, dbID uuid.UUID, req createRowR
 		return nil, err
 	}
 	out.MyLevel = dbp.MyLevel
-	s.publish(ctx, pageTopic(dbID), EventRows, map[string]any{"database_id": dbID, "row_id": rowID})
+	if asTemplate {
+		s.publish(ctx, pageTopic(dbp.ID), EventSchema, map[string]any{"database_id": dbp.ID, "templates": true})
+		return out, nil
+	}
+	s.publish(ctx, pageTopic(dbp.ID), EventRows, map[string]any{"database_id": dbp.ID, "row_id": rowID})
+	for _, rc := range rels {
+		if rc.p.Relation != nil && rc.p.Relation.MirrorProperty != "" && rc.p.Relation.DatabaseID != dbp.ID {
+			s.publish(ctx, pageTopic(rc.p.Relation.DatabaseID), EventRows, map[string]any{"database_id": rc.p.Relation.DatabaseID})
+		}
+	}
+	s.notifyRelated(ctx, dbp.ID)
+	s.rowAdded(ctx, dbp, out, me)
+	if err := s.withComputed(ctx, memberViewer(ctx, me, req.TZ), out, dbp.Schema, nil); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
-// ---- views -----------------------------------------------------------------------
-
-// Filter is one condition; a view's filters all have to match (AND).
-type Filter struct {
-	Property string          `json:"property"`
-	Op       string          `json:"op"`
-	Value    json.RawMessage `json:"value,omitempty"`
+// resolveDynamic turns a template's or button's "@me", "@today" and "@now"
+// into values.
+func resolveDynamic(v any, me uuid.UUID, tz string) any {
+	loc := loadTZ(tz)
+	switch x := v.(type) {
+	case string:
+		switch x {
+		case "@me":
+			return []string{me.String()}
+		case "@today":
+			return map[string]any{"start": time.Now().In(loc).Format("2006-01-02")}
+		case "@now":
+			out := map[string]any{"start": time.Now().In(loc).Format("2006-01-02T15:04")}
+			if tz != "" {
+				out["tz"] = tz
+			}
+			return out
+		}
+	case []any:
+		for i, e := range x {
+			if s, _ := e.(string); s == "@me" {
+				x[i] = me.String()
+			}
+		}
+	case map[string]any:
+		if s, _ := x["start"].(string); s == "@today" || s == "@now" {
+			d := resolveDynamic(s, me, tz).(map[string]any)
+			for k, val := range x {
+				if k != "start" {
+					d[k] = val
+				}
+			}
+			return d
+		}
+	}
+	return v
 }
 
-type Sort struct {
-	Property  string `json:"property"`  // a property id, or created_time / last_edited_time
-	Direction string `json:"direction"` // asc | desc
+// ---- new databases ------------------------------------------------------------------
+
+type createDatabaseReq struct {
+	ParentID *uuid.UUID `json:"parent_id"`
+	Title    string     `json:"title"`
+	Icon     *string    `json:"icon"`
+	Inline   bool       `json:"inline"`
+	Shared   bool       `json:"shared"`
+	AfterID  *uuid.UUID `json:"after_id"`
+	ViewType string     `json:"view_type"`
 }
 
-type Column struct {
-	Property string `json:"property"`
-	Width    int    `json:"width,omitempty"`
-	Hidden   bool   `json:"hidden,omitempty"`
+// DatabaseCreated is a new database with its first view.
+type DatabaseCreated struct {
+	Page  *Page  `json:"page"`
+	Views []View `json:"views"`
 }
 
-type ViewConfig struct {
-	Filters        []Filter `json:"filters"`
-	Sorts          []Sort   `json:"sorts"`
-	GroupBy        string   `json:"group_by,omitempty"`      // board: a select or status property
-	Columns        []Column `json:"columns"`                 // table: order, width, hidden
-	CardProperties []string `json:"card_properties"`         // board and list: properties shown
-	DateProperty   string   `json:"date_property,omitempty"` // calendar
-}
-
-type View struct {
-	ID         uuid.UUID  `json:"id"`
-	DatabaseID uuid.UUID  `json:"database_id"`
-	Name       string     `json:"name"`
-	Type       string     `json:"type"`
-	Position   string     `json:"position"`
-	Config     ViewConfig `json:"config"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-}
-
-var viewTypes = []string{"table", "board", "list", "calendar"}
-
-// filterOps lists the operators each property type accepts.
-var filterOps = map[string][]string{
-	"title":        {"contains", "not_contains", "is", "is_not", "starts_with", "is_empty", "is_not_empty"},
-	"text":         {"contains", "not_contains", "is", "is_not", "starts_with", "is_empty", "is_not_empty"},
-	"url":          {"contains", "not_contains", "is", "is_not", "is_empty", "is_not_empty"},
-	"email":        {"contains", "not_contains", "is", "is_not", "is_empty", "is_not_empty"},
-	"number":       {"eq", "neq", "gt", "gte", "lt", "lte", "is_empty", "is_not_empty"},
-	"select":       {"is", "is_not", "is_empty", "is_not_empty"},
-	"status":       {"is", "is_not", "is_empty", "is_not_empty"},
-	"multi_select": {"contains", "not_contains", "is_empty", "is_not_empty"},
-	"person":       {"contains", "not_contains", "is_empty", "is_not_empty"},
-	"date":         {"is", "before", "after", "on_or_before", "on_or_after", "is_empty", "is_not_empty"},
-	"checkbox":     {"is"},
-}
-
-func loadViews(ctx context.Context, q db.Querier, dbID uuid.UUID) ([]View, error) {
-	rows, err := q.Query(ctx, `SELECT id, database_id, name, type, position, config, created_at, updated_at
-		FROM docs_views WHERE database_id = $1 ORDER BY position, id`, dbID)
+// createDatabase: POST /docs/orgs/{orgID}/databases (member; edit on the
+// parent): a database whose first view is view_type (the editor's /board
+// view, /form… commands), with the properties that view needs.
+func (s *Service) createDatabase(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	me := auth.MustFromContext(ctx).UserID
+	orgID, err := httpx.URLParamUUID(r, "orgID")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
-	out := []View{}
-	for rows.Next() {
-		var v View
-		var cfg []byte
-		if err := rows.Scan(&v.ID, &v.DatabaseID, &v.Name, &v.Type, &v.Position, &cfg, &v.CreatedAt, &v.UpdatedAt); err != nil {
-			return nil, err
+	var req createDatabaseReq
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	if req.ViewType == "" {
+		req.ViewType = "table"
+	}
+	if !slices.Contains(viewTypes, req.ViewType) {
+		return httpx.BadRequest("Choose a view type: " + strings.Join(viewTypes, ", ") + ".")
+	}
+	p, err := s.create(ctx, me, orgID, createPageReq{ParentID: req.ParentID, Kind: "database", Title: req.Title, Icon: req.Icon, Shared: req.Shared, AfterID: req.AfterID, Inline: req.Inline})
+	if err != nil {
+		return err
+	}
+	if req.ViewType != "table" {
+		err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+			cur, err := loadPage(ctx, tx, p.ID, true)
+			if err != nil {
+				return err
+			}
+			schema, changed := ensureViewProps(cur.Schema, req.ViewType)
+			if req.ViewType == "form" {
+				// A form starts with a few questions to answer.
+				if !slices.ContainsFunc(schema, func(x Property) bool { return x.Type == "text" }) {
+					schema, changed = append(schema, Property{ID: shortID(), Name: "Details", Type: "text"}), true
+				}
+			}
+			if changed {
+				raw, _ := json.Marshal(schema)
+				if _, err := tx.Exec(ctx, `UPDATE docs_pages SET schema = $2 WHERE id = $1`, p.ID, raw); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM docs_views WHERE database_id = $1`, p.ID); err != nil {
+				return err
+			}
+			cfg := ViewConfig{}
+			if req.ViewType == "form" {
+				f := &FormConfig{}
+				for _, x := range schema {
+					if formAnswerable(x) {
+						f.Questions = append(f.Questions, FormQuestion{Property: x.ID, Required: x.Type == "title"})
+					}
+				}
+				cfg.Form = f
+			}
+			_, err = s.insertView(ctx, tx, me, cur, schema, viewLabel(req.ViewType), req.ViewType, cfg, nil, nil)
+			return err
+		})
+		if err != nil {
+			return err
 		}
-		_ = json.Unmarshal(cfg, &v.Config)
-		v.Config = normConfig(v.Config)
-		out = append(out, v)
 	}
-	return out, rows.Err()
+	out, err := loadPage(ctx, s.d.Pool, p.ID, false)
+	if err != nil {
+		return err
+	}
+	out.MyLevel = p.MyLevel
+	views, err := loadViews(ctx, s.d.Pool, p.ID)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusCreated, DatabaseCreated{Page: out, Views: views})
+	return nil
 }
 
-func normConfig(c ViewConfig) ViewConfig {
-	if c.Filters == nil {
-		c.Filters = []Filter{}
-	}
-	if c.Sorts == nil {
-		c.Sorts = []Sort{}
-	}
-	if c.Columns == nil {
-		c.Columns = []Column{}
-	}
-	if c.CardProperties == nil {
-		c.CardProperties = []string{}
-	}
-	return c
+// ---- buttons ----------------------------------------------------------------------
+
+type buttonReq struct {
+	TZ string `json:"tz"`
 }
 
-// cleanConfig drops references to properties the schema no longer has (or
-// that changed type) and fills what the view type needs.
-func cleanConfig(schema []Property, typ string, c ViewConfig) ViewConfig {
-	out := ViewConfig{Filters: []Filter{}, Sorts: []Sort{}, Columns: []Column{}, CardProperties: []string{}}
-	for _, f := range c.Filters {
-		p, ok := findProp(schema, f.Property)
-		if ok && slices.Contains(filterOps[p.Type], f.Op) && len(f.Value) <= 1024 && len(out.Filters) < 20 {
-			out.Filters = append(out.Filters, f)
-		}
-	}
-	for _, srt := range c.Sorts {
-		_, ok := findProp(schema, srt.Property)
-		if (ok || srt.Property == "created_time" || srt.Property == "last_edited_time") && len(out.Sorts) < 5 {
-			if srt.Direction != "desc" {
-				srt.Direction = "asc"
-			}
-			out.Sorts = append(out.Sorts, srt)
-		}
-	}
-	seen := map[string]bool{}
-	for _, col := range c.Columns {
-		if _, ok := findProp(schema, col.Property); ok && !seen[col.Property] {
-			seen[col.Property] = true
-			if col.Width != 0 {
-				col.Width = min(max(col.Width, 80), 800)
-			}
-			out.Columns = append(out.Columns, col)
-		}
-	}
-	for _, id := range c.CardProperties {
-		if _, ok := findProp(schema, id); ok && !slices.Contains(out.CardProperties, id) {
-			out.CardProperties = append(out.CardProperties, id)
-		}
-	}
-	if p, ok := findProp(schema, c.GroupBy); ok && (p.Type == "select" || p.Type == "status") {
-		out.GroupBy = c.GroupBy
-	}
-	if p, ok := findProp(schema, c.DateProperty); ok && p.Type == "date" {
-		out.DateProperty = c.DateProperty
-	}
-	if typ == "board" && out.GroupBy == "" {
-		for _, p := range schema {
-			if p.Type == "status" || p.Type == "select" {
-				out.GroupBy = p.ID
-				break
-			}
-		}
-	}
-	if typ == "calendar" && out.DateProperty == "" {
-		for _, p := range schema {
-			if p.Type == "date" {
-				out.DateProperty = p.ID
-				break
-			}
-		}
-	}
-	return out
+// ButtonResult says what a button did; open_url steps are for the client.
+type ButtonResult struct {
+	Row     *Page    `json:"row"`
+	Created []string `json:"created"` // ids of rows it added
+	Open    []string `json:"open"`    // links to open
 }
 
-type viewReq struct {
-	Name     *string     `json:"name"`
-	Type     string      `json:"type"`
-	Config   *ViewConfig `json:"config"`
-	Position string      `json:"position"`
-}
-
-// createView: POST /docs/databases/{id}/views (edit). A board without a
-// select or status property gets a Status property; a calendar without a
-// date property gets a Date property.
-func (s *Service) createView(w http.ResponseWriter, r *http.Request) error {
+// pressButton: POST /docs/pages/{id}/buttons/{propID} (edit on the row):
+// runs a button property's steps as the caller — each step needs the
+// caller's own access (edit on this row, edit on the database a row is
+// added to).
+func (s *Service) pressButton(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
 	id, err := httpx.URLParamUUID(r, "id")
 	if err != nil {
 		return err
 	}
-	var req viewReq
-	if err := httpx.Decode(r, &req); err != nil {
-		return err
-	}
-	if !slices.Contains(viewTypes, req.Type) {
-		return httpx.BadRequest("type must be table, board, list or calendar.")
-	}
-	dbp, err := requirePage(ctx, s.d.Pool, me, id, access.Edit)
+	var req buttonReq
+	_ = httpx.Decode(r, &req)
+	row, err := requirePage(ctx, s.d.Pool, me, id, access.Edit)
 	if err != nil {
 		return err
 	}
-	if dbp.Kind != "database" {
-		return errNotDatabase
+	if !row.IsRow || row.ParentID == nil {
+		return httpx.BadRequest("Only database rows have buttons.")
 	}
-	if err := editable(dbp, true); err != nil {
+	dbp, err := loadPage(ctx, s.d.Pool, *row.ParentID, false)
+	if err != nil {
 		return err
 	}
-	name := strings.ToUpper(req.Type[:1]) + req.Type[1:]
-	if req.Name != nil {
-		if name = strings.TrimSpace(cleanText(*req.Name)); name == "" || utf8.RuneCountInString(name) > 100 {
-			return httpx.BadRequest("Give the view a name under 100 characters.")
-		}
+	p, ok := findProp(dbp.Schema, chi.URLParam(r, "propID"))
+	if !ok || p.Type != "button" || p.Button == nil {
+		return httpx.NotFound("Button not found.")
 	}
-	cfg := ViewConfig{}
-	if req.Config != nil {
-		cfg = *req.Config
-	}
-	var view View
-	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		cur, err := loadPage(ctx, tx, id, true)
-		if err != nil {
-			return err
-		}
-		var n int
-		var last string
-		if err := tx.QueryRow(ctx, `SELECT count(*), COALESCE(max(position), '') FROM docs_views WHERE database_id = $1`, id).Scan(&n, &last); err != nil {
-			return err
-		}
-		if n >= maxViews {
-			return httpx.Conflict(fmt.Sprintf("A database has up to %d views.", maxViews))
-		}
-		schema := cur.Schema
-		needs := func(types ...string) bool {
-			return !slices.ContainsFunc(schema, func(p Property) bool { return slices.Contains(types, p.Type) })
-		}
-		changed := false
-		if req.Type == "board" && needs("select", "status") {
-			schema, changed = append(schema, statusProperty("Status")), true
-		}
-		if req.Type == "calendar" && needs("date") {
-			schema, changed = append(schema, Property{ID: shortID(), Name: "Date", Type: "date"}), true
-		}
-		if changed {
-			raw, _ := json.Marshal(schema)
-			if _, err := tx.Exec(ctx, `UPDATE docs_pages SET schema = $2, updated_at = now() WHERE id = $1`, id, raw); err != nil {
+	out := ButtonResult{Created: []string{}, Open: []string{}}
+	set := map[string]json.RawMessage{}
+	for _, a := range p.Button.Actions {
+		switch a.Type {
+		case "set_property":
+			var v any
+			_ = json.Unmarshal(a.Value, &v)
+			raw, _ := json.Marshal(resolveDynamic(v, me, req.TZ))
+			set[a.Property] = raw
+		case "add_row":
+			if a.DatabaseID == nil {
+				continue
+			}
+			created, err := s.newRow(ctx, me, *a.DatabaseID, createRowReq{Values: a.Values, TemplateID: a.TemplateID, TZ: req.TZ})
+			if err != nil {
 				return err
 			}
-		}
-		cfg = cleanConfig(schema, req.Type, cfg)
-		b, _ := json.Marshal(cfg)
-		return tx.QueryRow(ctx, `
-			INSERT INTO docs_views (database_id, name, type, position, config, created_by) VALUES ($1, $2, $3, $4, $5, $6)
-			RETURNING id, database_id, name, type, position, created_at, updated_at`,
-			id, name, req.Type, keyBetween(last, ""), b, me).Scan(&view.ID, &view.DatabaseID, &view.Name, &view.Type, &view.Position, &view.CreatedAt, &view.UpdatedAt)
-	})
-	if err != nil {
-		return err
-	}
-	view.Config = cfg
-	s.publish(ctx, pageTopic(id), EventSchema, map[string]any{"database_id": id})
-	httpx.JSON(w, http.StatusCreated, view)
-	return nil
-}
-
-// viewFor loads a view and checks the caller's level on its database.
-func (s *Service) viewFor(ctx context.Context, me, viewID uuid.UUID, min access.Level) (*View, *Page, error) {
-	var dbID uuid.UUID
-	err := s.d.Pool.QueryRow(ctx, `SELECT database_id FROM docs_views WHERE id = $1`, viewID).Scan(&dbID)
-	if db.IsNoRows(err) {
-		return nil, nil, httpx.NotFound("View not found.")
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	dbp, err := requirePage(ctx, s.d.Pool, me, dbID, min)
-	if err != nil {
-		if he, ok := err.(*httpx.Error); ok && he.Status == http.StatusNotFound {
-			return nil, nil, httpx.NotFound("View not found.")
-		}
-		return nil, nil, err
-	}
-	views, err := loadViews(ctx, s.d.Pool, dbID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, v := range views {
-		if v.ID == viewID {
-			return &v, dbp, nil
+			out.Created = append(out.Created, created.ID.String())
+		case "open_url":
+			out.Open = append(out.Open, a.URL)
 		}
 	}
-	return nil, nil, httpx.NotFound("View not found.")
-}
-
-// updateView: PATCH /docs/views/{viewID} (edit on the database).
-func (s *Service) updateView(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-	me := auth.MustFromContext(ctx).UserID
-	viewID, err := httpx.URLParamUUID(r, "viewID")
-	if err != nil {
-		return err
-	}
-	var req viewReq
-	if err := httpx.Decode(r, &req); err != nil {
-		return err
-	}
-	v, dbp, err := s.viewFor(ctx, me, viewID, access.Edit)
-	if err != nil {
-		return err
-	}
-	if err := editable(dbp, true); err != nil {
-		return err
-	}
-	if req.Name != nil {
-		name := strings.TrimSpace(cleanText(*req.Name))
-		if name == "" || utf8.RuneCountInString(name) > 100 {
-			return httpx.BadRequest("Give the view a name under 100 characters.")
+	if len(set) > 0 {
+		if _, err := s.setRow(ctx, me, row, rowValuesReq{Values: set, TZ: req.TZ}); err != nil {
+			return err
 		}
-		v.Name = name
 	}
-	if req.Type != "" {
-		if !slices.Contains(viewTypes, req.Type) {
-			return httpx.BadRequest("type must be table, board, list or calendar.")
-		}
-		v.Type = req.Type
-	}
-	if req.Config != nil {
-		v.Config = *req.Config
-	}
-	if req.Position != "" {
-		if !validKey(req.Position) {
-			return httpx.BadRequest("That position isn't valid.")
-		}
-		v.Position = req.Position
-	}
-	v.Config = cleanConfig(dbp.Schema, v.Type, v.Config)
-	b, _ := json.Marshal(v.Config)
-	if err := s.d.Pool.QueryRow(ctx, `UPDATE docs_views SET name = $2, type = $3, config = $4, position = $5, updated_at = now() WHERE id = $1 RETURNING updated_at`,
-		v.ID, v.Name, v.Type, b, v.Position).Scan(&v.UpdatedAt); err != nil {
+	if out.Row, err = loadPage(ctx, s.d.Pool, row.ID, false); err != nil {
 		return err
 	}
-	s.publish(ctx, pageTopic(v.DatabaseID), EventSchema, map[string]any{"database_id": v.DatabaseID})
-	httpx.OK(w, v)
-	return nil
-}
-
-// deleteView: DELETE /docs/views/{viewID} (edit; a database keeps at least one).
-func (s *Service) deleteView(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-	me := auth.MustFromContext(ctx).UserID
-	viewID, err := httpx.URLParamUUID(r, "viewID")
-	if err != nil {
+	out.Row.MyLevel = row.MyLevel
+	if err := s.withComputed(ctx, memberViewer(ctx, me, req.TZ), out.Row, dbp.Schema, nil); err != nil {
 		return err
 	}
-	v, dbp, err := s.viewFor(ctx, me, viewID, access.Edit)
-	if err != nil {
-		return err
-	}
-	if err := editable(dbp, true); err != nil {
-		return err
-	}
-	tag, err := s.d.Pool.Exec(ctx, `DELETE FROM docs_views WHERE id = $1 AND (SELECT count(*) FROM docs_views WHERE database_id = $2) > 1`, v.ID, v.DatabaseID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return httpx.Conflict("A database needs at least one view.")
-	}
-	s.publish(ctx, pageTopic(v.DatabaseID), EventSchema, map[string]any{"database_id": v.DatabaseID})
-	httpx.NoContent(w)
+	httpx.OK(w, out)
 	return nil
 }

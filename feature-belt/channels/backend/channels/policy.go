@@ -26,6 +26,11 @@ const (
 	ActRemoveMember  Action = "channels.remove_member"  // remove someone else from a channel
 	ActMentionAll    Action = "channels.mention_all"    // @channel and @here
 	ActSetDefault    Action = "channels.set_default"    // make a public channel one everyone joins
+	// 1.2
+	ActAddEmoji           Action = "channels.add_emoji"           // upload custom emoji and aliases
+	ActManageWorkspace    Action = "channels.manage_workspace"    // link previews, message retention
+	ActManageIntegrations Action = "channels.manage_integrations" // incoming webhooks
+	ActPostAnnouncement   Action = "channels.post_announcement"   // post where posting is limited to admins
 )
 
 // PermissionChannel is the channel an action is about.
@@ -70,14 +75,18 @@ var mentionAllMax atomic.Int64
 //     edit and remove members in their own non-default channels;
 //   - @channel and @here: owners and admins anywhere; members in direct
 //     messages and in non-default channels with at most
-//     CHANNELS_MENTION_ALL_MAX_MEMBERS members.
+//     CHANNELS_MENTION_ALL_MAX_MEMBERS members;
+//   - any member adds custom emoji; owners and admins manage workspace
+//     settings (link previews, retention) and incoming webhooks;
+//   - where posting is limited to admins, owners, admins and the channel's
+//     admins post.
 func DefaultPermission(req PermissionRequest) bool {
 	orgAdmin := orgs.RoleAtLeast(req.OrgRole, orgs.RoleAdmin)
 	ch := req.Channel
 	switch req.Action {
-	case ActCreatePublic, ActCreatePrivate:
+	case ActCreatePublic, ActCreatePrivate, ActAddEmoji:
 		return orgs.RoleAtLeast(req.OrgRole, orgs.RoleMember)
-	case ActSetDefault:
+	case ActSetDefault, ActManageWorkspace, ActManageIntegrations:
 		return orgAdmin
 	}
 	if ch == nil {
@@ -88,6 +97,8 @@ func DefaultPermission(req PermissionRequest) bool {
 	switch req.Action {
 	case ActArchive, ActEdit, ActRemoveMember:
 		return !direct && (orgAdmin || channelAdmin)
+	case ActPostAnnouncement:
+		return orgAdmin || ch.Role == roleAdmin
 	case ActMentionAll:
 		if orgAdmin || direct {
 			return true

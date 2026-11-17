@@ -2,13 +2,14 @@
 
 import { callsPeopleNames, formatCallsDuration, formatCallsTime, formatCallsWhen, useCallsCall, useCallsTimeZone, useMe } from "@scaffoldapp/shared";
 import { Badge, Button, Card, EmptyState, ErrorState, Skeleton, SkeletonGroup, SkeletonRow } from "@scaffoldapp/ui-web";
-import { ArrowLeft, Copy, Video } from "lucide-react";
+import { ArrowLeft, CalendarDays, Copy, Video } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { Screen, Section } from "@/components/shell/PageHeader";
 import { copyMeetingLink } from "./MeetingDialogs";
+import { AttendanceButton, RecordingsList, SavedChatView, TranscriptView } from "./Records";
 
 /** `/calls/[id]`: one call (a session): when, how long, and everyone's time in it. */
 export function CallDetailScreen({ id }: { id: string }) {
@@ -54,7 +55,10 @@ export function CallDetailScreen({ id }: { id: string }) {
               kind="calls.meeting"
               id={c.meeting.id}
               title={title}
-              actions={[{ id: "copy", label: "Copy link", icon: Copy, onSelect: () => void copyMeetingLink(joinUrl) }]}
+              actions={[
+                { id: "meeting", label: "Meeting details", icon: CalendarDays, onSelect: () => router.push(`/calls/meetings/${c.meeting.id}`) },
+                { id: "copy", label: "Copy link", icon: Copy, onSelect: () => void copyMeetingLink(joinUrl) },
+              ]}
             />
           </>
         }
@@ -64,7 +68,26 @@ export function CallDetailScreen({ id }: { id: string }) {
           <Fact label="Duration" value={c.live ? "Live now" : formatCallsDuration(c.duration_seconds)} />
           <Fact label="Host" value={c.host.display_name} />
         </Card>
-        <Section title={`People (${c.participants.length})`}>
+        {c.records && (c.records.recordings.length > 0 || c.records.transcript_lines > 0 || c.records.chat_messages > 0) && (
+          <>
+            {c.records.recordings.length > 0 && (
+              <Section title="Recordings">
+                <RecordingsList recordings={c.records.recordings} />
+              </Section>
+            )}
+            {c.records.transcript_lines > 0 && (
+              <Section title="Transcript">
+                <TranscriptView sessionId={c.id} meetingId={c.meeting.id} title={title} />
+              </Section>
+            )}
+            {c.records.chat_messages > 0 && (
+              <Section title="Saved chat">
+                <SavedChatView sessionId={c.id} />
+              </Section>
+            )}
+          </>
+        )}
+        <Section title={`People (${c.participants.length})`} {...(c.is_host ? { action: <AttendanceButton sessionId={c.id} title={title} /> } : {})}>
           <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
             {c.participants.map((p) => (
               <li key={p.identity} className="flex min-h-row items-center gap-3 px-4 py-3">

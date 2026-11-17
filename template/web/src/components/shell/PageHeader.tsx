@@ -14,7 +14,7 @@ export function PageHeader({ title, info, action, className }: { title: ReactNod
   );
 }
 
-/** A titled group inside a screen: heading and content in one 12 px stack. */
+/** A titled group inside a screen, on the canvas: heading and content in one 12 px stack, no box of its own. */
 export function Section({ title, info, action, children, className }: { title: ReactNode; info?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <section className={cn("flex flex-col gap-3", className)}>

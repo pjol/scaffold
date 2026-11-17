@@ -41,7 +41,7 @@ import {
   useTheme,
 } from "@scaffoldapp/ui-native";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import { Building2, ChevronDown, Copy, ExternalLink, FileCode, Folder, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Search } from "lucide-react-native";
+import { Building2, ChevronDown, CircleDot, Copy, ExternalLink, FileCode, Folder, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Search, Tag } from "lucide-react-native";
 import { useState } from "react";
 import { Image, Linking, Pressable, RefreshControl, ScrollView, Share as RNShare, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
@@ -240,7 +240,13 @@ export function RepoScreen() {
       {!dir ? (
         <ListGroup>
           <ListRow title={r.source?.type === "connected" && r.source.provider === "gitlab" ? "Merge requests" : "Pull requests"} leading={<GitPullRequest size={20} color={theme.colors.textMuted} />} trailing={r.open_pulls ? <Badge tone="primary">{String(r.open_pulls)}</Badge> : undefined} onPress={() => router.push(repoPath(r.id, "pulls") as never)} />
+          {r.source?.type !== "connected" ? (
+            <ListRow title="Issues" leading={<CircleDot size={20} color={theme.colors.textMuted} />} trailing={r.open_issues ? <Badge tone="primary">{String(r.open_issues)}</Badge> : undefined} onPress={() => router.push(repoPath(r.id, "issues") as never)} />
+          ) : null}
           <ListRow title="Commits" leading={<GitCommitHorizontal size={20} color={theme.colors.textMuted} />} onPress={() => router.push(repoPath(r.id, "commits", { ref: gitRef }) as never)} />
+          {r.source?.type !== "connected" ? (
+            <ListRow title="Releases" leading={<Tag size={20} color={theme.colors.textMuted} />} trailing={r.releases ? <Badge tone="neutral">{String(r.releases)}</Badge> : undefined} onPress={() => router.push(repoPath(r.id, "releases") as never)} />
+          ) : null}
         </ListGroup>
       ) : null}
       {r.empty ? (

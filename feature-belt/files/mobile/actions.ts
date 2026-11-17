@@ -44,16 +44,6 @@ export async function filesUploadLocal(http: HttpClient, orgId: string, parentId
   return { ok, error };
 }
 
-/** Opens a preview link in the in-app browser (PDF, video, audio and documents render there). */
-export async function filesOpenInBrowser(http: HttpClient, item: FilesItem): Promise<void> {
-  try {
-    const u = await filesEndpoints(http).url(item.id, { disposition: "inline" });
-    await WebBrowser.openBrowserAsync(u.url);
-  } catch (e) {
-    toast.error(errorMessage(e, "Couldn't open the file."));
-  }
-}
-
 /** Downloads a file (or an old version) to the cache and opens the share sheet: save to Files, open in another app. */
 export async function filesSaveOrShare(http: HttpClient, item: FilesItem, version?: string): Promise<void> {
   try {

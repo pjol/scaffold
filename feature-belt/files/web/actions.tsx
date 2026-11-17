@@ -17,6 +17,7 @@ import {
   useFilesRename,
   useFilesSection,
   useFilesStar,
+  useMe,
   type FilesItem,
 } from "@scaffoldapp/shared";
 import { Button, ConfirmDialog, Dialog, EmptyState, ErrorState, Field, Input, ListRow, Select, SkeletonGroup, SkeletonRow, toast } from "@scaffoldapp/ui-web";
@@ -45,6 +46,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import type { ResourceMenuAction } from "@/features/registry";
 import { ShareDialog } from "@/features/access";
 import { useFilesSaveToRows } from "./connected";
+import { FilesExtrasProvider, useFilesExtraRows } from "./depth";
 import { filesTypeIcon } from "./icons";
 import { useFilesUploads } from "./uploads";
 
@@ -173,7 +175,7 @@ export function FilesActionsProvider({ orgId, children }: { orgId: string | null
 
   return (
     <Ctx.Provider value={actions}>
-      {children}
+      <FilesExtrasProvider>{children}</FilesExtrasProvider>
       <input
         ref={versionInput}
         type="file"
@@ -244,6 +246,8 @@ export function useFilesItemMenu(item: FilesItem | null | undefined, opts: { sho
   const a = useFilesActions();
   const drive = useFilesDrive(a.orgId);
   const saveTo = useFilesSaveToRows(item);
+  const me = useMe();
+  const extra = useFilesExtraRows(item, me.data?.id);
   if (!item) return [];
   const edit = filesCanEdit(item);
   const rows: ResourceMenuAction[] = [];
@@ -262,6 +266,7 @@ export function useFilesItemMenu(item: FilesItem | null | undefined, opts: { sho
   rows.push(...saveTo);
   add("star", item.starred ? "Remove star" : "Star", item.starred ? StarOff : Star, () => a.star(item, !item.starred));
   if (opts.showDetails !== false) add("details", "Details and activity", Info, () => a.details(item));
+  rows.push(...extra);
   if (item.type === "folder" && edit) {
     for (const t of drive.data?.types ?? []) {
       if (t.convert_path) rows.push({ id: `convert-${t.type}`, label: t.convert_label, icon: filesTypeIcon(t.icon), onSelect: () => (window.location.href = filesTypePath(t.convert_path, item.id)) });

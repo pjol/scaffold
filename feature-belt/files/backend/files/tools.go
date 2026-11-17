@@ -117,10 +117,17 @@ func (s *Service) folderLabel(ctx context.Context, q db.Querier, me uuid.UUID, i
 
 const (
 	schemaSearch = `{"type":"object","properties":{
-		"query":{"type":"string","description":"Words in the name, or in the text of small text files."},
+		"query":{"type":"string","description":"Words in the name or the text: text files, and the text of PDFs and Word, Excel, PowerPoint and OpenDocument files. May be empty when a filter is given."},
+		"kind":{"type":"string","enum":["folder","image","video","audio","pdf","document","spreadsheet","presentation","text","archive"]},
+		"owner":{"type":"string","description":"me, others, or a person's user id."},
+		"modified_after":{"type":"string","description":"A date (2026-03-01) or RFC 3339 timestamp."},
+		"modified_before":{"type":"string","description":"A date or RFC 3339 timestamp."},
+		"location":{"type":"string","description":"my (the user's My drive), shared (shared folders) or a folder id (everything inside it)."},
+		"starred":{"type":"boolean"},
+		"shared_with_me":{"type":"boolean"},
 		"org_id":{"type":"string","format":"uuid","description":"Limit to one organization."},
 		"source":{"type":"string","description":"all (default): the drive and the user's connected drives; app: only this app's drive; connected: only connected drives (Google Drive, OneDrive, SharePoint); or one connection_id from files_connected_list."},
-		"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["query"],"additionalProperties":false}`
+		"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}`
 	schemaList = `{"type":"object","properties":{
 		"folder_id":{"type":"string","format":"uuid","description":"List this folder. Leave out to list a section."},
 		"section":{"type":"string","enum":["my","shared","shared_with_me","recent","starred"],"description":"Without folder_id: my (My drive, default), shared (shared folders), shared_with_me, recent or starred."},
@@ -181,35 +188,53 @@ type moveIn struct {
 // connected-drive tools (connected_tools.go) when a Connections module is
 // installed (mcp and assistant ask after every module is constructed).
 func (s *Service) Tools() []app.Tool {
+	tools := append(s.appTools(), s.commentTools()...)
 	if s.connections() == nil {
-		return s.appTools()
+		return tools
 	}
-	return append(append(s.appTools(), s.connectedReadTools()...), s.connectedWriteTools()...)
+	return append(append(tools, s.connectedReadTools()...), s.connectedWriteTools()...)
 }
 
 func (s *Service) appTools() []app.Tool {
 	return []app.Tool{
 		{
 			Name:        "files_search",
-			Description: "Search the user's drives for files and folders by name, or by the text inside small text files, and (source) their connected Google Drive, OneDrive and SharePoint. Returns only items the user can open; connected items carry source and connection_id.",
+			Description: "Search the user's drives for files and folders by name or by their text (text files, PDFs, Word, Excel, PowerPoint and OpenDocument files), with Drive-style filters (kind, owner, modified, location, starred, shared with me), and (source) their connected Google Drive, OneDrive and SharePoint. Returns only items the user can open, with a snippet for text matches; connected items carry source and connection_id.",
 			InputSchema: orgWorded(schemaSearch),
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					Query  string     `json:"query"`
-					OrgID  *uuid.UUID `json:"org_id"`
-					Source string     `json:"source"`
-					Limit  int        `json:"limit"`
+					Query          string     `json:"query"`
+					Kind           string     `json:"kind"`
+					Owner          string     `json:"owner"`
+					ModifiedAfter  string     `json:"modified_after"`
+					ModifiedBefore string     `json:"modified_before"`
+					Location       string     `json:"location"`
+					Starred        bool       `json:"starred"`
+					SharedWithMe   bool       `json:"shared_with_me"`
+					OrgID          *uuid.UUID `json:"org_id"`
+					Source         string     `json:"source"`
+					Limit          int        `json:"limit"`
 				}
 				if err := decode(input, &in); err != nil {
 					return nil, err
+				}
+				f, err := parseSearchFilters(func(k string) string {
+					return map[string]string{"kind": in.Kind, "owner": in.Owner, "modified_after": in.ModifiedAfter, "modified_before": in.ModifiedBefore,
+						"location": in.Location, "starred": fmt.Sprint(in.Starred), "shared_with_me": fmt.Sprint(in.SharedWithMe)}[k]
+				})
+				if err != nil {
+					return nil, err
+				}
+				if strings.TrimSpace(in.Query) == "" && f.empty() {
+					return nil, httpx.BadRequest("Give a query or at least one filter.")
 				}
 				if in.Limit <= 0 || in.Limit > 50 {
 					in.Limit = 20
 				}
 				res := map[string]any{}
 				if in.Source == "" || in.Source == "all" || in.Source == "app" {
-					page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), in.OrgID, in.Query, "", in.Limit)
+					page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), in.OrgID, in.Query, f, "", in.Limit)
 					if err != nil {
 						return nil, err
 					}
@@ -221,7 +246,7 @@ func (s *Service) appTools() []app.Tool {
 					}
 					res["items"] = out
 				}
-				if in.Source != "app" && s.connections() != nil {
+				if in.Source != "app" && s.connections() != nil && strings.TrimSpace(in.Query) != "" {
 					connected, missing := s.connectedToolSearch(ctx, caller, in.Query, in.Source, in.Limit)
 					res["connected_items"] = orEmpty(connected)
 					if len(missing) > 0 {
@@ -318,8 +343,8 @@ func (s *Service) appTools() []app.Tool {
 		},
 		{
 			Name: "files_read_text",
-			Description: "Read a text file (code, markdown, CSV, notes) with line numbers, up to 256 KB at a time. " +
-				"Use start_line and end_line to read further, and pass version_id to files_replace_lines as base_version_id.",
+			Description: "Read a file's text with line numbers, up to 256 KB at a time: text files (code, markdown, CSV, notes), and the text extracted from PDFs and Word, Excel, PowerPoint and OpenDocument files (read-only; extracted:true). " +
+				"Use start_line and end_line to read further, and pass version_id to files_replace_lines as base_version_id (text files only).",
 			InputSchema: json.RawMessage(schemaRead),
 			ReadOnly:    true,
 			Target:      targetOf("item_id"),
@@ -336,12 +361,18 @@ func (s *Service) appTools() []app.Tool {
 				if err != nil {
 					return nil, err
 				}
-				if !it.TextLike {
-					return nil, errNotText
-				}
-				b, truncated, err := s.readText(ctx, it, nil, maxTextEdit)
-				if err != nil {
-					return nil, err
+				var b []byte
+				var truncated, extracted bool
+				if it.TextLike && extractFormat(it.Name, it.MimeType) == "" {
+					if b, truncated, err = s.readText(ctx, it, nil, maxTextEdit); err != nil {
+						return nil, err
+					}
+				} else {
+					text, err := s.extractedText(ctx, it)
+					if err != nil {
+						return nil, err
+					}
+					b, extracted = []byte(text), true
 				}
 				doc := parseText(b)
 				start := max(in.StartLine, 1)
@@ -359,7 +390,7 @@ func (s *Service) appTools() []app.Tool {
 					end = start + strings.Count(text, "\n") - 1
 					truncated = true
 				}
-				return map[string]any{"name": it.Name, "version_id": it.VersionID, "total_lines": len(doc.lines),
+				return map[string]any{"name": it.Name, "version_id": it.VersionID, "total_lines": len(doc.lines), "extracted": extracted,
 					"start_line": start, "end_line": end, "more": truncated || end < len(doc.lines), "text": text}, nil
 			},
 		},
@@ -576,7 +607,7 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 	if id, ok := app.SearchOrg(ctx); ok {
 		scope = &id
 	}
-	page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), scope, query, "", limit)
+	page, err := s.searchItems(ctx, s.d.Pool, caller.UserID, access.ViaAgent(ctx), scope, query, SearchFilters{}, "", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -587,21 +618,8 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 	out := make([]app.SearchResult, 0, len(page.Items))
 	for _, h := range page.Items {
 		it := h.Item
-		icon := "file"
-		switch {
-		case it.IsFolder():
-			icon = "folder"
-		case it.TypeInfo != nil:
-			icon = it.TypeInfo.Icon
-		case it.Preview == "image":
-			icon = "image"
-		case it.Preview == "video":
-			icon = "video"
-		case it.Preview == "text" || it.Preview == "markdown" || it.Preview == "pdf" || it.Preview == "office":
-			icon = "file-text"
-		}
 		out = append(out, app.SearchResult{Kind: Kind, ID: it.ID.String(), Title: it.Name, Snippet: h.Snippet,
-			Link: it.Link, Icon: icon, Score: h.Score, At: it.UpdatedAt, OrgID: it.OrgID.String(), Context: places[it.ID]})
+			Link: it.Link, Icon: searchIcon(it), Score: h.Score, At: it.UpdatedAt, OrgID: it.OrgID.String(), Context: places[it.ID]})
 	}
 	if s.connections() != nil {
 		out = append(out, s.connectedSearchResults(ctx, caller, query, limit)...)
@@ -654,17 +672,7 @@ func (s *Service) searchPlaces(ctx context.Context, me uuid.UUID, hits []SearchH
 	for _, h := range hits {
 		it := h.Item
 		n := names[it.ID]
-		place := n[1]
-		switch {
-		case it.ParentID != nil && levels[it.ID] >= 1:
-		case it.ParentID == nil && it.Drive == DriveShared:
-			place = "Shared folders"
-		case it.ParentID == nil && it.OwnerID != nil && *it.OwnerID == me:
-			place = "My drive"
-		default:
-			place = "Shared with me"
-		}
-		out[it.ID] = app.SearchContext(n[0], place)
+		out[it.ID] = app.SearchContext(n[0], placeOf(it, me, n[1], levels[it.ID] >= 1))
 	}
 	return out, nil
 }

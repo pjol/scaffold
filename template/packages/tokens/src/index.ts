@@ -18,4 +18,5 @@ export * from "./presets";
 export * from "./audit";
 export * from "./css";
 export * from "./native";
+export * from "./swatches";
 export { PALETTES, PALETTE_IDS, DEFAULT_PALETTE_ID, activePaletteId, getPalette, isPaletteId, type PaletteId } from "./registry";

@@ -39,18 +39,46 @@ func (s *Service) webhook(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, httpx.BadRequest("Invalid event."))
 		return
 	}
-	meetingID, err := uuid.Parse(ev.Room)
+	if ev.ID == "" {
+		ev.ID = ev.Kind + ":" + ev.RoomSID + ":" + ev.ParticipantSID + ":" + ev.At.Format(time.RFC3339Nano)
+	}
+	// Recordings: matched by egress id, not by room.
+	if ev.Recording != nil && (ev.Kind == EventEgressStarted || ev.Kind == EventEgressUpdated || ev.Kind == EventEgressEnded) {
+		var meetingID uuid.UUID
+		var ready bool
+		dup, err := webhooks.Once(ctx, s.d.Pool, "livekit", ev.ID, func(tx pgx.Tx) error {
+			var err error
+			meetingID, ready, err = s.applyEgress(ctx, tx, *ev.Recording)
+			return err
+		})
+		if err != nil {
+			httpx.Fail(w, r, err)
+			return
+		}
+		if !dup && meetingID != uuid.Nil {
+			s.afterEgress(ctx, meetingID, ev.Recording.ID, ready)
+		}
+		httpx.NoContent(w)
+		return
+	}
+	roomID, err := uuid.Parse(ev.Room)
 	if err != nil || !recorded(ev.Kind) {
 		httpx.NoContent(w) // a room or event this module doesn't track
 		return
 	}
-	if ev.ID == "" {
-		ev.ID = ev.Kind + ":" + ev.RoomSID + ":" + ev.ParticipantSID + ":" + ev.At.Format(time.RFC3339Nano)
-	}
-	var ended bool
+	var closed uuid.UUID
+	meetingID := roomID
 	dup, err := webhooks.Once(ctx, s.d.Pool, "livekit", ev.ID, func(tx pgx.Tx) error {
-		var err error
-		ended, err = s.apply(ctx, tx, meetingID, ev)
+		// A breakout room's attendance counts toward its meeting's session.
+		bm, session, isBreakout, err := breakoutRoomOf(ctx, tx, roomID)
+		if err != nil {
+			return err
+		}
+		if isBreakout {
+			meetingID = bm
+			return applyBreakoutEvent(ctx, tx, roomID, session, ev)
+		}
+		closed, err = s.apply(ctx, tx, roomID, ev)
 		return err
 	})
 	if err != nil {
@@ -58,7 +86,7 @@ func (s *Service) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !dup {
-		s.afterEvent(ctx, meetingID, ev, ended)
+		s.afterEvent(ctx, meetingID, ev, closed)
 	}
 	httpx.NoContent(w)
 }
@@ -71,25 +99,25 @@ func recorded(kind string) bool {
 	return false
 }
 
-// apply records one event inside the webhook transaction. ended reports a
-// session closed by it.
-func (s *Service) apply(ctx context.Context, tx pgx.Tx, meetingID uuid.UUID, ev MediaEvent) (ended bool, err error) {
+// apply records one event inside the webhook transaction. closed is the
+// session it ended (uuid.Nil when none).
+func (s *Service) apply(ctx context.Context, tx pgx.Tx, meetingID uuid.UUID, ev MediaEvent) (closed uuid.UUID, err error) {
 	var exists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM calls_meetings WHERE id = $1)`, meetingID).Scan(&exists); err != nil || !exists {
-		return false, err
+		return uuid.Nil, err
 	}
 	switch ev.Kind {
 	case EventRoomStarted:
 		_, err = sessionForRoom(ctx, tx, meetingID, ev.RoomSID, ev.At)
-		return false, err
+		return uuid.Nil, err
 	case EventParticipantJoined:
 		sessionID, err := sessionForRoom(ctx, tx, meetingID, ev.RoomSID, ev.At)
 		if err != nil {
-			return false, err
+			return uuid.Nil, err
 		}
 		guest, id, ok := parseIdentity(ev.Identity)
 		if !ok {
-			return false, nil // not one of our identities (an agent, an egress)
+			return uuid.Nil, nil // not one of our identities (an agent, an egress)
 		}
 		var userID *uuid.UUID
 		name := ""
@@ -106,12 +134,12 @@ func (s *Service) apply(ctx context.Context, tx pgx.Tx, meetingID uuid.UUID, ev 
 			INSERT INTO calls_participants (session_id, identity, user_id, name, participant_sid, joined_at)
 			VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (participant_sid) WHERE participant_sid IS NOT NULL DO NOTHING`,
 			sessionID, ev.Identity, userID, name, sid, ev.At)
-		return false, err
+		return uuid.Nil, err
 	case EventParticipantLeft:
 		tag, err := tx.Exec(ctx, `UPDATE calls_participants SET left_at = GREATEST($2, joined_at)
 			WHERE participant_sid = $1 AND left_at IS NULL`, ev.ParticipantSID, ev.At)
 		if err != nil || tag.RowsAffected() > 0 {
-			return false, err
+			return uuid.Nil, err
 		}
 		// The join event was missed: close their newest open row.
 		_, err = tx.Exec(ctx, `
@@ -119,21 +147,33 @@ func (s *Service) apply(ctx context.Context, tx pgx.Tx, meetingID uuid.UUID, ev 
 			  SELECT p.id FROM calls_participants p JOIN calls_sessions ss ON ss.id = p.session_id
 			  WHERE ss.meeting_id = $1 AND p.identity = $2 AND p.left_at IS NULL ORDER BY p.joined_at DESC LIMIT 1)`,
 			meetingID, ev.Identity, ev.At)
-		return false, err
+		return uuid.Nil, err
 	case EventRoomFinished:
 		var sessionID uuid.UUID
 		err := tx.QueryRow(ctx, `SELECT id FROM calls_sessions WHERE meeting_id = $1 AND ended_at IS NULL AND (room_sid = $2 OR room_sid IS NULL)
 			ORDER BY started_at DESC LIMIT 1`, meetingID, ev.RoomSID).Scan(&sessionID)
 		if db.IsNoRows(err) {
-			return false, nil
+			return uuid.Nil, nil
 		}
 		if err != nil {
-			return false, err
+			return uuid.Nil, err
 		}
-		_, err = closeSessionTx(ctx, tx, sessionID, ev.At, "empty", nil)
-		return err == nil, err
+		// Everyone may be in breakout rooms: keep the session, let the next
+		// room instance adopt it (sessionForRoom).
+		var breakout bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM calls_breakouts WHERE session_id = $1 AND status <> 'closed')`, sessionID).Scan(&breakout); err != nil {
+			return uuid.Nil, err
+		}
+		if breakout {
+			_, err := tx.Exec(ctx, `UPDATE calls_sessions SET room_sid = NULL WHERE id = $1`, sessionID)
+			return uuid.Nil, err
+		}
+		if _, err = closeSessionTx(ctx, tx, sessionID, ev.At, "empty", nil); err != nil {
+			return uuid.Nil, err
+		}
+		return sessionID, nil
 	}
-	return false, nil
+	return uuid.Nil, nil
 }
 
 // sessionForRoom returns the session for a room instance, opening it if
@@ -199,21 +239,29 @@ func closeSessionTx(ctx context.Context, q db.Querier, sessionID uuid.UUID, at t
 		return uuid.Nil, err
 	}
 	// Admissions for this session end with it (not ones a newer session made).
-	_, err = q.Exec(ctx, `UPDATE calls_lobby SET status = 'expired', updated_at = now()
-		WHERE meeting_id = $1 AND ((status = 'waiting' AND created_at <= $2) OR (status = 'admitted' AND decided_at <= $2))`, meetingID, at)
+	if _, err = q.Exec(ctx, `UPDATE calls_lobby SET status = 'expired', updated_at = now()
+		WHERE meeting_id = $1 AND ((status = 'waiting' AND created_at <= $2) OR (status = 'admitted' AND decided_at <= $2))`, meetingID, at); err != nil {
+		return uuid.Nil, err
+	}
+	// Breakout rooms and polls still open end with it.
+	if _, err = q.Exec(ctx, `UPDATE calls_breakouts SET status = 'closed', closed_at = now() WHERE session_id = $1 AND status <> 'closed'`, sessionID); err != nil {
+		return uuid.Nil, err
+	}
+	_, err = q.Exec(ctx, `UPDATE calls_polls SET status = 'closed', closed_at = now(), updated_at = now() WHERE session_id = $1 AND status = 'open'`, sessionID)
 	return meetingID, err
 }
 
 // afterEvent runs side effects once an event is committed.
-func (s *Service) afterEvent(ctx context.Context, meetingID uuid.UUID, ev MediaEvent, ended bool) {
+func (s *Service) afterEvent(ctx context.Context, meetingID uuid.UUID, ev MediaEvent, closed uuid.UUID) {
 	switch ev.Kind {
 	case EventRoomStarted:
 		s.publish(ctx, meetingTopic(meetingID), EventMeetingUpdated, map[string]any{"id": meetingID, "live": true})
 	case EventRoomFinished:
-		if ended {
+		if closed != uuid.Nil {
 			if err := s.missRings(ctx, meetingID); err != nil {
 				slog.WarnContext(ctx, "calls: ending rings failed", "err", err)
 			}
+			s.afterSessionClosed(ctx, closed)
 		}
 		s.publish(ctx, meetingTopic(meetingID), EventMeetingUpdated, map[string]any{"id": meetingID, "live": false})
 	case EventParticipantJoined:
@@ -246,6 +294,7 @@ func (s *Service) reconcile(ctx context.Context) error {
 		                                         FROM calls_participants p WHERE p.session_id = ss.id), ss.started_at))
 		FROM calls_sessions ss JOIN calls_meetings m ON m.id = ss.meeting_id
 		WHERE ss.ended_at IS NULL AND (ss.started_at < now() - make_interval(secs => $1) OR m.canceled_at IS NOT NULL)
+		  AND (m.canceled_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM calls_breakouts b WHERE b.session_id = ss.id AND b.status <> 'closed'))
 		LIMIT 500`, reconcileAfter.Seconds())
 	if err != nil {
 		return err

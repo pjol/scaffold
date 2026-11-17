@@ -9,6 +9,7 @@
 import { COMPACT_SIZE, LAYOUT_BREAKPOINTS, LAYOUT_SPACE, SIZE_RESPONSIVE, containers, size, tap, zIndex, type SizeName } from "./layout";
 import { cubicBezierCss, springToCssLinear } from "./motion";
 import { DEFAULT_PALETTE_ID, PALETTE_IDS, PALETTES } from "./registry";
+import { SWATCH_HUES, SWATCHES } from "./swatches";
 import { TYPE_ROLES, type ColorMode, type Palette } from "./types";
 
 export const CSS_VAR_PREFIX = "--app-";
@@ -118,6 +119,16 @@ export function layoutVars(): { base: Record<string, string>; sm: Record<string,
   return { base, sm, lg };
 }
 
+/** Swatch variables for one mode (palette-independent): `--app-swatch-<hue>` and `--app-swatch-<hue>-bg`. */
+export function swatchVars(mode: ColorMode): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of SWATCH_HUES) {
+    out[cssVarName(`swatch.${h}`)] = SWATCHES[h][mode].fg;
+    out[cssVarName(`swatch.${h}.bg`)] = SWATCHES[h][mode].bg;
+  }
+  return out;
+}
+
 /** Size overrides for `[data-density=compact]`, and the comfortable values that undo them. */
 export function densityVars(): { compact: Record<string, string>; comfortable: Record<string, string> } {
   const compact: Record<string, string> = {};
@@ -175,6 +186,12 @@ export function tokensStylesheet(opts: StaticVarOptions = {}): string {
     media(`(min-width: ${LAYOUT_BREAKPOINTS.lg}px)`, rule(":root", layout.lg)),
     rule('[data-density="compact"]', density.compact),
     media("(pointer: coarse)", rule('[data-density="compact"]', density.comfortable)),
+    "",
+    "/* ── swatches (palette-independent) ── */",
+    rule(":root", swatchVars("light")),
+    media("(prefers-color-scheme: dark)", rule(':root:not([data-theme="light"])', swatchVars("dark"))),
+    rule('[data-theme="dark"]', swatchVars("dark")),
+    rule('[data-theme="light"]', swatchVars("light")),
   ];
   for (const id of PALETTE_IDS) parts.push("", paletteRules(PALETTES[id], id === DEFAULT_PALETTE_ID, opts));
   return `${parts.join("\n")}\n`;

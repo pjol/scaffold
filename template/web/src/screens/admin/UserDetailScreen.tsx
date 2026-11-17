@@ -1,7 +1,7 @@
 "use client";
 
 import { errorMessage, useAdminAudit, useAdminUser, useDeleteUser, useMe, useUpdateUser, type AdminRole, type AdminUser } from "@scaffoldapp/shared";
-import { Button, Card, ConfirmDialog, EmptyState, ErrorState, IconButton, SegmentedControl, Skeleton, SkeletonGroup, toast } from "@scaffoldapp/ui-web";
+import { Button, ConfirmDialog, EmptyState, ErrorState, IconButton, SegmentedControl, Skeleton, SkeletonGroup, toast } from "@scaffoldapp/ui-web";
 import { ChevronLeft, Copy, ScrollText, ShieldCheck, ShieldMinus, Trash2, UserX } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -171,13 +171,11 @@ export function UserDetailScreen({ id }: { id: string }) {
     return (
       <div className="flex flex-col gap-2">
         <BackToUsers />
-        <Card padding="compact">
-          {user.error.status === 404 ? (
-            <EmptyState compact icon={<UserX />} title="User not found" />
-          ) : (
-            <ErrorState compact title="Couldn't load this user" info={user.error.message} onRetry={() => void user.refetch()} retrying={user.isFetching} />
-          )}
-        </Card>
+        {user.error.status === 404 ? (
+          <EmptyState compact icon={<UserX />} title="User not found" />
+        ) : (
+          <ErrorState compact title="Couldn't load this user" info={user.error.message} onRetry={() => void user.refetch()} retrying={user.isFetching} />
+        )}
       </div>
     );
   }
@@ -204,39 +202,35 @@ export function UserDetailScreen({ id }: { id: string }) {
 
         <div className="flex flex-col gap-section">
           <Section title="Details">
-            <Card>
-              <dl className="flex flex-col gap-4">
-                {!deleted && <Fact label="Email">{u.email}</Fact>}
-                <Fact label="User ID">
-                  <code className="truncate type-label">{u.id}</code>
-                  <IconButton
-                    label="Copy user ID"
-                    tooltip
-                    size="sm"
-                    icon={<Copy />}
-                    onClick={() => void navigator.clipboard?.writeText(u.id).then(() => toast.success("Copied"), () => toast.error("Couldn't copy."))}
-                  />
-                </Fact>
-                <Fact label="Joined">{formatDateTime(u.created_at)}</Fact>
-                {u.deleted_at && <Fact label="Deleted">{formatDateTime(u.deleted_at)}</Fact>}
-              </dl>
-            </Card>
+            <dl className="flex flex-col gap-4">
+              {!deleted && <Fact label="Email">{u.email}</Fact>}
+              <Fact label="User ID">
+                <code className="truncate type-label">{u.id}</code>
+                <IconButton
+                  label="Copy user ID"
+                  tooltip
+                  size="sm"
+                  icon={<Copy />}
+                  onClick={() => void navigator.clipboard?.writeText(u.id).then(() => toast.success("Copied"), () => toast.error("Couldn't copy."))}
+                />
+              </Fact>
+              <Fact label="Joined">{formatDateTime(u.created_at)}</Fact>
+              {u.deleted_at && <Fact label="Deleted">{formatDateTime(u.deleted_at)}</Fact>}
+            </dl>
           </Section>
 
           {!deleted && <Controls user={u} isAdmin={isAdmin} self={self} />}
 
           <Section title="Activity" info="Admin actions on this account, newest first.">
-            <Card padding="none">
-              {audit.isPending ? (
-                <TableSkeleton rows={3} cols={4} />
-              ) : audit.isError ? (
-                <ErrorState compact title="Couldn't load activity" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
-              ) : entries.length === 0 ? (
-                <EmptyState compact icon={<ScrollText />} title="No admin actions yet" />
-              ) : (
-                <AuditTable entries={entries} showTarget={false} />
-              )}
-            </Card>
+            {audit.isPending ? (
+              <TableSkeleton rows={3} cols={4} flush />
+            ) : audit.isError ? (
+              <ErrorState compact title="Couldn't load activity" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
+            ) : entries.length === 0 ? (
+              <EmptyState compact icon={<ScrollText />} title="No admin actions yet" />
+            ) : (
+              <AuditTable entries={entries} showTarget={false} />
+            )}
           </Section>
         </div>
       </div>

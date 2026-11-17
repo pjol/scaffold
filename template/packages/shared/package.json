@@ -14,7 +14,9 @@
     "./auth/env": "./src/auth/env.ts",
     "./dev": "./src/dev.ts",
     "./legal": "./src/legal/index.ts",
-    "./utils": "./src/utils/index.ts"
+    "./utils": "./src/utils/index.ts",
+    "./preview": "./src/preview/index.ts",
+    "./preview/highlight": "./src/preview/highlight.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -22,6 +24,9 @@
     "portability": "node scripts/portability.mjs",
     "legal:export": "node scripts/legal.mjs export",
     "legal:check": "node scripts/legal.mjs check"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1"
   },
   "peerDependencies": {
     "react": "19.2.3",

@@ -22,16 +22,16 @@ import (
 // and crm.access in the record's org. Writes are one precise change each,
 // with Target and Preview; there is no delete, merge, export or sharing tool.
 func (s *Service) Tools() []app.Tool {
-	recordSchema := `"record_type":{"type":"string","enum":["company","contact","deal"]},"record_id":{"type":"string","format":"uuid"}`
-	readRecordSchema := `"record_type":{"type":"string","enum":["company","contact","deal"]},"record_id":{"type":"string","description":"The app's own record id (UUID) or a connected record's id from crm_search."}`
+	recordSchema := `"record_type":{"type":"string","enum":["company","contact","deal","ticket"]},"record_id":{"type":"string","format":"uuid"}`
+	readRecordSchema := `"record_type":{"type":"string","enum":["company","contact","deal","ticket"]},"record_id":{"type":"string","description":"The app's own record id (UUID) or a connected record's id from crm_search."}`
 	sourceSchema := `"source":{"type":"string","description":"Where to look: app (the app's own CRM), all, or a connected CRM's id from crm_list_sources."}`
 	orgSchema := `"org_id":{"type":"string","format":"uuid","description":"` + orgs.NounTitle() + `; optional when the user uses the CRM in one ` + orgs.Noun() + `."}`
 	return append([]app.Tool{
 		{
 			Name: "crm_search",
-			Description: "Search CRM companies, contacts and deals the user can see by name, email, phone or domain: the app's own records and, " +
+			Description: "Search CRM companies, contacts, deals and tickets the user can see by name, email, phone or domain: the app's own records and, " +
 				"where the workspace connects HubSpot or Salesforce, the user's records there (each hit's source says where it lives).",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"types":{"type":"array","items":{"type":"string","enum":["company","contact","deal"]}},` +
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"types":{"type":"array","items":{"type":"string","enum":["company","contact","deal","ticket"]}},` +
 				orgSchema + `,"limit":{"type":"integer","minimum":1,"maximum":50},` + sourceSchema + `},"required":["query"],"additionalProperties":false}`),
 			ReadOnly: true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
@@ -124,7 +124,7 @@ func (s *Service) Tools() []app.Tool {
 				}
 				o, ok := parseObject(in.RecordType)
 				if !ok {
-					return nil, httpx.BadRequest("record_type is company, contact or deal.")
+					return nil, httpx.BadRequest("record_type is company, contact, deal or ticket.")
 				}
 				recordID, err := uuid.Parse(in.RecordID)
 				if err != nil {
@@ -244,7 +244,7 @@ func (s *Service) Tools() []app.Tool {
 			Handler:  s.toolActivity("call"),
 		},
 		s.listSourcesTool(),
-	}, s.connectedTools()...)
+	}, append(s.depthTools(), s.connectedTools()...)...)
 }
 
 func (s *Service) getTool(o objectType, name, desc string) app.Tool {
@@ -276,13 +276,20 @@ func (s *Service) getTool(o objectType, name, desc string) app.Tool {
 				return nil, err
 			}
 			out := map[string]any{"record": d.Record, "associations": d.Associations, "link": o.link(in.ID)}
-			if deal, ok := d.Record.(*Deal); ok {
-				pipelines, err := s.loadPipelines(ctx, s.d.Pool, deal.OrgID)
+			var orgID, pipelineID uuid.UUID
+			switch rec := d.Record.(type) {
+			case *Deal:
+				orgID, pipelineID = rec.OrgID, rec.PipelineID
+			case *Ticket:
+				orgID, pipelineID = rec.OrgID, rec.PipelineID
+			}
+			if pipelineID != uuid.Nil {
+				pipelines, err := s.loadPipelines(ctx, s.d.Pool, orgID)
 				if err != nil {
 					return nil, err
 				}
 				for _, p := range pipelines {
-					if p.ID == deal.PipelineID {
+					if p.ID == pipelineID {
 						out["pipeline_stages"] = p.Stages
 					}
 				}
@@ -447,7 +454,7 @@ func decodeFieldInput(input json.RawMessage) (*fieldInput, objectType, error) {
 	}
 	o, ok := parseObject(in.RecordType)
 	if !ok {
-		return nil, "", httpx.BadRequest("record_type is company, contact or deal.")
+		return nil, "", httpx.BadRequest("record_type is company, contact, deal or ticket.")
 	}
 	if in.Field == "" {
 		return nil, "", httpx.BadRequest("field is a property key.")
@@ -562,7 +569,7 @@ func (s *Service) toolActivity(typ string) func(ctx context.Context, caller *aut
 		}
 		o, ok := parseObject(in.RecordType)
 		if !ok {
-			return nil, httpx.BadRequest("record_type is company, contact or deal.")
+			return nil, httpx.BadRequest("record_type is company, contact, deal or ticket.")
 		}
 		return s.logActivity(ctx, caller.UserID, o, in.RecordID, in.request(typ))
 	}
@@ -576,7 +583,7 @@ func (s *Service) previewActivity(typ string) func(ctx context.Context, caller *
 		}
 		o, ok := parseObject(in.RecordType)
 		if !ok {
-			return app.ToolPreview{}, httpx.BadRequest("record_type is company, contact or deal.")
+			return app.ToolPreview{}, httpx.BadRequest("record_type is company, contact, deal or ticket.")
 		}
 		orgID, _, err := s.requireRecord(ctx, s.d.Pool, caller.UserID, o, in.RecordID, access.View)
 		if err != nil {

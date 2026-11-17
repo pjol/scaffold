@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  assistantContextChipText,
   assistantConversationTitle,
   assistantLimitReached,
   errorMessage,
@@ -12,6 +13,8 @@ import {
   useCreateAssistantConversation,
   useDeleteAssistantConversation,
   useRenameAssistantConversation,
+  type AssistantContextLaunch,
+  type AssistantContextRequest,
   type AssistantMessage,
 } from "@scaffoldapp/shared";
 import {
@@ -31,7 +34,7 @@ import {
   SkeletonGroup,
   toast,
 } from "@scaffoldapp/ui-web";
-import { ChevronLeft, MoreHorizontal, Pencil, Sparkles, Trash2 } from "lucide-react";
+import { ChevronLeft, MoreHorizontal, Paperclip, Pencil, Sparkles, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -45,8 +48,23 @@ import { QuotaBanner } from "./QuotaBanner";
  * and the states around them: consent before the first message, daily limit, provider not
  * configured, development mock. Without `conversationId` it is a new conversation that is
  * created on the first message (the URL then moves to /assistant/<id> without a reload).
+ * `launch` attaches a resource (Summarise sends at once; Ask waits for the question) and
+ * `question` sends a question at once (⌘K "Ask the assistant"). `variant="panel"` drops the
+ * back link for the side panel.
  */
-export function Thread({ conversationId, onCreated }: { conversationId: string | undefined; onCreated: (id: string) => void }) {
+export function Thread({
+  conversationId,
+  onCreated,
+  launch,
+  question,
+  variant = "page",
+}: {
+  conversationId: string | undefined;
+  onCreated: (id: string) => void;
+  launch?: AssistantContextLaunch | null | undefined;
+  question?: string | null | undefined;
+  variant?: "page" | "panel";
+}) {
   const status = useAssistantStatus();
   const conversation = useAssistantConversation(conversationId);
   const messages = useAssistantMessages(conversationId);
@@ -55,6 +73,11 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
   const [consentOpen, setConsentOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const pending = useRef<string | null>(null);
+  // The resource the next message attaches (cleared once it is sent: it is in the history then).
+  const [attached, setAttached] = useState<(AssistantContextRequest & { label?: string | undefined }) | null>(
+    launch ? { ...launch.context, label: launch.label } : null,
+  );
+  const pendingContext = useRef<AssistantContextRequest | null>(null);
 
   const ordered = useMemo(() => [...(messages.data?.items ?? [])].reverse(), [messages.data]);
   const lastUserText = useMemo(() => {
@@ -77,8 +100,10 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
   // `consented` skips the check right after the dialog (this render's status is stale).
   const send = async (text: string, consented = false): Promise<boolean> => {
     if (!status.data?.available) return false;
+    const ctx = pendingContext.current ?? (attached ? { kind: attached.kind, id: attached.id, ...(attached.scope ? { scope: attached.scope } : {}), ...(attached.title ? { title: attached.title } : {}) } : null);
     if (status.data.consent.required && !consented) {
       pending.current = text;
+      pendingContext.current = ctx;
       setConsentOpen(true);
       return false;
     }
@@ -95,11 +120,27 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
     pending.current = text;
     // The message is posted as soon as the stream opens; clear the box then, not at the end.
     setDraft("");
-    const ok = await chat.send(text, id);
-    if (ok) pending.current = null;
-    else if (pending.current === text) setDraft((d) => d || text);
+    const ok = await chat.send(text, id, ctx ?? undefined);
+    if (ok) {
+      pending.current = null;
+      pendingContext.current = null;
+      setAttached(null);
+    } else if (pending.current === text) setDraft((d) => d || text);
     return ok;
   };
+
+  // Summarise (or a question from ⌘K) sends once, as soon as the assistant is ready.
+  const autoSent = useRef(false);
+  const autoText = launch?.mode === "summarise" ? (launch.prompt ?? null) : (question ?? null);
+  useEffect(() => {
+    if (autoSent.current || !autoText || !status.data?.available || conversationId) return;
+    autoSent.current = true;
+    void send(autoText);
+    // Runs once when the status first allows it.
+  }, [status.data?.available, autoText, conversationId]);
+  useEffect(() => {
+    if (launch?.mode === "ask" && question && !autoText) setDraft(question);
+  }, []);
 
   // Scroll: stick to the bottom while the user is there.
   const scroller = useRef<HTMLDivElement>(null);
@@ -139,7 +180,7 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <ThreadHeader conversationId={conversationId} title={assistantConversationTitle(conversation.data)} />
+      <ThreadHeader conversationId={conversationId} title={assistantConversationTitle(conversation.data)} variant={variant} />
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 py-6">
           {st.mock ? <Banner tone="warning">Development mock: replies are scripted and no AI provider is called.</Banner> : null}
@@ -149,7 +190,7 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
             </Button>
           ) : null}
           {messages.isError ? <ErrorState compact title="Couldn't load messages" onRetry={() => void messages.refetch()} retrying={messages.isFetching} /> : null}
-          {ordered.length === 0 && !messages.isError ? <EmptyState icon={<Sparkles />} title="Ask the assistant" tone="primary" /> : null}
+          {ordered.length === 0 && !messages.isError && !autoText ? <EmptyState icon={<Sparkles />} title={attached ? "Ask about it" : "Ask the assistant"} tone="primary" /> : null}
           {ordered.map((m: AssistantMessage, i) => (
             <MessageItem
               key={m.id}
@@ -172,6 +213,13 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
           >
             {chat.error.message}
           </Banner>
+        ) : null}
+        {attached ? (
+          <div className="flex items-center gap-2 self-start rounded-pill border border-border bg-surface py-1 pr-1 pl-3 type-label text-fg">
+            <Paperclip aria-hidden className="size-4 shrink-0 text-fg-muted" />
+            <span className="max-w-72 truncate">{assistantContextChipText({ label: attached.label ?? "", title: attached.title ?? "", scope_label: "" })}</span>
+            <IconButton size="sm" variant="ghost" label="Don't attach it" icon={<X />} onClick={() => setAttached(null)} />
+          </div>
         ) : null}
         <Composer
           value={draft}
@@ -196,7 +244,7 @@ export function Thread({ conversationId, onCreated }: { conversationId: string |
   );
 }
 
-function ThreadHeader({ conversationId, title }: { conversationId: string | undefined; title: string }) {
+function ThreadHeader({ conversationId, title, variant }: { conversationId: string | undefined; title: string; variant: "page" | "panel" }) {
   const router = useRouter();
   const rename = useRenameAssistantConversation();
   const remove = useDeleteAssistantConversation();
@@ -206,13 +254,15 @@ function ThreadHeader({ conversationId, title }: { conversationId: string | unde
 
   return (
     <div className="flex min-h-control-lg items-center gap-2 border-b border-border pb-2">
-      <Link
-        href="/assistant"
-        aria-label="Conversations"
-        className="-ml-2 flex size-control shrink-0 items-center justify-center rounded-pill text-fg hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring lg:hidden pointer-coarse:size-tap"
-      >
-        <ChevronLeft className="size-5" aria-hidden />
-      </Link>
+      {variant === "page" ? (
+        <Link
+          href="/assistant"
+          aria-label="Conversations"
+          className="-ml-2 flex size-control shrink-0 items-center justify-center rounded-pill text-fg hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring lg:hidden pointer-coarse:size-tap"
+        >
+          <ChevronLeft className="size-5" aria-hidden />
+        </Link>
+      ) : null}
       <h2 className="min-w-0 flex-1 truncate type-title-sm text-fg">{title}</h2>
       {conversationId ? (
         <Menu align="end" trigger={<IconButton label="Conversation options" variant="ghost" icon={<MoreHorizontal />} />}>

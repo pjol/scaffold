@@ -5,8 +5,9 @@
  *
  * Blocks: paragraphs (single newlines kept), ``` code blocks ```, > quotes, - / * / 1. lists.
  * Inline: **bold** or *bold*, _italic_, ~~strike~~ or ~strike~, `code`, [text](https://…),
- * bare URLs, mention tokens (<@uuid>, <@here>, <@channel>, <@group:id|handle>) and
- * :shortcode: emoji.
+ * bare URLs, mention tokens (<@uuid>, <@here>, <@channel>, <@group:id|handle>),
+ * :shortcode: emoji (built-in, or `custom_emoji` the renderer looks up in the workspace) and
+ * backslash escapes of markup characters.
  */
 import { CHANNELS_EMOJI } from "./emoji";
 
@@ -19,7 +20,9 @@ export type ChannelsInline =
   | { t: "code"; text: string }
   | { t: "link"; href: string; children: ChannelsInline[] }
   | { t: "mention"; mention: ChannelsMention }
-  | { t: "emoji"; text: string; name: string };
+  | { t: "emoji"; text: string; name: string }
+  /** `:name:` that isn't built in: the workspace's custom emoji, or plain text when it has none. */
+  | { t: "custom_emoji"; name: string };
 
 export type ChannelsBlock =
   | { t: "p"; children: ChannelsInline[] }
@@ -97,6 +100,7 @@ const INLINE_RE = new RegExp(
     "((?<![\\w_])_(?=\\S)[^_\\n]+?_(?![\\w_]))", // 8 _italic_
     "((?<![\\w~])~(?=\\S)[^~\\n]+?~(?![\\w~]))", // 9 ~strike~
     "(:[a-z0-9_+-]{1,40}:)", // 10 :emoji:
+    "(\\\\[\\\\`*_~:\\[\\]()<>#-])", // 11 \escape
   ].join("|"),
   "g",
 );
@@ -163,8 +167,9 @@ export function parseChannelsInline(text: string, depth = 0): ChannelsInline[] {
       const name = all.slice(1, -1);
       const emoji = CHANNELS_EMOJI[name];
       if (emoji) out.push({ t: "emoji", text: emoji, name });
+      else if (name.length >= 2) out.push({ t: "custom_emoji", name });
       else pushText(out, all);
-    }
+    } else if (m[11]) pushText(out, all.slice(1));
   }
   if (last < text.length) pushText(out, text.slice(last));
   return out;
@@ -240,6 +245,8 @@ export function channelsPlainText(body: string, mentioned: readonly { id: string
             return n.text;
           case "br":
             return " ";
+          case "custom_emoji":
+            return `:${n.name}:`;
           case "mention":
             return n.mention.kind === "user" ? `@${names.get(n.mention.id) ?? "someone"}` : n.mention.kind === "group" ? `@${n.mention.handle}` : `@${n.mention.kind}`;
           default:

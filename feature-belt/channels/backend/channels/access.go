@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,19 +17,21 @@ import (
 // access is what the caller may do with one channel. loadAccess returns it
 // only when they may read the channel at all.
 type access struct {
-	ChannelID uuid.UUID
-	OrgID     uuid.UUID
-	Kind      string
-	Layout    string
-	Name      string // channel name; "" for DMs
-	IsDefault bool
-	CreatedBy *uuid.UUID
-	Archived  bool
-	ForumTags []string
-	OrgRole   string // the caller's org role
-	Member    bool   // the caller is a channel member
-	Role      string // the caller's channel role when a member
-	UserID    uuid.UUID
+	ChannelID   uuid.UUID
+	OrgID       uuid.UUID
+	Kind        string
+	Layout      string
+	Name        string // channel name; "" for DMs
+	IsDefault   bool
+	CreatedBy   *uuid.UUID
+	Archived    bool
+	ForumTags   []string
+	Posting     string // everyone | admins
+	RepliesOpen bool   // posting = admins: members may reply in threads
+	OrgRole     string // the caller's org role
+	Member      bool   // the caller is a channel member
+	Role        string // the caller's channel role when a member
+	UserID      uuid.UUID
 }
 
 func (a *access) direct() bool { return a.Kind == kindDM || a.Kind == kindGroupDM }
@@ -41,12 +44,12 @@ func (s *Service) loadAccess(ctx context.Context, q db.Querier, channelID, userI
 	var role *string
 	err := q.QueryRow(ctx, `
 		SELECT c.org_id, c.kind, c.layout, COALESCE(c.name, ''), c.is_default, c.created_by, c.archived_at IS NOT NULL, c.forum_tags,
-		       om.role, cm.role
+		       c.posting, c.replies_open, om.role, cm.role
 		FROM channels c
 		JOIN org_members om ON om.org_id = c.org_id AND om.user_id = $2
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.id = $1`, channelID, userID).
-		Scan(&a.OrgID, &a.Kind, &a.Layout, &a.Name, &a.IsDefault, &a.CreatedBy, &a.Archived, &a.ForumTags, &a.OrgRole, &role)
+		Scan(&a.OrgID, &a.Kind, &a.Layout, &a.Name, &a.IsDefault, &a.CreatedBy, &a.Archived, &a.ForumTags, &a.Posting, &a.RepliesOpen, &a.OrgRole, &role)
 	if db.IsNoRows(err) {
 		return nil, errChannelNotFound
 	}
@@ -75,6 +78,28 @@ func (a *access) requireWritable() error {
 	}
 	if a.Archived {
 		return errArchived
+	}
+	return nil
+}
+
+// requirePost refuses a post (reply = a thread reply) where posting is
+// limited to admins and the caller isn't one.
+func (s *Service) requirePost(ctx context.Context, q db.Querier, a *access, reply bool) error {
+	if a.Posting != "admins" || (reply && a.RepliesOpen) {
+		return nil
+	}
+	ok, err := s.can(ctx, q, a, ActPostAnnouncement)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if reply {
+			return httpx.NewError(http.StatusForbidden, "posting_restricted", "Only admins can reply in #"+a.Name+".")
+		}
+		if a.RepliesOpen {
+			return httpx.NewError(http.StatusForbidden, "posting_restricted", "Only admins can post in #"+a.Name+". Reply in a thread instead.")
+		}
+		return httpx.NewError(http.StatusForbidden, "posting_restricted", "Only admins can post in #"+a.Name+".")
 	}
 	return nil
 }
@@ -115,6 +140,8 @@ type messageAccess struct {
 	ThreadRootID *uuid.UUID
 	Deleted      bool
 	HasFiles     bool
+	hasPoll      bool
+	isForward    bool
 	CreatedAt    time.Time
 	Title        *string
 }
@@ -125,9 +152,10 @@ func (s *Service) loadMessage(ctx context.Context, q db.Querier, msgID, userID u
 	var channelID uuid.UUID
 	err := q.QueryRow(ctx, `
 		SELECT m.channel_id, m.sender_id, m.kind, m.body, m.thread_root_id, m.deleted_at IS NOT NULL, m.created_at, m.title,
-		       EXISTS (SELECT 1 FROM channel_attachments a WHERE a.message_id = m.id)
+		       EXISTS (SELECT 1 FROM channel_attachments a WHERE a.message_id = m.id),
+		       EXISTS (SELECT 1 FROM channel_polls p WHERE p.message_id = m.id), m.is_forward
 		FROM channel_messages m WHERE m.id = $1`, msgID).
-		Scan(&channelID, &m.SenderID, &m.Kind, &m.Body, &m.ThreadRootID, &m.Deleted, &m.CreatedAt, &m.Title, &m.HasFiles)
+		Scan(&channelID, &m.SenderID, &m.Kind, &m.Body, &m.ThreadRootID, &m.Deleted, &m.CreatedAt, &m.Title, &m.HasFiles, &m.hasPoll, &m.isForward)
 	if db.IsNoRows(err) {
 		return nil, errMessageNotFound
 	}

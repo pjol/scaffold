@@ -1,6 +1,6 @@
 import { errorMessage, formatCalendarDuration, useCalendarLinks, useUpdateCalendarLink, type CalendarBookingLink } from "@scaffoldapp/shared";
 import { Badge, Button, Card, EmptyState, ErrorState, Screen, Skeleton, Spinner, Switch, Text, toast, useTheme } from "@scaffoldapp/ui-native";
-import { Link2, Lock, Share2 } from "lucide-react-native";
+import { Link2, Lock, Share2, Users } from "lucide-react-native";
 import { Linking, RefreshControl, Share, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { CalendarDot, calendarColors } from "./parts";
@@ -46,9 +46,20 @@ function LinkCard({ link }: { link: CalendarBookingLink }) {
           ) : (
             <Badge tone="neutral">Anyone</Badge>
           )}
+          {link.kind !== "personal" ? (
+            <Badge tone="accent" icon={Users}>
+              {`${link.kind === "round_robin" ? "Round robin" : "Collective"}${link.team_name ? ` · ${link.team_name}` : ""}`}
+            </Badge>
+          ) : null}
+          {link.single_use ? <Badge tone="neutral">{link.used_at ? "Used" : "One booking"}</Badge> : null}
           {link.upcoming_count > 0 ? <Badge tone="primary">{`${link.upcoming_count} upcoming`}</Badge> : null}
         </View>
-        <Switch value={link.active} onValueChange={setActive} label="Accept bookings" />
+        {link.kind !== "personal" && link.hosts.length > 0 ? (
+          <Text role="label" tone="muted" numberOfLines={2}>
+            {`Hosts: ${link.hosts.filter((h) => h.active).map((h) => h.user.display_name).join(", ")}`}
+          </Text>
+        ) : null}
+        {link.can_edit ? <Switch value={link.active} onValueChange={setActive} label="Accept bookings" /> : null}
         <Button variant="secondary" leftIcon={Share2} onPress={() => share(link)}>
           Share link
         </Button>
@@ -57,7 +68,7 @@ function LinkCard({ link }: { link: CalendarBookingLink }) {
   );
 }
 
-/** Booking links: share or pause them (create and edit on the web). */
+/** Booking links, yours and your teams': share or pause them (create and edit on the web). */
 export function LinksScreen() {
   const theme = useTheme();
   const s = theme.space;

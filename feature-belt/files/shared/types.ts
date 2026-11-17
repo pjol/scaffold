@@ -8,7 +8,8 @@ export type FilesDrive = "my" | "shared" | "connected";
 export type FilesSection = "my" | "shared" | "shared_with_me" | "recent" | "starred" | "trash";
 
 /** How clients show an item (registered item types preview as their own type, e.g. "repo"). */
-export type FilesPreview = "folder" | "image" | "pdf" | "video" | "audio" | "text" | "markdown" | "code" | "csv" | "svg" | "office" | "other" | (string & {});
+/** How an item shows: a folder, a registered type's name, or a file's `FilePreviewKind` (the core preview kit's kinds). */
+export type FilesPreview = "folder" | "image" | "pdf" | "video" | "audio" | "text" | "markdown" | "code" | "csv" | "json" | "svg" | "office" | "archive" | "font" | "other" | (string & {});
 
 export type FilesSort = "name" | "updated" | "size";
 
@@ -68,7 +69,31 @@ export interface FilesItem {
   source?: SourceRef | null;
   /** "Google Docs", "Word document": the platform's kind, when it names one. */
   kind_label?: string;
+  /** A file someone checked out; others can't change it until it's checked in or a manager breaks the lock. */
+  lock?: FilesLock | null;
+  /** A folder's colour token name ("" default). */
+  color?: FilesFolderColor;
+  /** "text" or "extracted" (PDF, office): its text is searchable. */
+  content?: "" | "text" | "extracted";
 }
+
+export interface FilesLock {
+  by: FilesPerson | null;
+  at: string;
+  note: string;
+}
+
+/** Folder colours: semantic colour tokens (light and dark values come from the palette). */
+export type FilesFolderColor = "" | "primary" | "accent" | "success" | "warning" | "danger" | "info";
+export const FILES_FOLDER_COLORS: readonly { id: FilesFolderColor; label: string }[] = [
+  { id: "", label: "Default" },
+  { id: "primary", label: "Blue" },
+  { id: "accent", label: "Purple" },
+  { id: "success", label: "Green" },
+  { id: "warning", label: "Yellow" },
+  { id: "danger", label: "Red" },
+  { id: "info", label: "Teal" },
+];
 
 /** What a shortcut item points at. */
 export interface FilesShortcutInfo {
@@ -215,6 +240,10 @@ export interface FilesVersion {
   uploaded_by: FilesPerson | null;
   /** "Restored from version 2", "Edited lines 3–5 by Claude". */
   note: string;
+  /** "Sent to client": a label someone gave this version. */
+  name: string;
+  /** Never pruned (the newest 100 are kept otherwise). */
+  keep_forever: boolean;
   current: boolean;
   created_at: string;
 }
@@ -231,7 +260,13 @@ export type FilesActivityAction =
   | "trashed"
   | "restored"
   | "shared"
-  | "link_created";
+  | "link_created"
+  | "commented"
+  | "locked"
+  | "unlocked"
+  | "owner_changed"
+  | "requested_upload"
+  | "version_named";
 
 export interface FilesActivity {
   id: string;
@@ -370,6 +405,8 @@ export interface FilesPublicView {
   item: FilesPublicItem;
   /** From the link's item down to the item's folder. */
   path: FilesCrumb[];
+  /** False when the owner turned downloads off (previews still show). */
+  allow_download: boolean;
 }
 
 /** A public (or staff-disabled) item for staff. */
@@ -414,8 +451,159 @@ export const FILES_CAPABILITIES = {
 /** Org permission that lets members create top-level shared folders. */
 export const FILES_PERMISSION_CREATE_SHARED = "files.create_shared_folders";
 
+/** Org permission that lets members make file requests (with access.share_public). */
+export const FILES_PERMISSION_FILE_REQUESTS = "files.file_requests";
+
+// ---- search filters ---------------------------------------------------------------
+
+export type FilesSearchKind = "folder" | "image" | "video" | "audio" | "pdf" | "document" | "spreadsheet" | "presentation" | "text" | "archive";
+export const FILES_SEARCH_KINDS: readonly { id: FilesSearchKind; label: string }[] = [
+  { id: "folder", label: "Folders" },
+  { id: "document", label: "Documents" },
+  { id: "spreadsheet", label: "Spreadsheets" },
+  { id: "presentation", label: "Presentations" },
+  { id: "pdf", label: "PDFs" },
+  { id: "image", label: "Images" },
+  { id: "video", label: "Videos" },
+  { id: "audio", label: "Audio" },
+  { id: "text", label: "Text and code" },
+  { id: "archive", label: "Archives" },
+];
+
+/** Drive-style search filters (GET …/search). */
+export interface FilesSearchFilters {
+  kind?: FilesSearchKind | undefined;
+  /** me | others | a user id */
+  owner?: string | undefined;
+  /** A date (2026-03-01) or timestamp. */
+  modified_after?: string | undefined;
+  modified_before?: string | undefined;
+  /** my | shared | a folder id */
+  location?: string | undefined;
+  starred?: boolean | undefined;
+  shared_with_me?: boolean | undefined;
+}
+
+// ---- comments -----------------------------------------------------------------------
+
+export interface FilesCommentAnchor {
+  page?: number;
+  seconds?: number;
+}
+
+export interface FilesComment {
+  id: string;
+  item_id: string;
+  thread_id: string | null;
+  author: FilesPerson | null;
+  body: string;
+  mentions: string[];
+  anchor: FilesCommentAnchor | null;
+  resolved_at: string | null;
+  resolved_by: FilesPerson | null;
+  edited_at: string | null;
+  created_at: string;
+  /** Threads only. */
+  replies?: FilesComment[];
+  mine: boolean;
+}
+
+export interface FilesNewComment {
+  body: string;
+  thread_id?: string | null;
+  mentions?: string[];
+  anchor?: FilesCommentAnchor | null;
+}
+
+// ---- public link options ---------------------------------------------------------------
+
+export interface FilesPublicLinkInfo {
+  id: string;
+  level: AccessLevel;
+  expires_at: string | null;
+  created_by: FilesPerson | null;
+  created_at: string;
+  has_password: boolean;
+  allow_download: boolean;
+  opens: number;
+  last_opened_at: string | null;
+}
+
+// ---- file requests --------------------------------------------------------------------
+
+export interface FilesRequest {
+  id: string;
+  org_id: string;
+  folder_id: string;
+  folder_name: string;
+  title: string;
+  instructions: string;
+  expires_at: string | null;
+  max_files: number | null;
+  max_file_bytes: number | null;
+  require_email: boolean;
+  files_received: number;
+  closed_at: string | null;
+  created_by: FilesPerson | null;
+  created_at: string;
+  /** Taking files now. */
+  open: boolean;
+  /** Only in the response that creates it. */
+  url?: string;
+  token?: string;
+}
+
+export interface FilesCreateRequest {
+  title: string;
+  instructions?: string;
+  expires_at?: string | null;
+  max_files?: number | null;
+  max_file_mb?: number | null;
+  require_email?: boolean;
+}
+
+export interface FilesRequestUpload {
+  id: string;
+  name: string;
+  size: number;
+  uploader_name: string;
+  uploader_email: string;
+  item_id: string | null;
+  completed_at: string;
+}
+
+/** What a file request link shows (no account). */
+export interface FilesPublicRequest {
+  title: string;
+  instructions: string;
+  requested_by: string;
+  org_name: string;
+  expires_at: string | null;
+  max_file_bytes: number;
+  /** null: no limit. */
+  files_left: number | null;
+  require_email: boolean;
+}
+
+// ---- storage per person ---------------------------------------------------------------
+
+export interface FilesPersonUsage {
+  person: FilesPerson | null;
+  bytes: number;
+  files: number;
+}
+
+export interface FilesStorage {
+  used_bytes: number;
+  quota_bytes: number;
+  mine: FilesPersonUsage;
+  /** Everyone's, for org owners and admins; null otherwise. */
+  people: FilesPersonUsage[] | null;
+}
+
 declare module "../types" {
   interface RealtimeEventMap {
     "files.changed": { org_id: string; item_id: string; parent_id: string | null; action: string };
+    "files.comments": { item_id: string };
   }
 }

@@ -26,16 +26,20 @@ import {
   type CalendarBookingLinkInput,
   type CalendarQuestion,
   type CalendarSlot,
+  type CalendarLinkHostInput,
+  useAccessMyTeams,
+  useAccessTeamMembers,
+  useActiveOrgId,
 } from "@scaffoldapp/shared";
 import { Banner, Button, Card, Checkbox, EmptyState, ErrorState, Field, IconButton, Input, ProviderIcon, SegmentedControl, Select, Skeleton, SkeletonGroup, Switch, Tab, Tabs, TabsList, TextArea, ToggleChip, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
-import { Check, ChevronLeft, Copy, Link2, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, Code, Copy, Link2, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { APP_NAME } from "@/lib/app";
 import { HoursEditor, OverridesEditor } from "./HoursEditor";
-import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ZoneSelect, copyText } from "./parts";
+import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ZoneSelect, calendarEmbedSnippet, copyText } from "./parts";
 import { LinkHeader } from "./PublicBookingScreen";
 import { SlotPicker, monthWindow } from "./SlotPicker";
 
@@ -78,7 +82,93 @@ function draftFrom(l: CalendarBookingLink | null, zone: string, hours: Draft["we
     add_to: l?.add_to ?? null,
     conference_provider: l?.conference_provider ?? "app",
     conference_connection_id: l?.conference_connection_id ?? null,
+    kind: l?.kind ?? "personal",
+    team_id: l?.team_id ?? null,
+    hosts: (l?.hosts ?? []).map((h) => ({ user_id: h.user.id, priority: h.priority, weight: h.weight, active: h.active, weekly_hours: h.weekly_hours, timezone: h.timezone })),
+    single_use: l?.single_use ?? false,
+    redirect_url: l?.redirect_url ?? "",
+    booker_reminders: l?.booker_reminders ?? [1440, 60],
+    allow_guests: l?.allow_guests ?? false,
   };
+}
+
+const REMINDERS = [10080, 2880, 1440, 240, 60, 15];
+const PRIORITY = ["Lowest", "Low", "Normal", "High", "Highest"];
+
+/**
+ * Who hosts a team link: the team, then its members as hosts. Round robin gives each host a
+ * priority and a weight (their share of bookings); collective needs every host free.
+ */
+function HostsEditor({ d, setD, orgId, teamName }: { d: Draft; setD: (fn: (s: Draft) => Draft) => void; orgId: string | null; teamName: string | null }) {
+  const teams = useAccessMyTeams(orgId);
+  const members = useAccessTeamMembers(d.team_id);
+  const list = members.data?.items ?? [];
+  const hostOf = (id: string) => d.hosts.find((h) => h.user_id === id);
+  const setHost = (id: string, patch: Partial<CalendarLinkHostInput> | null) =>
+    setD((s) => ({
+      ...s,
+      hosts: patch === null ? s.hosts.filter((h) => h.user_id !== id) : s.hosts.some((h) => h.user_id === id) ? s.hosts.map((h) => (h.user_id === id ? { ...h, ...patch } : h)) : [...s.hosts, { user_id: id, priority: 2, weight: 100, active: true, ...patch }],
+    }));
+  return (
+    <div className="flex flex-col gap-4">
+      <Field label="Team" info="Members of the team can see the link; its leads and you can change it.">
+        {teamName ? (
+          <span className="flex min-h-control items-center type-body text-fg">{teamName}</span>
+        ) : (
+          <Select
+            value={d.team_id ?? ""}
+            placeholder="Pick a team"
+            onValueChange={(v) => setD((s) => ({ ...s, team_id: v, hosts: [] }))}
+            options={(teams.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
+          />
+        )}
+      </Field>
+      {d.team_id ? (
+        members.isPending ? (
+          <Skeleton className="h-24" />
+        ) : members.isError ? (
+          <ErrorState compact title="Couldn't load the team" info={members.error.message} onRetry={() => void members.refetch()} />
+        ) : (
+          <ul className="flex flex-col divide-y divide-border rounded-md border border-border" aria-label="Hosts">
+            {list.map((m) => {
+              const h = hostOf(m.user_id);
+              return (
+                <li key={m.user_id} className="flex flex-wrap items-center gap-3 px-3 py-2">
+                  <Checkbox checked={!!h} onCheckedChange={(on) => setHost(m.user_id, on ? {} : null)} label={m.display_name} className="min-w-0 flex-1" />
+                  {h && d.kind === "round_robin" ? (
+                    <>
+                      <Select
+                        aria-label={`${m.display_name}'s priority`}
+                        className="w-32"
+                        value={String(h.priority ?? 2)}
+                        onValueChange={(v) => setHost(m.user_id, { priority: Number(v) })}
+                        options={PRIORITY.map((p, i) => ({ value: String(i), label: p }))}
+                      />
+                      <Input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        className="w-24"
+                        aria-label={`${m.display_name}'s weight`}
+                        value={h.weight ?? 100}
+                        onChange={(e) => setHost(m.user_id, { weight: Math.max(1, Math.min(1000, Number(e.target.value) || 1)) })}
+                      />
+                    </>
+                  ) : null}
+                  {h ? <Switch checked={h.active !== false} onCheckedChange={(v) => setHost(m.user_id, { active: v })} label="Taking bookings" /> : null}
+                </li>
+              );
+            })}
+          </ul>
+        )
+      ) : null}
+      {d.kind === "round_robin" ? (
+        <p className="type-caption text-fg-muted">Each booking goes to a free host: highest priority first, then whoever has had the fewest bookings for their weight (200 takes twice the share of 100).</p>
+      ) : (
+        <p className="type-caption text-fg-muted">Times are offered only when every host is free; the meeting lands on each host&apos;s calendar.</p>
+      )}
+    </div>
+  );
 }
 
 const SEP = "|";
@@ -146,12 +236,26 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
     if (d.audience === "internal" && !d.org_id && orgList[0]) set("org_id", orgList[0].id);
   }, [d.audience, d.org_id, orgList]);
 
-  const body = (): CalendarBookingLinkInput => ({ ...d, slug: d.slug.trim() || undefined, org_id: d.audience === "internal" ? d.org_id : null }) as CalendarBookingLinkInput;
+  const team = d.kind !== "personal";
+  const body = (): CalendarBookingLinkInput => {
+    const b = { ...d, slug: d.slug.trim() || undefined, org_id: d.audience === "internal" && !team ? d.org_id : null, redirect_url: d.redirect_url.trim() } as CalendarBookingLinkInput;
+    if (!team) {
+      delete b.team_id;
+      delete b.hosts;
+    }
+    if (link) delete b.kind;
+    return b;
+  };
+  const teamOrg = useActiveOrgId() ?? orgList[0]?.id ?? null;
 
   const save = async () => {
     setError(null);
     if (!d.title.trim()) {
       setError("Add a title.");
+      return;
+    }
+    if (team && (!d.team_id || d.hosts.length === 0)) {
+      setError("Pick a team and at least one host.");
       return;
     }
     try {
@@ -211,7 +315,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
             ]}
           />
         </Field>
-        {writable.length > 0 || d.add_to ? (
+        {!team && (writable.length > 0 || d.add_to) ? (
           <Field label="Add bookings to" info={`Each booking is on your ${APP_NAME} calendar. Choose a connected calendar to add it there too: it counts as busy there, and Google Meet or Teams links come from it.`}>
             <Select
               value={d.add_to ? `${d.add_to.connection_id}${SEP}${d.add_to.calendar_id}` : "app"}
@@ -240,7 +344,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
             />
           </Field>
         ) : null}
-        {d.location_type === "video" && providers.length > 0 ? (
+        {!team && d.location_type === "video" && providers.length > 0 ? (
           <Field label="Video call with" info="The app's own calls open in the browser; Google Meet, Teams and Zoom open in their own apps.">
             <Select
               value={providerKey}
@@ -270,6 +374,24 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
         ) : null}
       </Group>
 
+      <Group title="Hosts">
+        {link ? (
+          <p className="type-body text-fg">{{ personal: "You host this link.", round_robin: `Round robin: one host from ${link.team_name ?? "the team"} per booking.`, collective: `Collective: every host from ${link.team_name ?? "the team"}.` }[d.kind]}</p>
+        ) : (
+          <SegmentedControl
+            aria-label="Who hosts"
+            value={d.kind}
+            onValueChange={(v) => setD((s) => ({ ...s, kind: v, ...(v !== "personal" ? { add_to: null, conference_provider: "app", conference_connection_id: null } : {}) }))}
+            options={[
+              { value: "personal", label: "Just me" },
+              { value: "round_robin", label: "Round robin" },
+              { value: "collective", label: "Everyone" },
+            ]}
+          />
+        )}
+        {team ? <HostsEditor d={d} setD={setD} orgId={link?.org_id ?? teamOrg} teamName={link?.team_name ?? null} /> : null}
+      </Group>
+
       <Group title="Who can book">
         <SegmentedControl
           value={d.audience}
@@ -280,7 +402,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
           ]}
           aria-label="Who can book"
         />
-        {d.audience === "internal" ? (
+        {d.audience === "internal" && !team ? (
           orgList.length === 0 ? (
             <Banner tone="warning">{`You aren't in ${orgsNounA()} yet. Join or create one in Settings → ${orgsNounTitle("many")}.`}</Banner>
           ) : (
@@ -322,16 +444,36 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
             <Select value={String(d.slot_interval)} onValueChange={(v) => set("slot_interval", Number(v))} options={INTERVALS.map((m) => ({ value: String(m), label: minutesText(m) }))} />
           </Field>
         </div>
+        <Switch checked={d.single_use} onCheckedChange={(v) => set("single_use", v)} label="One booking only" />
+        {link?.single_use && link.used_at ? <p className="type-caption text-fg-muted">Booked already: the page now says it was used. Turn it off and on again to reopen it.</p> : null}
       </Group>
 
       <Group title="Booking form">
         <p className="type-label text-fg-muted">Everyone gives a name and email. Add up to 10 questions.</p>
         <QuestionsEditor value={d.questions} onChange={(v) => set("questions", v)} />
+        <Switch checked={d.allow_guests} onCheckedChange={(v) => set("allow_guests", v)} label="Bookers can add guests" />
       </Group>
 
       <Group title="After booking">
         <Field label="Confirmation message" info="Shown on the confirmation page and in the confirmation email.">
           <TextArea value={d.confirmation_message} onChange={(e) => set("confirmation_message", e.target.value)} maxLength={1000} minRows={2} />
+        </Field>
+        <Field label="Then go to" info="Leave empty to show the confirmation page. Bookers are sent to this https:// address after booking.">
+          <Input type="url" value={d.redirect_url} onChange={(e) => set("redirect_url", e.target.value)} maxLength={2000} placeholder="https://example.com/thanks" />
+        </Field>
+        <Field label="Remind bookers" info="Emails before the start with the time, place and a link to reschedule or cancel.">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Remind bookers">
+            {REMINDERS.map((m) => (
+              <ToggleChip
+                key={m}
+                pressed={d.booker_reminders.includes(m)}
+                disabled={!d.booker_reminders.includes(m) && d.booker_reminders.length >= 3}
+                onPressedChange={(on) => set("booker_reminders", on ? [...d.booker_reminders, m].sort((a, b) => b - a) : d.booker_reminders.filter((x) => x !== m))}
+              >
+                {minutesText(m)} before
+              </ToggleChip>
+            ))}
+          </div>
         </Field>
         <div className="flex flex-col gap-3">
           <Switch checked={d.allow_reschedule} onCheckedChange={(v) => set("allow_reschedule", v)} label="Bookers can reschedule" />
@@ -379,7 +521,10 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
             kind="calendar.booking_link"
             id={link.id}
             title={link.title}
-            actions={[{ id: "open", label: "Open booking page", icon: Link2, onSelect: () => window.open(link.url, "_blank", "noopener") }]}
+            actions={[
+              { id: "open", label: "Open booking page", icon: Link2, onSelect: () => window.open(link.url, "_blank", "noopener") },
+              { id: "embed", label: "Copy embed code", icon: Code, onSelect: () => void copyText(calendarEmbedSnippet(link.url, link.title), toast, "Embed code copied") },
+            ]}
           />
         ) : null}
         <Button size="auto" loading={create.isPending || update.isPending} onClick={() => void save()}>
@@ -398,7 +543,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
         {wide || tab === "settings" ? form : null}
         {wide || tab === "preview" ? (
           <div className="lg:sticky lg:top-24 lg:self-start">
-            <Preview draft={d} linkId={link?.id ?? null} zone={zone} />
+            <Preview draft={d} linkId={link?.id ?? null} zone={zone} teamName={link?.team_name ?? null} />
           </div>
         ) : null}
       </div>
@@ -407,7 +552,7 @@ function LinkEditor({ link, zone, hours, videoAvailable }: { link: CalendarBooki
 }
 
 /** The booking page as visitors will see it, with slots computed from your real calendar. */
-function Preview({ draft, linkId, zone }: { draft: Draft; linkId: string | null; zone: string }) {
+function Preview({ draft, linkId, zone, teamName }: { draft: Draft; linkId: string | null; zone: string; teamName: string | null }) {
   const [month, setMonth] = useState(() => calendarStartOfMonth(calendarTodayKey(zone)));
   const [duration, setDuration] = useState(draft.durations[0] ?? 30);
   const [slot, setSlot] = useState<CalendarSlot | null>(null);
@@ -415,16 +560,26 @@ function Preview({ draft, linkId, zone }: { draft: Draft; linkId: string | null;
   const win = useMemo(() => monthWindow(month, zone, 0), [month, zone]);
   const debounced = useDebouncedValue(draft, 400);
   const body = useMemo(
-    () => ({ link: { ...debounced, slug: debounced.slug || undefined, org_id: debounced.audience === "internal" ? debounced.org_id : null } as CalendarBookingLinkInput, link_id: linkId, from: win.from, to: win.to, duration: dur }),
+    () => {
+      const team = debounced.kind !== "personal";
+      const l = { ...debounced, slug: debounced.slug || undefined, org_id: debounced.audience === "internal" && !team ? debounced.org_id : null } as CalendarBookingLinkInput;
+      if (!team) {
+        delete l.team_id;
+        delete l.hosts;
+      }
+      if (linkId) delete l.kind;
+      return { link: l, link_id: linkId, from: win.from, to: win.to, duration: dur };
+    },
     [debounced, linkId, win, dur],
   );
-  const preview = useCalendarLinkPreview(body);
+  const teamReady = draft.kind === "personal" || (!!draft.team_id && draft.hosts.length > 0);
+  const preview = useCalendarLinkPreview(teamReady ? body : null);
   const label = { video: draft.conference_provider && draft.conference_provider !== "app" ? calendarProviderLabel(draft.conference_provider) : "Video call", phone: draft.location_value ? `Phone call: you call ${draft.location_value}` : "Phone call: you'll be called", in_person: "In person", custom: draft.location_value }[draft.location_type];
   return (
     <Card className="flex flex-col gap-6" aria-label="Preview">
       <span className="type-caption uppercase text-fg-subtle">Preview</span>
       <LinkHeader
-        link={{ host: { id: "", display_name: "You", avatar_url: null }, title: draft.title || "Untitled link", durations: draft.durations, location_type: draft.location_type, location_label: label, description: draft.description, org_name: null, audience: draft.audience }}
+        link={{ host: { id: "", display_name: draft.kind === "personal" ? "You" : (teamName ?? "Your team"), avatar_url: null }, title: draft.title || "Untitled link", durations: draft.durations, location_type: draft.location_type, location_label: label, description: draft.description, org_name: null, audience: draft.audience }}
         duration={dur}
         onDuration={setDuration}
       />
@@ -434,7 +589,7 @@ function Preview({ draft, linkId, zone }: { draft: Draft; linkId: string | null;
         onMonthChange={setMonth}
         slots={preview.data?.slots ?? []}
         loading={preview.isFetching}
-        error={preview.isError ? errorMessage(preview.error) : null}
+        error={!teamReady ? "Pick a team and hosts to see their times." : preview.isError ? errorMessage(preview.error) : null}
         selected={slot?.starts_at ?? null}
         onSelect={setSlot}
       />
@@ -457,18 +612,21 @@ function QuestionsEditor({ value, onChange }: { value: CalendarQuestion[]; onCha
           <div className="flex flex-wrap items-center gap-3">
             <Select
               value={q.type}
-              onValueChange={(v) => update(i, { type: v as CalendarQuestion["type"], options: v === "choice" ? (q.options.length >= 2 ? q.options : ["", ""]) : [] })}
+              onValueChange={(v) => update(i, { type: v as CalendarQuestion["type"], options: v === "choice" || v === "multi_choice" ? (q.options.length >= 2 ? q.options : ["", ""]) : [] })}
               options={[
                 { value: "short_text", label: "Short answer" },
                 { value: "long_text", label: "Paragraph" },
+                { value: "email", label: "Email" },
                 { value: "phone", label: "Phone number" },
                 { value: "choice", label: "One choice" },
+                { value: "multi_choice", label: "Several choices" },
+                { value: "checkbox", label: "Checkbox" },
               ]}
               className="w-44"
             />
             <Checkbox checked={q.required} onCheckedChange={(v) => update(i, { required: v })} label="Required" />
           </div>
-          {q.type === "choice" ? (
+          {q.type === "choice" || q.type === "multi_choice" ? (
             <div className="flex flex-col gap-2">
               {q.options.map((o, k) => (
                 <div key={k} className="flex items-center gap-2">

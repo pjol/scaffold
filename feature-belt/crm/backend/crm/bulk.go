@@ -148,7 +148,7 @@ func (s *Service) bulk(w http.ResponseWriter, r *http.Request) error {
 	}
 	o, ok := parseObject(req.ObjectType)
 	if !ok {
-		return httpx.BadRequest("object_type is company, contact or deal.")
+		return httpx.BadRequest("object_type is company, contact, deal or ticket.")
 	}
 	ids := []uuid.UUID{}
 	for _, id := range req.IDs {
@@ -169,8 +169,8 @@ func (s *Service) bulk(w http.ResponseWriter, r *http.Request) error {
 		}
 		in = map[string]json.RawMessage{"owner": v}
 	case "move_stage":
-		if o != objDeal || req.StageID == nil {
-			return httpx.BadRequest("Moving stage needs deals and a stage_id.")
+		if !o.pipelined() || req.StageID == nil {
+			return httpx.BadRequest("Moving stage needs deals or tickets and a stage_id.")
 		}
 		in = map[string]json.RawMessage{"stage": json.RawMessage(`"` + req.StageID.String() + `"`)}
 	case "add_tag", "remove_tag":
@@ -325,7 +325,7 @@ func (s *Service) merge(w http.ResponseWriter, r *http.Request) error {
 	}
 	o, ok := parseObject(req.ObjectType)
 	if !ok {
-		return httpx.BadRequest("object_type is company, contact or deal.")
+		return httpx.BadRequest("object_type is company, contact, deal or ticket.")
 	}
 	if req.PrimaryID == uuid.Nil || req.SecondaryID == uuid.Nil || req.PrimaryID == req.SecondaryID {
 		return httpx.BadRequest("Choose two different records to merge.")
@@ -365,8 +365,11 @@ func (s *Service) merge(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 		}
-		if d, ok := secondary.(*Deal); ok {
-			pipelines = append(pipelines, d.PipelineID, primary.(*Deal).PipelineID)
+		switch sec := secondary.(type) {
+		case *Deal:
+			pipelines = append(pipelines, sec.PipelineID, primary.(*Deal).PipelineID)
+		case *Ticket:
+			pipelines = append(pipelines, sec.PipelineID, primary.(*Ticket).PipelineID)
 		}
 		secondaryTitle := secondary.base().Title
 		if err := deleteRecordTx(ctx, tx, o, req.SecondaryID); err != nil {
@@ -472,6 +475,10 @@ func mergedColumns(primary, secondary recordish) map[string]any {
 		if p.CloseDate == nil && s.CloseDate != nil {
 			cols["close_date"] = *s.CloseDate
 		}
+	case *Ticket:
+		s := secondary.(*Ticket)
+		fillText("description", p.Description, s.Description)
+		fillText("category", p.Category, s.Category)
 	}
 	return cols
 }
@@ -491,6 +498,7 @@ func moveAssociations(ctx context.Context, tx pgx.Tx, o objectType, keep, drop u
 			 ON CONFLICT DO NOTHING`,
 			`DELETE FROM crm_contact_companies WHERE company_id = $2`,
 			`UPDATE crm_deals SET company_id = $1, updated_at = now() WHERE company_id = $2`,
+			`UPDATE crm_tickets SET company_id = $1, updated_at = now() WHERE company_id = $2`,
 		} {
 			if _, err := tx.Exec(ctx, q, keep, drop); err != nil {
 				return err
@@ -509,12 +517,39 @@ func moveAssociations(ctx context.Context, tx pgx.Tx, o objectType, keep, drop u
 			 AND NOT EXISTS (SELECT 1 FROM crm_contact_companies WHERE contact_id = $1 AND is_primary)`,
 			`INSERT INTO crm_deal_contacts (deal_id, contact_id, org_id, created_by, created_at)
 			 SELECT deal_id, $1::uuid, org_id, created_by, created_at FROM crm_deal_contacts WHERE contact_id = $2::uuid ON CONFLICT DO NOTHING`,
+			`INSERT INTO crm_ticket_contacts (ticket_id, contact_id, org_id, created_by, created_at)
+			 SELECT ticket_id, $1::uuid, org_id, created_by, created_at FROM crm_ticket_contacts WHERE contact_id = $2::uuid ON CONFLICT DO NOTHING`,
+			`UPDATE crm_quotes SET contact_id = $1 WHERE contact_id = $2`,
+			`UPDATE crm_email_drafts SET contact_id = $1 WHERE contact_id = $2`,
 		}
 	case objDeal:
 		stmts = []string{
 			`INSERT INTO crm_deal_contacts (deal_id, contact_id, org_id, created_by, created_at)
 			 SELECT $1::uuid, contact_id, org_id, created_by, created_at FROM crm_deal_contacts WHERE deal_id = $2::uuid ON CONFLICT DO NOTHING`,
 			`UPDATE crm_deals d SET company_id = s.company_id FROM crm_deals s WHERE d.id = $1 AND s.id = $2 AND d.company_id IS NULL`,
+			`UPDATE crm_tickets SET deal_id = $1 WHERE deal_id = $2`,
+			`UPDATE crm_line_items SET deal_id = $1, position = position + 1000 WHERE deal_id = $2`,
+		}
+		// Quotes follow, under the kept deal in access too.
+		rows, err := tx.Query(ctx, `UPDATE crm_quotes SET deal_id = $1, updated_at = now() WHERE deal_id = $2 RETURNING id`, keep, drop)
+		if err != nil {
+			return err
+		}
+		quotes, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		for _, q := range quotes {
+			if err := access.MoveResource(ctx, tx, access.Ref{Kind: KindQuote, ID: q}, &access.Ref{Kind: KindDeal, ID: keep}); err != nil {
+				return err
+			}
+		}
+	case objTicket:
+		stmts = []string{
+			`INSERT INTO crm_ticket_contacts (ticket_id, contact_id, org_id, created_by, created_at)
+			 SELECT $1::uuid, contact_id, org_id, created_by, created_at FROM crm_ticket_contacts WHERE ticket_id = $2::uuid ON CONFLICT DO NOTHING`,
+			`UPDATE crm_tickets d SET company_id = COALESCE(d.company_id, s.company_id), deal_id = COALESCE(d.deal_id, s.deal_id)
+			 FROM crm_tickets s WHERE d.id = $1 AND s.id = $2`,
 		}
 	}
 	for _, q := range stmts {

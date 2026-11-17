@@ -74,6 +74,9 @@ export { PhotoUploader, pickPhotos, type PhotoUploaderProps, type PhotoUploadRes
 export { PhotoGrid, type PhotoGridProps } from "./components/PhotoGrid";
 export { PhotoLightbox, type PhotoLightboxProps, type GalleryPhoto } from "./components/PhotoLightbox";
 
+// files
+export { FilePreview, FileIcon, filePreviewIcon, filePreviewToneColor, filePreviewKind, type FilePreviewProps, type FileIconProps, type FilePreviewKind } from "./components/FilePreview";
+
 // legal
 export { LegalDocument, formatEffectiveDate, type LegalDocumentProps, type LegalDocumentData, type LegalSection, type LegalBlock } from "./components/LegalDocument";
 export { ConsentForm, type ConsentFormProps, type ConsentFormValue } from "./components/ConsentForm";

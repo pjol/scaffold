@@ -1,8 +1,8 @@
 {
   "name": "search",
   "title": "Search",
-  "version": "1.2.0",
-  "summary": "People search everything they can see across installed features from one box (⌘K on web, a screen on mobile); agents get the same search as a tool.",
+  "version": "1.3.0",
+  "summary": "People search everything they can see across installed features from one box (⌘K on web, a screen on mobile), narrow with operators (from:, in:, type:, dates, is:), save searches and run commands; agents get the same search as a tool.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -35,6 +35,10 @@
     {
       "src": "backend/feature_search.go",
       "dst": "backend/internal/api/feature_search.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
     },
     {
       "src": "shared",
@@ -104,6 +108,9 @@
     "Kind and feature names and icons for every belt feature ship with search; rename or add your own with registerSearchKindLabel / registerSearchProviderLabel (packages/shared) and registerSearchIcon (web and mobile @/features/search/icons) at module load.",
     "With orgs installed, call registerSearchScope in stitching (web and mobile) so search covers the active org by default with an \"All …\" toggle: registerSearchScope(() => { const { org } = useActiveOrg(); return org ? { id: org.id, name: org.name, allLabel: `All ${orgsNoun(\"many\")}` } : null; }).",
     "Decide where search sits: the ⌘K palette and top-bar button are on every signed-in web screen; on mobile it is a Home row, promote it to a tab if search is a primary destination.",
-    "Tune SEARCH_PROVIDER_TIMEOUT to the slowest provider you accept; slower ones are reported as missing, never waited on."
-  ]
+    "Tune SEARCH_PROVIDER_TIMEOUT to the slowest provider you accept; slower ones are reported as missing, never waited on.",
+    "Operators: providers that can filter by author, place, date or state in SQL implement app.SearchOperatorProvider (SearchOperators() []string; read app.SearchFilterFrom(ctx)) and set SearchResult.AuthorID; search applies type:, dates, in: (on Context) and from: (on AuthorID) to the rest and skips a provider for an operator neither can apply. A provider that parses the grammar from its own text registers search.SetRawOperators(module, ops...) (channels is registered by default).",
+    "⌘K commands: features add QuickAction entries at the web registry's scaffold:quick-actions anchor (presence, notifications and assistant ship some); add the app's own (New page, Start a meeting) the same way."
+  ],
+  "migration_block": 2500
 }

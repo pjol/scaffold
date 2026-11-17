@@ -12,14 +12,15 @@ import {
   useFilesConnectedSharing,
   useFilesGetUrl,
   useFilesItem,
+  useFilesPatchVersion,
   useFilesRestoreVersion,
   useFilesVersions,
   type FilesActivity,
   type FilesConnectedItem,
   type FilesItem,
 } from "@scaffoldapp/shared";
-import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Sheet, SkeletonGroup, SkeletonRow, SourceBadge, Tab, TabPanel, Tabs, TabsList, toast } from "@scaffoldapp/ui-web";
-import { Download, ExternalLink, Globe, Lock, RotateCcw, Upload, Users } from "lucide-react";
+import { Badge, Button, ConfirmDialog, Dialog, EmptyState, ErrorState, Field, IconButton, Input, Sheet, SkeletonGroup, SkeletonRow, SourceBadge, Tab, TabPanel, Tabs, TabsList, toast } from "@scaffoldapp/ui-web";
+import { Download, ExternalLink, Globe, Lock, Pin, PinOff, RotateCcw, Tag, Upload, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
@@ -27,6 +28,7 @@ import { ShareButton } from "@/features/access";
 import { formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import { startDownload, useFilesActions } from "./actions";
 import { useFilesConnectedActions } from "./connected";
+import { FilesComments, FilesLinkOptions } from "./depth";
 import { filesIconTone, filesItemIcon } from "./icons";
 
 /** The details sheet for the item `useFilesActions().details` opened (side panel ≥ 768 px, bottom sheet on phones). */
@@ -52,8 +54,8 @@ export function FilesDetailsSheet() {
 }
 
 /** Details, versions and activity of one item (the sheet's body; the file page's side column). */
-export function FilesDetails({ item, path }: { item: FilesItem; path: string[] }) {
-  const [tab, setTab] = useState("details");
+export function FilesDetails({ item, path, initialTab }: { item: FilesItem; path: string[]; initialTab?: string }) {
+  const [tab, setTab] = useState(initialTab ?? "details");
   return (
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList aria-label="Item information">
@@ -63,11 +65,17 @@ export function FilesDetails({ item, path }: { item: FilesItem; path: string[] }
             Versions
           </Tab>
         ) : null}
+        {item.trashed_at ? null : <Tab value="comments">Comments</Tab>}
         <Tab value="activity">Activity</Tab>
       </TabsList>
       <TabPanel value="details" className="pt-6">
         <DetailsTab item={item} path={path} />
       </TabPanel>
+      {item.trashed_at ? null : (
+        <TabPanel value="comments" className="pt-6">
+          <FilesComments item={item} />
+        </TabPanel>
+      )}
       {item.type === "file" ? (
         <TabPanel value="versions" className="pt-6">
           <VersionsTab item={item} />
@@ -116,6 +124,13 @@ function DetailsTab({ item, path }: { item: FilesItem; path: string[] }) {
             {formatDateTime(item.updated_at)} by {name(item.updated_by)}
           </Row>
           {item.type === "file" ? <Row label="Type">{item.mime_type || "Unknown"}</Row> : null}
+          {item.lock ? (
+            <Row label="Checked out">
+              {name(item.lock.by)} · {formatRelative(item.lock.at)}
+              {item.lock.note ? ` · “${item.lock.note}”` : ""}
+            </Row>
+          ) : null}
+          {item.content ? <Row label="Search">Its text is searchable{item.content === "extracted" ? " (read from the document)" : ""}</Row> : null}
         </dl>
       </section>
       <section className="flex flex-col gap-3">
@@ -160,6 +175,7 @@ function DetailsTab({ item, path }: { item: FilesItem; path: string[] }) {
           </ul>
         ) : null}
       </section>
+      {item.trashed_at ? null : <FilesLinkOptions item={item} />}
     </div>
   );
 }
@@ -167,6 +183,8 @@ function DetailsTab({ item, path }: { item: FilesItem; path: string[] }) {
 function VersionsTab({ item }: { item: FilesItem }) {
   const versions = useFilesVersions(item.id);
   const restore = useFilesRestoreVersion(item.id);
+  const patch = useFilesPatchVersion(item.id);
+  const [naming, setNaming] = useState<{ id: string; number: number; name: string } | null>(null);
   const getUrl = useFilesGetUrl();
   const a = useFilesActions();
   const [confirm, setConfirm] = useState<{ id: string; number: number } | null>(null);
@@ -190,9 +208,10 @@ function VersionsTab({ item }: { item: FilesItem }) {
           {versions.data.items.map((v) => (
             <li key={v.id} className="flex min-h-tap-lg items-center gap-3 border-b border-border py-2 last:border-b-0">
               <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="flex items-center gap-2 type-body font-medium text-fg">
-                  Version {v.number}
+                <span className="flex flex-wrap items-center gap-2 type-body font-medium text-fg">
+                  {v.name ? `${v.name} · v${v.number}` : `Version ${v.number}`}
                   {v.current ? <Badge tone="primary">Current</Badge> : null}
+                  {v.keep_forever ? <Badge tone="info">Kept forever</Badge> : null}
                 </span>
                 <span className="truncate type-caption text-fg-muted" title={formatDateTime(v.created_at)}>
                   {[formatRelative(v.created_at), name(v.uploaded_by), filesFormatSize(v.size), v.note].filter(Boolean).join(" · ")}
@@ -208,6 +227,19 @@ function VersionsTab({ item }: { item: FilesItem }) {
                   getUrl.mutate({ id: item.id, version: v.id, disposition: "attachment" }, { onSuccess: (u) => startDownload(u.url), onError: (e) => toast.error(errorMessage(e, "Couldn't start the download.")) })
                 }
               />
+              {edit ? (
+                <IconButton label={`Name version ${v.number}`} icon={<Tag />} variant="ghost" size="sm" tooltip onClick={() => setNaming({ id: v.id, number: v.number, name: v.name })} />
+              ) : null}
+              {edit ? (
+                <IconButton
+                  label={v.keep_forever ? `Stop keeping version ${v.number} forever` : `Keep version ${v.number} forever`}
+                  icon={v.keep_forever ? <PinOff /> : <Pin />}
+                  variant="ghost"
+                  size="sm"
+                  tooltip
+                  onClick={() => patch.mutate({ versionId: v.id, keep_forever: !v.keep_forever }, { onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}
+                />
+              ) : null}
               {edit && !v.current ? (
                 <IconButton label={`Restore version ${v.number}`} icon={<RotateCcw />} variant="ghost" size="sm" tooltip onClick={() => setConfirm({ id: v.id, number: v.number })} />
               ) : null}
@@ -229,6 +261,32 @@ function VersionsTab({ item }: { item: FilesItem }) {
       >
         <p className="type-body text-fg-muted">A copy of it becomes the newest version. Every other version stays.</p>
       </ConfirmDialog>
+      <Dialog
+        open={naming !== null}
+        onOpenChange={(o) => !o && setNaming(null)}
+        title={`Name version ${naming?.number ?? ""}`}
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setNaming(null)}>
+              Cancel
+            </Button>
+            <Button
+              loading={patch.isPending}
+              onClick={() =>
+                naming &&
+                patch.mutate({ versionId: naming.id, name: naming.name.trim() }, { onSuccess: () => setNaming(null), onError: (e) => toast.error(errorMessage(e, "Couldn't name it.")) })
+              }
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <Field label="Name">
+          <Input value={naming?.name ?? ""} maxLength={100} placeholder="Sent to client" onChange={(e) => setNaming((n) => (n ? { ...n, name: e.target.value } : n))} />
+        </Field>
+      </Dialog>
     </div>
   );
 }
@@ -265,6 +323,18 @@ export function activityText(a: FilesActivity, self: string): string {
       return `${who} shared${what || " it"} with ${String(a.data["subject_name"] ?? "")} (${LEVELS[Number(a.data["level"])] ?? "view"})`;
     case "link_created":
       return `${who} made a public link${a.data["revoked"] ? " (now revoked)" : ""}`;
+    case "commented":
+      return `${who} commented${what ? ` on${what}` : ""}${by}`;
+    case "locked":
+      return `${who} checked${what || " it"} out`;
+    case "unlocked":
+      return a.data["broken"] ? `${who} broke ${String(a.data["was_locked_by"] ?? "someone")}'s lock${what ? ` on${what}` : ""}` : `${who} checked${what || " it"} in`;
+    case "owner_changed":
+      return `${who} handed${what || " it"} to someone else`;
+    case "requested_upload":
+      return `${String(a.data["uploader_name"] ?? "Someone")} sent${what || " this"} through “${String(a.data["request_title"] ?? "a file request")}”`;
+    case "version_named":
+      return `${who} named a version “${String(a.data["name"] ?? "")}”${what ? ` of${what}` : ""}`;
   }
   return `${who} changed it`;
 }

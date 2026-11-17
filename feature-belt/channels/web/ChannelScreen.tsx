@@ -12,6 +12,7 @@ import {
   useChannelsTopic,
   useChannelsWorkspace,
   useJoinChannel,
+  useMoveChannelToSection,
   useLeaveChannel,
   useMe,
   useStartChannelCall,
@@ -19,13 +20,15 @@ import {
   type ChannelsDetail,
 } from "@scaffoldapp/shared";
 import { Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Skeleton, Tooltip, cn, toast } from "@scaffoldapp/ui-web";
-import { ArrowLeft, Bell, BellOff, Hash, Info, LayoutList, Link2, Lock, LogOut, Phone, ShieldCheck, Star, StarOff, Users, X } from "lucide-react";
+import { ArrowLeft, Bell, BellOff, FolderInput, Hash, Info, LayoutList, Link2, Lock, LogOut, Megaphone, Phone, ShieldCheck, Star, StarOff, Users, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
 import { PresenceAvatar } from "@/features/presence";
+import { ConvertDialog } from "./ActionDialogs";
+import { BookmarksBar } from "./BookmarksBar";
 import { ChannelDetails, type DetailsTab } from "./ChannelDetails";
 import { ChatView } from "./ChatView";
 import { ForumView } from "./ForumView";
@@ -134,6 +137,9 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
   const call = useStartChannelCall(c.id);
   const [details, setDetails] = useState<DetailsTab | null>(null);
   const [leaving, setLeaving] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const move = useMoveChannelToSection(c.org_id);
+  const sections = ws.data?.sections ?? [];
   const direct = c.kind === "dm" || c.kind === "group_dm";
   const title = channelsDisplayName(c);
 
@@ -157,6 +163,21 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
           },
           { id: "mute", label: c.muted ? "Unmute" : "Mute", icon: c.muted ? Bell : BellOff, onSelect: () => prefs.mutate({ muted: !c.muted }, { onError: toast_ }) },
           { id: "star", label: c.starred ? "Remove from starred" : "Star", icon: c.starred ? StarOff : Star, onSelect: () => prefs.mutate({ starred: !c.starred }, { onError: toast_ }) },
+          ...(sections.length > 0
+            ? [
+                {
+                  id: "section",
+                  label: "Move to section",
+                  icon: FolderInput,
+                  hint: sections.find((x) => x.id === c.section_id)?.name ?? "",
+                  choices: [
+                    { id: "none", label: direct ? "Direct messages" : "Channels", checked: !c.section_id, onSelect: () => move.mutate({ channelId: c.id, sectionId: null }, { onError: toast_ }) },
+                    ...sections.map((x) => ({ id: x.id, label: x.name, checked: c.section_id === x.id, onSelect: () => move.mutate({ channelId: c.id, sectionId: x.id }, { onError: toast_ }) })),
+                  ],
+                },
+              ]
+            : []),
+          ...(c.kind === "group_dm" && !c.archived ? [{ id: "convert", label: "Make a private channel", icon: Lock, onSelect: () => setConverting(true) }] : []),
         ]
       : []),
     { id: "link", label: "Copy link", icon: Link2, onSelect: () => void navigator.clipboard?.writeText(`${window.location.origin}/channels/${c.id}`).then(() => toast.success("Link copied.")) },
@@ -175,6 +196,8 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
     </Notice>
   ) : direct && c.people.length === 1 && c.people[0]?.deleted ? (
     <Notice text="This account was deleted." />
+  ) : !c.permissions.post ? (
+    <Notice text={c.replies_open ? `Only admins post in ${title}. Reply in a thread.` : `Only admins post in ${title}.`} />
   ) : undefined;
 
   return (
@@ -204,6 +227,11 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
             </Tooltip>
           )}
           <span className="flex-1" />
+          {c.posting === "admins" && (
+            <Tooltip content="Announcement channel: only admins post">
+              <Megaphone aria-label="Announcement channel" tabIndex={0} className="size-4 shrink-0 text-fg-subtle" />
+            </Tooltip>
+          )}
           {c.muted && <BellOff aria-label="Muted" className="size-4 shrink-0 text-fg-subtle" />}
           {!direct && (
             <Button variant="ghost" size="sm" leftIcon={<Users />} onClick={() => setDetails("members")} aria-label={`${c.member_count} members`}>
@@ -222,6 +250,7 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
           )}
           <ResourceMenu feature="channels" kind="channels.channel" id={c.id} orgId={c.org_id} title={title} actions={menu} label={direct ? "Conversation actions" : "Channel actions"} />
         </header>
+        {!direct && <BookmarksBar channel={c} />}
         {!config ? (
           <ScreenSkeleton />
         ) : c.layout === "forum" ? (
@@ -237,6 +266,7 @@ function Channel({ channel: c, thread, message, meId, suspended }: { channel: Ch
         </aside>
       )}
       {details && <ChannelDetails channel={c} meId={meId} open tab={details} onTabChange={setDetails} onOpenChange={(o) => !o && setDetails(null)} />}
+      {c.kind === "group_dm" && <ConvertDialog channel={c} open={converting} onOpenChange={setConverting} />}
       <ConfirmDialog
         open={leaving}
         onOpenChange={setLeaving}

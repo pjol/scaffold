@@ -2,7 +2,7 @@
 
 import { filesFormatSize, filesIsConnected, filesKindLabel, sourceProductLabel, type FilesItem, type FilesSort } from "@scaffoldapp/shared";
 import { Checkbox, ProviderIcon, SourceBadge, Tooltip, cn } from "@scaffoldapp/ui-web";
-import { ArrowDown, ArrowUp, Globe, Star, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, Globe, Lock, Star, Users } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { formatDate, formatRelative } from "@/lib/format";
@@ -248,6 +248,7 @@ function Markers({ item }: { item: FilesItem }) {
         </Tooltip>
       ) : null}
       {item.starred ? <Star className="size-3.5 shrink-0 fill-current text-warning-strong" aria-label="Starred" /> : null}
+      {item.lock ? <Lock className="size-3.5 shrink-0 text-fg-muted" aria-label={`Checked out by ${item.lock.by?.name || "someone"}`} /> : null}
       {item.public_link ? (
         <Tooltip content={item.public_disabled ? "Public link turned off by staff" : "Anyone with the link can view"}>
           <Globe className={cn("size-3.5 shrink-0", item.public_disabled ? "text-danger-strong" : "text-fg-muted")} aria-label="Public link" />

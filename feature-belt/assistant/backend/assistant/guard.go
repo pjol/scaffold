@@ -269,7 +269,7 @@ const (
 	fenceClose = "</user_content>"
 )
 
-var fenceRE = regexp.MustCompile(`(?i)(<|&lt;|\\u003c)\s*/?\s*(user_content|server_notice|conversation_summary)\s*(>|&gt;|\\u003e)`)
+var fenceRE = regexp.MustCompile(`(?i)(<|&lt;|\\u003c)\s*/?\s*(user_content|server_notice|conversation_summary|attached_context)\s*(>|&gt;|\\u003e)`)
 
 // userContent fences user-authored text so the model can tell it apart from
 // server-written text. Markers inside the text are neutralised so it can't

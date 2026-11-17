@@ -123,13 +123,20 @@ func (s *Service) searchPeople(ctx context.Context, callerID uuid.UUID, q string
 type FreeBusy struct {
 	User Person      `json:"user"`
 	Busy []BusyBlock `json:"busy"`
+	// Their zone (when chosen), working hours and work locations, so
+	// find-a-time can show each person's day.
+	Timezone      *string         `json:"timezone"`
+	WorkingHours  []HoursInterval `json:"working_hours"`
+	WorkLocations []WorkLocation  `json:"work_locations"`
 }
 
-// BusyBlock is busy time; Title only when the owner shared details.
+// BusyBlock is busy time; Title only when the owner shared details. Kind
+// is busy, out_of_office or focus.
 type BusyBlock struct {
 	StartsAt time.Time `json:"starts_at"`
 	EndsAt   time.Time `json:"ends_at"`
 	Title    *string   `json:"title"`
+	Kind     string    `json:"kind"`
 }
 
 func parseUserIDs(raw string, max int) ([]uuid.UUID, error) {
@@ -175,9 +182,20 @@ func (s *Service) freeBusy(ctx context.Context, callerID uuid.UUID, ids []uuid.U
 		if err != nil {
 			return nil, err
 		}
-		fb := FreeBusy{User: p, Busy: []BusyBlock{}}
+		st, err := s.loadSettings(ctx, s.d.Pool, uid)
+		if err != nil {
+			return nil, err
+		}
+		fb := FreeBusy{User: p, Busy: []BusyBlock{}, WorkingHours: st.WorkingHours, WorkLocations: st.WorkLocations}
+		if st.TimezoneSet {
+			tz := st.Timezone
+			fb.Timezone = &tz
+		}
 		for _, it := range items {
-			b := BusyBlock{StartsAt: it.Start, EndsAt: it.End}
+			b := BusyBlock{StartsAt: it.Start, EndsAt: it.End, Kind: "busy"}
+			if it.Type == TypeOutOfOffice || it.Type == TypeFocus {
+				b.Kind = it.Type
+			}
 			if it.Title != "" {
 				t := it.Title
 				b.Title = &t
@@ -242,6 +260,16 @@ func (s *Service) findTime(ctx context.Context, callerID uuid.UUID, ids []uuid.U
 		for _, it := range items {
 			it.BlockStart, it.BlockEnd = it.Start, it.End
 			busy = append(busy, it)
+		}
+		if uid != callerID {
+			// Keep suggestions inside each colleague's working day.
+			cst, err := s.loadSettings(ctx, s.d.Pool, uid)
+			if err != nil {
+				return FreeTime{}, err
+			}
+			if cst.TimezoneSet {
+				busy = append(busy, offHours(zoneOr(cst.Timezone, time.UTC), cst.WorkingHours, from, to)...)
+			}
 		}
 	}
 	loc := zoneOr(st.Timezone, time.UTC)

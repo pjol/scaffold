@@ -84,6 +84,7 @@ type settings struct {
 	trashDays        int
 	historyDays      int
 	snapshotInterval time.Duration
+	importMax        int64 // largest import upload (DOCS_IMPORT_MAX_MB, pages_routes.go)
 }
 
 // New registers the page kind, permissions, notification kinds, moderation
@@ -99,7 +100,9 @@ func New(d *app.Deps) *Service {
 		config.Problem("DOCS_SNAPSHOT_INTERVAL must be at least 1m (got %s)", s.cfg.snapshotInterval)
 		s.cfg.snapshotInterval = 10 * time.Minute
 	}
-	storage.RegisterPurpose(storage.Purpose{Name: FilePurpose, Types: fileTypes, MaxBytes: s.cfg.fileMax})
+	// Pages take any file; uploads.go settles its type and how it is served.
+	storage.RegisterPurpose(storage.Purpose{Name: FilePurpose, AnyType: true, MaxBytes: s.cfg.fileMax})
+	storage.RegisterPurpose(storage.Purpose{Name: PreviewPurpose, AnyType: true, MaxBytes: previewImgBytes})
 	access.RegisterKind(access.Kind{
 		Name:       Kind,
 		Label:      "page",
@@ -124,6 +127,7 @@ func New(d *app.Deps) *Service {
 	onPage := notifications.DataTarget(Kind, "page_id")
 	notifications.RegisterKind(notifications.Kind{ID: NotifyMention, Label: "Mentions in pages", Push: true, Email: true, AgentTarget: onPage})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyComment, Label: "Comments on pages", Push: true, AgentTarget: onPage})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyReminder, Label: "Reminders in pages", Push: true, Email: true, AgentTarget: onPage})
 	moderation.RegisterTarget(TargetPage, pageTarget{s})
 	moderation.RegisterTarget(TargetComment, commentTarget{s})
 	access.OnChange(func(ctx context.Context, ref access.Ref, users []uuid.UUID) {
@@ -140,6 +144,8 @@ func New(d *app.Deps) *Service {
 		}
 	})
 	httpx.RedactPathPrefix("/v1/docs/public/")
+	s.initPages()     // pages: templates, imports, following (pages_routes.go)
+	s.initDatabases() // databases: forms, reminders, automations (databases_routes.go)
 	return s
 }
 
@@ -162,6 +168,9 @@ func (s *Service) MountPublic(r chi.Router) {
 	p.Get("/docs/public/{token}/pages/{id}", httpx.Handler(s.publicPage))
 	p.Get("/docs/public/{token}/files/{fileID}", httpx.Handler(s.publicFile))
 	p.Get("/docs/public/{token}/databases/{id}/rows", httpx.Handler(s.publicRows))
+	s.mountPagesPublic(p)     // publish meta (pages_routes.go)
+	s.mountDatabasesPublic(r) // public forms (databases_routes.go)
+	p.Get("/docs/public/previews/{previewID}", httpx.Handler(s.getLinkPreview))
 }
 
 var errAgentCredential = httpx.NewError(http.StatusUnauthorized, "agent_credential", "This credential is for AI agents. It works only at the agent endpoint.")
@@ -227,23 +236,28 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/docs/history/{snapshotID}", h(s.getSnapshot))
 	w.With(auth.RateLimit(30, time.Minute)).Post("/docs/history/{snapshotID}/restore", h(s.restoreSnapshot))
 
-	// Databases.
-	r.Get("/docs/databases/{id}/rows", h(s.listRows))
-	w.With(auth.RateLimit(300, time.Minute)).Post("/docs/databases/{id}/rows", h(s.createRow))
-	w.With(auth.RateLimit(600, time.Minute)).Patch("/docs/pages/{id}/properties", h(s.setRowValues))
-	w.With(auth.RateLimit(120, time.Minute)).Put("/docs/databases/{id}/schema", h(s.putSchema))
-	w.With(auth.RateLimit(120, time.Minute)).Post("/docs/databases/{id}/views", h(s.createView))
-	w.With(auth.RateLimit(300, time.Minute)).Patch("/docs/views/{viewID}", h(s.updateView))
-	w.With(auth.RateLimit(120, time.Minute)).Delete("/docs/views/{viewID}", h(s.deleteView))
+	// Databases: rows, properties, views, templates, forms, automations, CSV (databases_routes.go).
+	s.mountDatabases(r)
 
 	// Connected Notion and Google Docs (connected_routes.go).
 	s.mountConnected(r)
+
+	// Templates, imports, exports, history, following, analytics (pages_routes.go).
+	s.mountPages(r)
+
+	// Editor: bookmark previews (previews.go).
+	w.With(auth.RateLimit(30, time.Minute)).Post("/docs/link-preview", h(s.linkPreview))
+	r.Get("/docs/link-previews/{previewID}", h(s.getLinkPreview))
 }
 
 // Start runs trash and history clean-up and the snapshot taker.
 func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "docs.snapshots", time.Minute, s.takeSnapshots)
 	go jobs.Every(ctx, s.d.Pool, "docs.cleanup", 15*time.Minute, s.cleanup)
+	go jobs.Every(ctx, s.d.Pool, "docs.reminders", time.Minute, s.sendReminders)
+	go jobs.Every(ctx, s.d.Pool, "docs.previews_cleanup", 24*time.Hour, s.cleanPreviews)
+	s.startPages(ctx)
+	s.startDatabases(ctx)
 }
 
 // AuthorizeTopic owns docs:<uuid>. An org id admits its members (sidebar

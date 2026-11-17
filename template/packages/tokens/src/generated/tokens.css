@@ -63,6 +63,90 @@
   }
 }
 
+/* ── swatches (palette-independent) ── */
+:root {
+  --app-swatch-gray: #6B6862;
+  --app-swatch-gray-bg: #F0EEEA;
+  --app-swatch-brown: #895A43;
+  --app-swatch-brown-bg: #F5EDE8;
+  --app-swatch-orange: #A24E0C;
+  --app-swatch-orange-bg: #FBEBDC;
+  --app-swatch-yellow: #80600A;
+  --app-swatch-yellow-bg: #FAF2D7;
+  --app-swatch-green: #2D6E4C;
+  --app-swatch-green-bg: #E8F2EB;
+  --app-swatch-blue: #2563A0;
+  --app-swatch-blue-bg: #E5F0F9;
+  --app-swatch-purple: #7247A1;
+  --app-swatch-purple-bg: #F2ECF8;
+  --app-swatch-pink: #A13A73;
+  --app-swatch-pink-bg: #F9ECF3;
+  --app-swatch-red: #B0352F;
+  --app-swatch-red-bg: #FCEBEA;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --app-swatch-gray: #A39E96;
+    --app-swatch-gray-bg: #2E2B27;
+    --app-swatch-brown: #C49A84;
+    --app-swatch-brown-bg: #3D2B22;
+    --app-swatch-orange: #E59A62;
+    --app-swatch-orange-bg: #47301D;
+    --app-swatch-yellow: #D6B356;
+    --app-swatch-yellow-bg: #423719;
+    --app-swatch-green: #6DBB8E;
+    --app-swatch-green-bg: #1F3A2B;
+    --app-swatch-blue: #6EAEE6;
+    --app-swatch-blue-bg: #1C3247;
+    --app-swatch-purple: #B394E0;
+    --app-swatch-purple-bg: #33264A;
+    --app-swatch-pink: #E188B8;
+    --app-swatch-pink-bg: #46223A;
+    --app-swatch-red: #F08A80;
+    --app-swatch-red-bg: #4A2220;
+  }
+}
+[data-theme="dark"] {
+  --app-swatch-gray: #A39E96;
+  --app-swatch-gray-bg: #2E2B27;
+  --app-swatch-brown: #C49A84;
+  --app-swatch-brown-bg: #3D2B22;
+  --app-swatch-orange: #E59A62;
+  --app-swatch-orange-bg: #47301D;
+  --app-swatch-yellow: #D6B356;
+  --app-swatch-yellow-bg: #423719;
+  --app-swatch-green: #6DBB8E;
+  --app-swatch-green-bg: #1F3A2B;
+  --app-swatch-blue: #6EAEE6;
+  --app-swatch-blue-bg: #1C3247;
+  --app-swatch-purple: #B394E0;
+  --app-swatch-purple-bg: #33264A;
+  --app-swatch-pink: #E188B8;
+  --app-swatch-pink-bg: #46223A;
+  --app-swatch-red: #F08A80;
+  --app-swatch-red-bg: #4A2220;
+}
+[data-theme="light"] {
+  --app-swatch-gray: #6B6862;
+  --app-swatch-gray-bg: #F0EEEA;
+  --app-swatch-brown: #895A43;
+  --app-swatch-brown-bg: #F5EDE8;
+  --app-swatch-orange: #A24E0C;
+  --app-swatch-orange-bg: #FBEBDC;
+  --app-swatch-yellow: #80600A;
+  --app-swatch-yellow-bg: #FAF2D7;
+  --app-swatch-green: #2D6E4C;
+  --app-swatch-green-bg: #E8F2EB;
+  --app-swatch-blue: #2563A0;
+  --app-swatch-blue-bg: #E5F0F9;
+  --app-swatch-purple: #7247A1;
+  --app-swatch-purple-bg: #F2ECF8;
+  --app-swatch-pink: #A13A73;
+  --app-swatch-pink-bg: #F9ECF3;
+  --app-swatch-red: #B0352F;
+  --app-swatch-red-bg: #FCEBEA;
+}
+
 /* ── Base ── */
 :root,
 [data-palette="base"] {

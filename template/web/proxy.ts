@@ -1,6 +1,7 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { AUTH_MODE } from "./src/lib/env";
+// scaffold:imports
 
 /**
  * Next 16 renamed `middleware.ts` to `proxy.ts`. With a Clerk publishable key this runs
@@ -26,6 +27,16 @@ const PUBLIC_PATHS: readonly string[] = [
 const PUBLIC = PUBLIC_PATHS.map((p) => new RegExp(`^${p}$`));
 const isPublic = (req: NextRequest) => PUBLIC.some((re) => re.test(req.nextUrl.pathname));
 
+/**
+ * Handlers features run on every matched request before auth, in order: each returns a
+ * response (usually a rewrite) or null to pass it on. A feature adds one entry above the
+ * anchor, e.g. `agentWebProxy,` (Markdown twins of public pages). Keep them cheap and
+ * never let one answer a non-public path with private data: auth hasn't run yet.
+ */
+const PROXY_HANDLERS: readonly ((req: NextRequest) => NextResponse | null)[] = [
+  // scaffold:proxy
+];
+
 const clerk = clerkMiddleware(
   async (auth, req) => {
     if (!isPublic(req)) await auth.protect();
@@ -34,6 +45,10 @@ const clerk = clerkMiddleware(
 );
 
 export default function proxy(req: NextRequest, event: NextFetchEvent) {
+  for (const handle of PROXY_HANDLERS) {
+    const res = handle(req);
+    if (res) return res;
+  }
   if (AUTH_MODE !== "clerk") return NextResponse.next();
   return clerk(req, event);
 }

@@ -45,7 +45,10 @@ export function filesItemIcon(item: Pick<FilesItem | FilesPublicItem, "preview" 
     case "audio":
       return FileHeadphone;
     case "code":
+    case "json":
       return FileCode;
+    case "archive":
+      return FileArchive;
     case "csv":
       return FileSpreadsheet;
     case "pdf":

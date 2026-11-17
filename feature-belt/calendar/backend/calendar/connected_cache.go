@@ -78,10 +78,10 @@ type extWrite struct {
 	ShowAs                       *string
 	Attendees                    *[]extAttendee
 	RuleSet                      bool
-	Rule                         *Rule // nil with RuleSet: stop repeating
+	Rule                         *Rule  // nil with RuleSet: stop repeating
 	Meeting                      string // ProviderGoogleMeet | ProviderTeams to add natively; "remove"
 	JoinURL                      string // a meeting made elsewhere, written into location and description
-	JoinLabel                    string // "Zoom", "Forum call"
+	JoinLabel                    string // "Zoom", "Scaffold App call"
 	SendUpdates                  bool
 }
 

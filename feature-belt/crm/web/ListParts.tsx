@@ -14,25 +14,38 @@ import {
   type CrmObjectType,
   type CrmPipeline,
   type CrmProperty,
+  type CrmPropertyType,
   type CrmTag,
 } from "@scaffoldapp/shared";
 import { Button, Checkbox, Dialog, Field, IconButton, Input, Select, cn } from "@scaffoldapp/ui-web";
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { MemberPicker, RecordPicker } from "./parts";
+import { MemberPicker, RecordPicker, pipelinesFor } from "./parts";
 
 /** Columns shown when a view names none. */
 export const DEFAULT_COLUMNS: Record<CrmObjectType, string[]> = {
   company: ["name", "domain", "owner", "industry", "city", "last_activity_at"],
   contact: ["name", "emails", "company", "phones", "owner", "lifecycle_stage", "last_activity_at"],
   deal: ["name", "amount", "stage", "close_date", "owner", "company", "last_activity_at"],
+  ticket: ["name", "stage", "priority", "owner", "created_at"],
 };
+
+/** Conditions of a property type (a ticket's deal is picked like a company: by record). */
+function filterOps(type: CrmPropertyType) {
+  return crmFilterOps(type === "deal" ? "company" : type);
+}
+
+/** Pipelines a type's stage and pipeline filters offer (deal and ticket pipelines are separate). */
+function pipelinesOfType(list: CrmPipeline[] | undefined, type: CrmObjectType | undefined): CrmPipeline[] {
+  if (type === "deal" || type === "ticket") return pipelinesFor(list, type);
+  return list ?? [];
+}
 
 /** Readable text of one filter for its chip. */
 export function filterText(f: CrmFilter, props: CrmProperty[], ctx: { tags: CrmTag[]; pipelines: CrmPipeline[]; currency: string }): string {
   const p = props.find((x) => x.key === f.key);
   if (!p) return f.key;
-  const op = crmFilterOps(p.type).find((o) => o.op === f.op)?.label ?? f.op;
+  const op = filterOps(p.type).find((o) => o.op === f.op)?.label ?? f.op;
   if (!crmOpNeedsValue(f.op)) return `${p.label} ${op}`;
   let v = "";
   const list = Array.isArray(f.value) ? f.value : [];
@@ -59,6 +72,9 @@ export function filterText(f: CrmFilter, props: CrmProperty[], ctx: { tags: CrmT
     case "company":
       v = `${list.length} compan${list.length === 1 ? "y" : "ies"}`;
       break;
+    case "deal":
+      v = `${list.length} deal${list.length === 1 ? "" : "s"}`;
+      break;
     case "currency":
       v = typeof f.value === "number" ? crmMoneyInput(f.value, ctx.currency) : String(f.value ?? "");
       break;
@@ -78,6 +94,7 @@ export function FilterDialog({
   filters,
   currency,
   onApply,
+  objectType,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -86,6 +103,8 @@ export function FilterDialog({
   filters: CrmFilter[];
   currency: string;
   onApply: (f: CrmFilter[]) => void;
+  /** The listed type: stage and pipeline conditions offer its pipelines only. */
+  objectType?: CrmObjectType;
 }) {
   const [draft, setDraft] = useState<CrmFilter[]>(filters);
   useEffect(() => {
@@ -95,7 +114,7 @@ export function FilterDialog({
   const add = () => {
     const p = filterable[0];
     if (!p) return;
-    setDraft([...draft, { key: p.key, op: crmFilterOps(p.type)[0]?.op ?? "eq" }]);
+    setDraft([...draft, { key: p.key, op: filterOps(p.type)[0]?.op ?? "eq" }]);
   };
   const ready = draft.filter(crmFilterReady);
   return (
@@ -126,6 +145,7 @@ export function FilterDialog({
             props={filterable}
             filter={f}
             currency={currency}
+            {...(objectType ? { objectType } : {})}
             onChange={(nf) => setDraft(draft.map((x, j) => (j === i ? nf : x)))}
             onRemove={() => setDraft(draft.filter((_, j) => j !== i))}
           />
@@ -138,13 +158,16 @@ export function FilterDialog({
   );
 }
 
-function FilterRow({
+/** One condition: field, operator and value (shared by list filters and scoring rules). */
+export function FilterRow({
   orgId,
   props,
   filter,
   currency,
   onChange,
   onRemove,
+  objectType,
+  noMe,
 }: {
   orgId: string;
   props: CrmProperty[];
@@ -152,10 +175,13 @@ function FilterRow({
   currency: string;
   onChange: (f: CrmFilter) => void;
   onRemove: () => void;
+  objectType?: CrmObjectType;
+  /** Person conditions name people only (rules that apply to everyone). */
+  noMe?: boolean;
 }) {
   const p = props.find((x) => x.key === filter.key) ?? props[0];
   if (!p) return null;
-  const ops = crmFilterOps(p.type);
+  const ops = filterOps(p.type);
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border p-3">
       <div className="flex flex-col gap-2 sm:flex-row">
@@ -165,21 +191,40 @@ function FilterRow({
           value={p.key}
           onValueChange={(k) => {
             const np = props.find((x) => x.key === k);
-            if (np) onChange({ key: k, op: crmFilterOps(np.type)[0]?.op ?? "eq" });
+            if (np) onChange({ key: k, op: filterOps(np.type)[0]?.op ?? "eq" });
           }}
           options={props.map((x) => ({ value: x.key, label: x.label }))}
         />
         <Select aria-label="Condition" className="sm:w-52" value={filter.op} onValueChange={(op) => onChange({ key: filter.key, op: op as CrmFilterOp })} options={ops.map((o) => ({ value: o.op, label: o.label }))} />
         <IconButton label="Remove condition" icon={<Trash2 />} variant="ghost" onClick={onRemove} className="self-end sm:self-auto" />
       </div>
-      {crmOpNeedsValue(filter.op) ? <ValueEditor key={`${p.key}:${filter.op}`} orgId={orgId} prop={p} filter={filter} currency={currency} onChange={onChange} /> : null}
+      {crmOpNeedsValue(filter.op) ? (
+        <ValueEditor key={`${p.key}:${filter.op}`} orgId={orgId} prop={p} filter={filter} currency={currency} onChange={onChange} objectType={objectType} noMe={!!noMe} />
+      ) : null}
     </div>
   );
 }
 
-function ValueEditor({ orgId, prop, filter, currency, onChange }: { orgId: string; prop: CrmProperty; filter: CrmFilter; currency: string; onChange: (f: CrmFilter) => void }) {
+function ValueEditor({
+  orgId,
+  prop,
+  filter,
+  currency,
+  onChange,
+  objectType,
+  noMe,
+}: {
+  orgId: string;
+  prop: CrmProperty;
+  filter: CrmFilter;
+  currency: string;
+  onChange: (f: CrmFilter) => void;
+  objectType: CrmObjectType | undefined;
+  noMe: boolean;
+}) {
   const tags = useCrmTags(orgId);
-  const pipelines = useCrmPipelines(orgId);
+  const all = useCrmPipelines(orgId);
+  const pipelines = { data: pipelinesOfType(all.data, objectType) };
   const list = Array.isArray(filter.value) ? filter.value : [];
   const set = (value: CrmFilter["value"]) => onChange({ ...filter, ...(value === undefined ? {} : { value }) });
   const toggle = (v: string) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
@@ -223,9 +268,10 @@ function ValueEditor({ orgId, prop, filter, currency, onChange }: { orgId: strin
     case "team":
       return <TeamChoices orgId={orgId} selected={list} onToggle={toggle} />;
     case "user":
-      return <PeopleChoices orgId={orgId} selected={list} onChange={set} />;
+      return <PeopleChoices orgId={orgId} selected={list} onChange={set} noMe={noMe} />;
     case "company":
-      return <CompanyChoices orgId={orgId} selected={list} onChange={set} />;
+    case "deal":
+      return <RecordChoices orgId={orgId} type={prop.type} selected={list} onChange={set} />;
     default:
       return <Input aria-label="Value" value={typeof filter.value === "string" ? filter.value : ""} onChange={(e) => set(e.target.value)} />;
   }
@@ -247,13 +293,13 @@ function TeamChoices({ orgId, selected, onToggle }: { orgId: string; selected: s
   return <Choices options={(dir.data ?? []).map((t) => ({ value: t.id, label: t.name }))} selected={selected} onToggle={onToggle} />;
 }
 
-function PeopleChoices({ orgId, selected, onChange }: { orgId: string; selected: string[]; onChange: (v: string[]) => void }) {
+function PeopleChoices({ orgId, selected, onChange, noMe }: { orgId: string; selected: string[]; onChange: (v: string[]) => void; noMe: boolean }) {
   const [names, setNames] = useState<Record<string, string>>({ me: "Me" });
   const [picking, setPicking] = useState(false);
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
-        <Checkbox label="Me" checked={selected.includes("me")} onCheckedChange={(c) => onChange(c ? [...selected, "me"] : selected.filter((x) => x !== "me"))} />
+        {!noMe ? <Checkbox label="Me" checked={selected.includes("me")} onCheckedChange={(c) => onChange(c ? [...selected, "me"] : selected.filter((x) => x !== "me"))} /> : null}
         {selected
           .filter((x) => x !== "me")
           .map((id) => (
@@ -282,7 +328,7 @@ function PeopleChoices({ orgId, selected, onChange }: { orgId: string; selected:
   );
 }
 
-function CompanyChoices({ orgId, selected, onChange }: { orgId: string; selected: string[]; onChange: (v: string[]) => void }) {
+function RecordChoices({ orgId, type, selected, onChange }: { orgId: string; type: "company" | "deal"; selected: string[]; onChange: (v: string[]) => void }) {
   const [names, setNames] = useState<Record<string, string>>({});
   const exclude = useMemo(() => new Set(selected), [selected]);
   return (
@@ -291,7 +337,7 @@ function CompanyChoices({ orgId, selected, onChange }: { orgId: string; selected
         <div className="flex flex-wrap gap-2">
           {selected.map((id) => (
             <span key={id} className="inline-flex h-8 items-center gap-1 rounded-md border border-border pl-3 pr-1 type-label">
-              {names[id] ?? "Company"}
+              {names[id] ?? (type === "deal" ? "Deal" : "Company")}
               <IconButton label="Remove" size="sm" icon={<X />} onClick={() => onChange(selected.filter((x) => x !== id))} />
             </span>
           ))}
@@ -299,9 +345,9 @@ function CompanyChoices({ orgId, selected, onChange }: { orgId: string; selected
       ) : null}
       <RecordPicker
         orgId={orgId}
-        types={["company"]}
+        types={[type]}
         exclude={exclude}
-        label="Add a company"
+        label={type === "deal" ? "Add a deal" : "Add a company"}
         onPick={(h) => {
           setNames({ ...names, [h.id]: h.title });
           onChange([...selected, h.id]);

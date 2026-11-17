@@ -115,6 +115,7 @@ func New(d *app.Deps) *Service {
 		s.cfg.effort = "low"
 	}
 	moderation.RegisterTarget(TargetKind, messageTarget{s: s})
+	s.registerDefaultContexts()
 	return s
 }
 
@@ -122,6 +123,7 @@ func (s *Service) Name() string { return "assistant" }
 
 func (s *Service) MountUser(r chi.Router) {
 	r.Get("/assistant/status", httpx.Handler(s.status))
+	r.Get("/assistant/contexts", httpx.Handler(s.listContexts))
 	r.With(auth.RequireActive).Post("/assistant/consent", httpx.Handler(s.acceptConsent))
 	r.Delete("/assistant/consent", httpx.Handler(s.withdrawConsent))
 

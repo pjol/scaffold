@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CALENDAR_EMBED_MESSAGE,
   calendarDeviceZone,
   calendarZoneLabel,
   calendarZoneOptions,
@@ -127,4 +128,24 @@ export function downloadText(text: string, filename: string, type = "text/calend
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * HTML to embed a booking page on another site: an iframe of `<url>?embed=1` and a few lines
+ * that grow it to the page's height (it posts `{ type: "scaffoldapp:booking", height }`).
+ * Only booking pages allow framing (`frame-ancestors *`); manage links never do.
+ */
+export function calendarEmbedSnippet(url: string, title: string): string {
+  const origin = /^(https?:\/\/[^/?#]+)/.exec(url)?.[1] ?? "";
+  const safeTitle = title.replace(/[<>"&]/g, "");
+  const src = `${url}${url.includes("?") ? "&" : "?"}embed=1`;
+  return [
+    `<iframe src="${src}" title="Book: ${safeTitle}" style="width:100%;min-height:640px;border:0" loading="lazy" allow="clipboard-write"></iframe>`,
+    `<script>`,
+    `addEventListener("message", function (e) {`,
+    `  if (e.origin !== ${JSON.stringify(origin)} || !e.data || e.data.type !== ${JSON.stringify(CALENDAR_EMBED_MESSAGE)}) return;`,
+    `  document.querySelectorAll('iframe[src^=${JSON.stringify(src.split("?")[0])}]').forEach(function (f) { if (e.data.height) f.style.height = e.data.height + "px"; });`,
+    `});`,
+    `</script>`,
+  ].join("\n");
 }

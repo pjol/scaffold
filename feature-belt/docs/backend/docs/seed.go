@@ -186,6 +186,9 @@ We read _Station Eleven_. Next month: vote in the comments.`},
 		if err := s.seedProjects(ctx, orgID, sam, jordan, priya); err != nil {
 			return fmt.Errorf("seed projects: %w", err)
 		}
+		if err := s.seedTasks(ctx, orgID, sam, jordan, priya); err != nil { // seed_databases.go
+			return fmt.Errorf("seed tasks: %w", err)
+		}
 		if err := s.seedComments(ctx, sam, jordan, priya); err != nil {
 			return fmt.Errorf("seed comments: %w", err)
 		}
@@ -292,7 +295,7 @@ func (s *Service) seedProjects(ctx context.Context, orgID, sam, jordan, priya uu
 			{ID: "low", Name: "Low", Color: "neutral"}, {ID: "medium", Name: "Medium", Color: "warning"}, {ID: "high", Name: "High", Color: "danger"}}},
 		{ID: "tags", Name: "Tags", Type: "multi_select", Options: []Option{
 			{ID: "youth", Name: "Youth", Color: "accent"}, {ID: "walls", Name: "Walls", Color: "primary"}, {ID: "events", Name: "Events", Color: "info"}, {ID: "admin", Name: "Admin", Color: "neutral"}}},
-		{ID: "budget", Name: "Budget", Type: "number", NumberFormat: "dollar"},
+		{ID: "budget", Name: "Budget", Type: "number", NumberFormat: "usd"}, // minor units (cents)
 		{ID: "approved", Name: "Approved", Type: "checkbox"},
 	}
 	type seedRow struct {
@@ -300,10 +303,10 @@ func (s *Service) seedProjects(ctx context.Context, orgID, sam, jordan, priya uu
 		values     map[string]any
 	}
 	rows := []seedRow{
-		{"p-league", "Spring bouldering league", map[string]any{"status": "doing", "owner": []string{sam.String()}, "due": map[string]string{"start": "2026-11-20"}, "priority": "high", "tags": []string{"events"}, "budget": 1200, "approved": true}},
-		{"p-wall", "New route-setting wall", map[string]any{"status": "review", "owner": []string{jordan.String()}, "due": map[string]string{"start": "2026-11-12"}, "priority": "medium", "tags": []string{"walls"}, "budget": 8400, "approved": true}},
-		{"p-kit", "Youth team kit order", map[string]any{"status": "todo", "owner": []string{priya.String()}, "due": map[string]string{"start": "2026-11-28"}, "priority": "medium", "tags": []string{"youth", "admin"}, "budget": 650}},
-		{"p-firstaid", "First-aid refresher", map[string]any{"status": "done", "owner": []string{sam.String(), jordan.String()}, "due": map[string]string{"start": "2026-10-15"}, "priority": "low", "tags": []string{"admin"}, "budget": 300, "approved": true}},
+		{"p-league", "Spring bouldering league", map[string]any{"status": "doing", "owner": []string{sam.String()}, "due": map[string]string{"start": "2026-11-20"}, "priority": "high", "tags": []string{"events"}, "budget": 120000, "approved": true}},
+		{"p-wall", "New route-setting wall", map[string]any{"status": "review", "owner": []string{jordan.String()}, "due": map[string]string{"start": "2026-11-12"}, "priority": "medium", "tags": []string{"walls"}, "budget": 840000, "approved": true}},
+		{"p-kit", "Youth team kit order", map[string]any{"status": "todo", "owner": []string{priya.String()}, "due": map[string]string{"start": "2026-11-28"}, "priority": "medium", "tags": []string{"youth", "admin"}, "budget": 65000}},
+		{"p-firstaid", "First-aid refresher", map[string]any{"status": "done", "owner": []string{sam.String(), jordan.String()}, "due": map[string]string{"start": "2026-10-15"}, "priority": "low", "tags": []string{"admin"}, "budget": 30000, "approved": true}},
 		{"p-website", "Website refresh", map[string]any{"status": "todo", "priority": "low", "tags": []string{"admin"}}},
 	}
 	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {

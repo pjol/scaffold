@@ -86,14 +86,16 @@ var (
 	hubspotWriteScopes = []string{"crm.objects.companies.write", "crm.objects.contacts.write", "crm.objects.deals.write"}
 )
 
-// Capabilities declares what the CRM can do with each platform.
+// Capabilities declares what the CRM can do with each platform: HubSpot and
+// Salesforce records, and Gmail and Outlook mail (mailCaps), so the
+// connectors feature offers them on those accounts.
 func (s *Service) Capabilities() []app.Capability {
-	return []app.Capability{
+	return append([]app.Capability{
 		{Key: CapHubSpotRead, Module: "crm", Provider: "hubspot", Label: "HubSpot records in the CRM", Scopes: hubspotReadScopes},
 		{Key: CapHubSpotWrite, Module: "crm", Provider: "hubspot", Label: "Edit HubSpot records from the CRM", Scopes: append(slices.Clone(hubspotReadScopes), hubspotWriteScopes...), Write: true},
 		{Key: CapSalesforceRead, Module: "crm", Provider: "salesforce", Label: "Salesforce records in the CRM", Scopes: []string{"api", "refresh_token"}},
 		{Key: CapSalesforceWrite, Module: "crm", Provider: "salesforce", Label: "Edit Salesforce records from the CRM", Scopes: []string{"api", "refresh_token"}, Write: true},
-	}
+	}, mailCaps...)
 }
 
 // Source is the CrmSource seam: one person's connected CRM account, read and

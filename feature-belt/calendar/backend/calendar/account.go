@@ -2,10 +2,13 @@ package calendar
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"scaffoldapp/backend/internal/access"
 )
 
 // DeleteAccount removes the user's calendar. Future bookings they host are
@@ -89,7 +92,60 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		}
 	}
 
+	// Calendars: personal ones go (their events went above); team calendars
+	// stay with the team, ownerless (its workspace's admins manage them).
+	prows, err := tx.Query(ctx, `SELECT id, team_id IS NOT NULL FROM calendar_calendars WHERE owner_id = $1`, userID)
+	if err != nil {
+		return err
+	}
+	type cal struct {
+		id   uuid.UUID
+		team bool
+	}
+	cals, err := pgx.CollectRows(prows, func(row pgx.CollectableRow) (cal, error) {
+		var c cal
+		return c, row.Scan(&c.id, &c.team)
+	})
+	if err != nil {
+		return err
+	}
+	for _, c := range cals {
+		ref := access.Ref{Kind: KindCalendar, ID: c.id}
+		if c.team {
+			if err := access.SetOwner(ctx, tx, ref, uuid.Nil); err != nil && !errors.Is(err, access.ErrNotRegistered) {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE calendar_calendars SET owner_id = NULL, updated_at = now() WHERE id = $1`, c.id); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := access.DeleteResource(ctx, tx, ref); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM calendar_calendars WHERE id = $1`, c.id); err != nil {
+			return err
+		}
+	}
+	// Team links they made pass to another active member of the team
+	// (leads first); links nobody can take are deleted below.
+	if _, err := tx.Exec(ctx, `
+		UPDATE calendar_booking_links l SET updated_at = now(),
+		  owner_id = (SELECT tm.user_id FROM access_team_members tm JOIN users u ON u.id = tm.user_id
+		              WHERE tm.team_id = l.team_id AND tm.user_id <> $1 AND u.status = 'active'
+		              ORDER BY (tm.role = 'lead') DESC, tm.created_at LIMIT 1)
+		WHERE l.owner_id = $1 AND l.team_id IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM access_team_members tm JOIN users u ON u.id = tm.user_id
+		              WHERE tm.team_id = l.team_id AND tm.user_id <> $1 AND u.status = 'active')`, userID); err != nil {
+		return err
+	}
+
 	for _, q := range []string{
+		`DELETE FROM calendar_link_hosts WHERE user_id = $1`,
+		`DELETE FROM calendar_booking_hosts WHERE user_id = $1`,
+		`DELETE FROM calendar_calendar_prefs WHERE user_id = $1`,
+		`UPDATE calendar_rooms SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE calendar_event_rooms SET added_by = NULL WHERE added_by = $1`,
 		`DELETE FROM calendar_bookings WHERE host_id = $1`,
 		`UPDATE calendar_bookings SET booker_user_id = NULL, booker_name = 'Deleted user', booker_email = '',
 		   answers = '[]', updated_at = now() WHERE booker_user_id = $1`,
@@ -303,15 +359,71 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	}
 	rrows.Close()
 
+	type exportCalendar struct {
+		ID          uuid.UUID `json:"id"`
+		Name        string    `json:"name"`
+		Description string    `json:"description"`
+		IsPrimary   bool      `json:"is_primary"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	calRows, err := s.d.Pool.Query(ctx, `SELECT id, name, description, is_primary, created_at FROM calendar_calendars WHERE owner_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	calendars, err := pgx.CollectRows(calRows, func(row pgx.CollectableRow) (exportCalendar, error) {
+		var c exportCalendar
+		return c, row.Scan(&c.ID, &c.Name, &c.Description, &c.IsPrimary, &c.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	type exportPref struct {
+		CalendarID uuid.UUID `json:"calendar_id"`
+		Color      *string   `json:"color"`
+		Hidden     bool      `json:"hidden"`
+		Added      bool      `json:"added"`
+	}
+	prefRows, err := s.d.Pool.Query(ctx, `SELECT calendar_id, color, hidden, added FROM calendar_calendar_prefs WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	prefs, err := pgx.CollectRows(prefRows, func(row pgx.CollectableRow) (exportPref, error) {
+		var p exportPref
+		return p, row.Scan(&p.CalendarID, &p.Color, &p.Hidden, &p.Added)
+	})
+	if err != nil {
+		return nil, err
+	}
+	type exportHost struct {
+		LinkID   uuid.UUID `json:"link_id"`
+		Title    string    `json:"title"`
+		Priority int       `json:"priority"`
+		Weight   int       `json:"weight"`
+	}
+	hostRows, err := s.d.Pool.Query(ctx, `SELECT h.link_id, l.title, h.priority, h.weight FROM calendar_link_hosts h
+		JOIN calendar_booking_links l ON l.id = h.link_id WHERE h.user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	hosting, err := pgx.CollectRows(hostRows, func(row pgx.CollectableRow) (exportHost, error) {
+		var h exportHost
+		return h, row.Scan(&h.LinkID, &h.Title, &h.Priority, &h.Weight)
+	})
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"settings":           st,
-		"events":             events,
-		"invitations":        invitations,
-		"booking_links":      links,
-		"bookings_as_host":   hosted,
-		"bookings_as_booker": made,
-		"subscriptions":      subs,
-		"feed_created_at":    feedCreated,
+		"calendars":           calendars,
+		"calendar_choices":    prefs,
+		"team_links_hosted":   hosting,
+		"settings":            st,
+		"events":              events,
+		"invitations":         invitations,
+		"booking_links":       links,
+		"bookings_as_host":    hosted,
+		"bookings_as_booker":  made,
+		"subscriptions":       subs,
+		"feed_created_at":     feedCreated,
 		"connected_calendars": connected,
 		"connected_rooms":     rooms,
 	}, nil

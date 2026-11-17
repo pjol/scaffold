@@ -6,7 +6,7 @@ Everything lives in `design/` at the project root. Mockups are static HTML/CSS/J
 
 ## Inputs (before round 1)
 
-1. **House rules**: no subtitles (tooltips instead), tokens only, front pages only where needed (`/` is the app), meaning-first copy (writing.md), spacing system (design.md).
+1. **House rules**: no subtitles (tooltips instead), tokens only, front pages only where needed (`/` is the app), meaning-first copy (writing.md), spacing system and no Russian dolls as a pattern (design.md).
 2. **A quality reference**: an existing project or site named by the user, "for the level of quality, not the style".
 3. **A shared content kit** in `design/assets/` so options differ only in design:
    - `data.js`: real data from the dev database or API, written by a script ("generated; do not edit"). Never invented.
@@ -55,6 +55,7 @@ The user locks a hybrid (e.g. original fonts and components + one iteration's lo
 
 - Run `node design/tools/capture.mjs design/<folder>` and fix errors: it fails on page errors, failed requests and **raw colours** in screen files (hex/rgb/hsl/oklch outside `tokens.css`, the style guide and the logo sheet).
 - Mockups obey the house rules: no subtitles, factual copy, real data, no three-card feature rows, no gradient text, no emoji chrome.
+- No option makes nesting its general pattern (design.md, house rule 8): sections and lists sit on the canvas with insets on leaf components, not every section in a card holding padded groups. Note it under Watch-outs if an option leans that way.
 - Every option ships both modes and works at 390 px.
 - Motion in mockups uses the token durations and respects reduced motion.
 - Present each round with the board path and a 3-line summary per option; wait for the pick. Never adopt before the user locks a choice.

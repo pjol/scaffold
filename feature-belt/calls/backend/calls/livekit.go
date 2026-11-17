@@ -60,6 +60,7 @@ type videoGrant struct {
 	RoomCreate           bool     `json:"roomCreate,omitempty"`
 	RoomList             bool     `json:"roomList,omitempty"`
 	RoomAdmin            bool     `json:"roomAdmin,omitempty"`
+	RoomRecord           bool     `json:"roomRecord,omitempty"`
 	Room                 string   `json:"room,omitempty"`
 	CanPublish           *bool    `json:"canPublish,omitempty"`
 	CanSubscribe         *bool    `json:"canSubscribe,omitempty"`
@@ -86,6 +87,10 @@ func ptr[T any](v T) *T { return &v }
 func (l *liveKit) Token(g Grant) (string, time.Time, error) {
 	now := time.Now()
 	exp := now.Add(g.TTL)
+	sources := g.Sources
+	if sources == nil {
+		sources = allSources
+	}
 	tok, err := signHS256(l.secret, liveKitClaims{
 		registeredClaims: registeredClaims{Issuer: l.key, Subject: g.Identity, NotBefore: now.Add(-5 * time.Second).Unix(), ExpiresAt: exp.Unix()},
 		Name:             g.Name,
@@ -97,7 +102,7 @@ func (l *liveKit) Token(g Grant) (string, time.Time, error) {
 			CanPublish:           ptr(true),
 			CanSubscribe:         ptr(true),
 			CanPublishData:       ptr(true),
-			CanPublishSources:    []string{"camera", "microphone", "screen_share", "screen_share_audio"},
+			CanPublishSources:    sources,
 			CanUpdateOwnMetadata: ptr(false),
 		},
 	})
@@ -106,10 +111,16 @@ func (l *liveKit) Token(g Grant) (string, time.Time, error) {
 
 // twirp calls one RoomService method with a one-minute admin token.
 func (l *liveKit) twirp(ctx context.Context, method, room string, req, resp any) error {
+	return l.rpc(ctx, "livekit.RoomService", method, &videoGrant{RoomAdmin: true, RoomCreate: true, RoomList: true, Room: room}, req, resp)
+}
+
+// rpc calls one Twirp method of a LiveKit service with a one-minute token
+// carrying grant.
+func (l *liveKit) rpc(ctx context.Context, service, method string, grant *videoGrant, req, resp any) error {
 	now := time.Now()
 	tok, err := signHS256(l.secret, liveKitClaims{
 		registeredClaims: registeredClaims{Issuer: l.key, NotBefore: now.Add(-5 * time.Second).Unix(), ExpiresAt: now.Add(time.Minute).Unix()},
-		Video:            &videoGrant{RoomAdmin: true, RoomCreate: true, RoomList: true, Room: room},
+		Video:            grant,
 	})
 	if err != nil {
 		return err
@@ -118,7 +129,7 @@ func (l *liveKit) twirp(ctx context.Context, method, room string, req, resp any)
 	if err != nil {
 		return err
 	}
-	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiURL+"/twirp/livekit.RoomService/"+method, bytes.NewReader(body))
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiURL+"/twirp/"+service+"/"+method, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -148,12 +159,156 @@ func (l *liveKit) twirp(ctx context.Context, method, room string, req, resp any)
 }
 
 func (l *liveKit) EnsureRoom(ctx context.Context, room string, o RoomOptions) error {
-	return l.twirp(ctx, "CreateRoom", room, map[string]any{
+	req := map[string]any{
 		"name":              room,
 		"max_participants":  o.MaxParticipants,
 		"empty_timeout":     int(o.EmptyTimeout.Seconds()),
 		"departure_timeout": int(o.DepartureTimeout.Seconds()),
+	}
+	if o.Metadata != "" {
+		req["metadata"] = o.Metadata
+	}
+	return l.twirp(ctx, "CreateRoom", room, req, nil)
+}
+
+func (l *liveKit) UpdateRoomMetadata(ctx context.Context, room, metadata string) error {
+	return l.twirp(ctx, "UpdateRoomMetadata", room, map[string]any{"room": room, "metadata": metadata}, nil)
+}
+
+func (l *liveKit) SendData(ctx context.Context, room, topic string, payload []byte, identities []string) error {
+	req := map[string]any{"room": room, "data": base64.StdEncoding.EncodeToString(payload), "kind": "RELIABLE", "topic": topic}
+	if len(identities) > 0 {
+		req["destination_identities"] = identities
+	}
+	err := l.twirp(ctx, "SendData", room, req, nil)
+	if err == errMediaNotFound {
+		return nil // nobody is in that room
+	}
+	return err
+}
+
+// lkSources maps our source names to LiveKit's TrackSource enum names.
+var lkSources = map[string]string{SourceCamera: "CAMERA", SourceMicrophone: "MICROPHONE", SourceScreenShare: "SCREEN_SHARE", SourceScreenShareAudio: "SCREEN_SHARE_AUDIO"}
+
+// UpdatePermissions replaces identity's permission (LiveKit replaces the
+// whole message, so every field is sent); revoked sources are unpublished.
+func (l *liveKit) UpdatePermissions(ctx context.Context, room, identity string, sources []string) error {
+	names := make([]string, 0, len(sources))
+	for _, s := range sources {
+		if n, ok := lkSources[s]; ok {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("livekit: an empty source list would allow every source")
+	}
+	return l.twirp(ctx, "UpdateParticipant", room, map[string]any{
+		"room": room, "identity": identity,
+		"permission": map[string]any{
+			"can_subscribe": true, "can_publish": true, "can_publish_data": true,
+			"can_publish_sources": names, "can_update_metadata": false,
+		},
 	}, nil)
+}
+
+// lkEgressInfo is the part of LiveKit's EgressInfo we read. Twirp answers
+// with proto names, webhooks with camelCase; int64s arrive as strings and
+// enums as names (numbers are accepted too).
+type lkEgressInfo struct {
+	EgressID    string       `json:"egress_id"`
+	EgressID2   string       `json:"egressId"`
+	RoomName    string       `json:"room_name"`
+	RoomName2   string       `json:"roomName"`
+	Status      flexEnum     `json:"status"`
+	Error       string       `json:"error"`
+	StartedAt   flexInt      `json:"started_at"`
+	StartedAt2  flexInt      `json:"startedAt"`
+	EndedAt     flexInt      `json:"ended_at"`
+	EndedAt2    flexInt      `json:"endedAt"`
+	FileResults []lkFileInfo `json:"file_results"`
+	FileResult2 []lkFileInfo `json:"fileResults"`
+}
+
+type lkFileInfo struct {
+	Filename string  `json:"filename"`
+	Size     flexInt `json:"size"`
+	Duration flexInt `json:"duration"` // nanoseconds
+}
+
+// egressStatus maps LiveKit's EgressStatus to RecordingInfo.Status.
+func egressStatus(v string) string {
+	switch v {
+	case "EGRESS_STARTING", "0", "":
+		return RecStarting
+	case "EGRESS_ACTIVE", "1":
+		return RecActive
+	case "EGRESS_ENDING", "2":
+		return RecEnding
+	case "EGRESS_COMPLETE", "3", "EGRESS_LIMIT_REACHED", "6":
+		return RecComplete
+	}
+	return RecFailed // EGRESS_FAILED, EGRESS_ABORTED
+}
+
+func (e lkEgressInfo) info() RecordingInfo {
+	pick := func(a, b string) string {
+		if a != "" {
+			return a
+		}
+		return b
+	}
+	ts := func(a, b flexInt) time.Time {
+		n := int64(a)
+		if n == 0 {
+			n = int64(b)
+		}
+		if n == 0 {
+			return time.Time{}
+		}
+		return time.Unix(0, n).UTC() // nanoseconds
+	}
+	out := RecordingInfo{ID: pick(e.EgressID, e.EgressID2), Room: pick(e.RoomName, e.RoomName2), Status: egressStatus(string(e.Status)),
+		Error: e.Error, StartedAt: ts(e.StartedAt, e.StartedAt2), EndedAt: ts(e.EndedAt, e.EndedAt2)}
+	files := e.FileResults
+	if len(files) == 0 {
+		files = e.FileResult2
+	}
+	for _, f := range files {
+		out.SizeBytes += int64(f.Size)
+		out.DurationMs += int64(f.Duration) / int64(time.Millisecond)
+	}
+	return out
+}
+
+// StartRecording starts a room-composite egress writing one MP4 to S3.
+func (l *liveKit) StartRecording(ctx context.Context, room string, out RecordingOutput) (RecordingInfo, error) {
+	layout := out.Layout
+	if layout == "" {
+		layout = "speaker"
+	}
+	s3 := map[string]any{"access_key": out.S3.AccessKey, "secret": out.S3.Secret, "region": out.S3.Region, "bucket": out.S3.Bucket,
+		"force_path_style": out.S3.ForcePathStyle, "content_disposition": "inline"}
+	if out.S3.Endpoint != "" {
+		s3["endpoint"] = out.S3.Endpoint
+	}
+	var info lkEgressInfo
+	err := l.rpc(ctx, "livekit.Egress", "StartRoomCompositeEgress", &videoGrant{RoomRecord: true, Room: room}, map[string]any{
+		"room_name":    room,
+		"layout":       layout,
+		"file_outputs": []any{map[string]any{"file_type": "MP4", "filepath": out.Filepath, "disable_manifest": true, "s3": s3}},
+	}, &info)
+	if err != nil {
+		return RecordingInfo{}, err
+	}
+	return info.info(), nil
+}
+
+func (l *liveKit) StopRecording(ctx context.Context, id string) (RecordingInfo, error) {
+	var info lkEgressInfo
+	if err := l.rpc(ctx, "livekit.Egress", "StopEgress", &videoGrant{RoomRecord: true}, map[string]any{"egress_id": id}, &info); err != nil {
+		return RecordingInfo{}, err
+	}
+	return info.info(), nil
 }
 
 type lkTrack struct {
@@ -247,6 +402,14 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// flexEnum decodes a protojson enum given as its name or its number.
+type flexEnum string
+
+func (f *flexEnum) UnmarshalJSON(b []byte) error {
+	*f = flexEnum(strings.Trim(string(b), `"`))
+	return nil
+}
+
 // ParseWebhook verifies LiveKit's Authorization JWT (issuer = our API key,
 // sha256 claim = base64 SHA-256 of the body) and decodes the event.
 func (l *liveKit) ParseWebhook(r *http.Request, body []byte) (MediaEvent, error) {
@@ -272,6 +435,7 @@ func (l *liveKit) ParseWebhook(r *http.Request, body []byte) (MediaEvent, error)
 			Identity string `json:"identity"`
 			Name     string `json:"name"`
 		} `json:"participant"`
+		EgressInfo *lkEgressInfo `json:"egressInfo"`
 	}
 	if err := json.Unmarshal(body, &ev); err != nil {
 		return MediaEvent{}, fmt.Errorf("livekit webhook: %w", err)
@@ -285,6 +449,13 @@ func (l *liveKit) ParseWebhook(r *http.Request, body []byte) (MediaEvent, error)
 	}
 	if ev.Participant != nil {
 		out.Identity, out.Name, out.ParticipantSID = ev.Participant.Identity, ev.Participant.Name, ev.Participant.SID
+	}
+	if ev.EgressInfo != nil {
+		info := ev.EgressInfo.info()
+		out.Recording = &info
+		if out.Room == "" {
+			out.Room = info.Room
+		}
 	}
 	return out, nil
 }

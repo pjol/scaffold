@@ -41,6 +41,11 @@ func PostBotMessage(ctx context.Context, channelID uuid.UUID, msg BotMessage) (u
 	if s == nil {
 		return uuid.Nil, ErrUnavailable
 	}
+	return s.postBot(ctx, channelID, msg, nil)
+}
+
+// postBot posts an app or integration (webhookID) message.
+func (s *Service) postBot(ctx context.Context, channelID uuid.UUID, msg BotMessage, webhookID *uuid.UUID) (uuid.UUID, error) {
 	name := strings.Join(strings.Fields(msg.BotName), " ")
 	text := strings.TrimSpace(msg.Text)
 	switch {
@@ -67,6 +72,7 @@ func PostBotMessage(ctx context.Context, channelID uuid.UUID, msg BotMessage) (u
 		return uuid.Nil, err
 	}
 	var id uuid.UUID
+	links := 0
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		if msg.ThreadRootID != nil {
 			var ok bool
@@ -81,11 +87,14 @@ func PostBotMessage(ctx context.Context, channelID uuid.UUID, msg BotMessage) (u
 		}
 		var at time.Time
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO channel_messages (channel_id, kind, bot_name, body, thread_root_id) VALUES ($1, 'bot', $2, $3, $4)
-			RETURNING id, created_at`, channelID, name, text, msg.ThreadRootID).Scan(&id, &at); err != nil {
+			INSERT INTO channel_messages (channel_id, kind, bot_name, body, thread_root_id, webhook_id) VALUES ($1, 'bot', $2, $3, $4, $5)
+			RETURNING id, created_at`, channelID, name, text, msg.ThreadRootID, webhookID).Scan(&id, &at); err != nil {
 			return err
 		}
 		if err := saveMentions(ctx, tx, id, ments); err != nil {
+			return err
+		}
+		if links, err = saveLinks(ctx, tx, id, text); err != nil {
 			return err
 		}
 		return afterInsert(ctx, tx, channelID, id, at, nil, msg.ThreadRootID, false, nil, ments)
@@ -95,6 +104,9 @@ func PostBotMessage(ctx context.Context, channelID uuid.UUID, msg BotMessage) (u
 	}
 	if m, err := s.message(ctx, s.d.Pool, id, uuid.Nil); err == nil {
 		s.announceNew(ctx, a, m, ments)
+	}
+	if links > 0 {
+		s.kickUnfurl(ctx, a.OrgID, channelID, id)
 	}
 	return id, nil
 }

@@ -25,6 +25,10 @@ const AgentKindMeeting = "calls.meeting"
 // notify other people). Every read also drops meetings the user's AI agent
 // scope keeps from agents (agentMay).
 func (s *Service) Tools() []app.Tool {
+	return append(s.meetingTools(), s.recordTools()...)
+}
+
+func (s *Service) meetingTools() []app.Tool {
 	return []app.Tool{
 		{
 			Name:        "calls_list_recent",

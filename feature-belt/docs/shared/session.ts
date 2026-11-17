@@ -72,7 +72,7 @@ interface UndoEntry<S> {
 
 type WireOp = DocsOp & { base_text?: DocsSpan[] };
 
-const TEXT_TYPES = new Set(["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"]);
+const TEXT_TYPES = new Set(["paragraph", "heading_1", "heading_2", "heading_3", "heading_4", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"]);
 const MERGE_WINDOW_MS = 1000;
 const MAX_UNDO = 200;
 const MAX_BATCH = 400;

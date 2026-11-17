@@ -29,6 +29,7 @@ func (p *Project) addNpmDeps(root, pkg string, deps map[string]string, dryRun bo
 	if !p.wants(rel) {
 		return nil, nil
 	}
+	rel = p.physical(rel)
 	path := filepath.Join(root, rel)
 	b, err := os.ReadFile(path)
 	if err != nil {

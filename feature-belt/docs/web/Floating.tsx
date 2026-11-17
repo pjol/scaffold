@@ -25,6 +25,9 @@ export interface FloatingProps {
   role?: "dialog" | "menu" | "listbox" | "toolbar";
 }
 
+/** Open panels, oldest first: Escape with nothing focused closes only the last one. */
+const openPanels: object[] = [];
+
 /**
  * A panel floating next to an element, a rect (the caret) or a point: portalled, kept in
  * the viewport, closed by Escape or a click outside. Focus returns to where it was.
@@ -95,8 +98,21 @@ export function Floating({ open, anchor, onClose, children, placement = "bottom-
       if ((t as HTMLElement).closest?.("[data-floating], [data-radix-popper-content-wrapper]")) return;
       closeRef.current();
     };
+    // When the focused control inside the panel goes away (a removed filter), focus falls to
+    // <body> and the panel's own Escape handler no longer hears keys: close the topmost panel.
+    const token = {};
+    openPanels.push(token);
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || openPanels[openPanels.length - 1] !== token) return;
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      closeRef.current();
+    };
     document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
     return () => {
+      openPanels.splice(openPanels.indexOf(token), 1);
+      document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onDown, true);
       if (autoFocus && restore.current && document.contains(restore.current)) restore.current.focus({ preventScroll: true });
     };

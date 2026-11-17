@@ -2,6 +2,7 @@
 
 import {
   CRM_KIND,
+  CRM_TICKET_PRIORITY_LABEL,
   CRM_TYPE_LABEL,
   accessLevelAtLeast,
   connectionFixPath,
@@ -21,11 +22,14 @@ import {
   useCrmRecord,
   useCrmStageHistory,
   useCrmUpdateRecord,
+  useCrmLinkTicketContact,
+  useCrmMoveTicket,
   useTopic,
   topic,
   type CrmAssociations,
   type CrmCompanyLink,
   type CrmDeal,
+  type CrmTicket,
   type CrmObjectType,
   type CrmRecord,
   type CrmRecordRef,
@@ -40,6 +44,7 @@ import {
   EmptyState,
   ErrorState,
   IconButton,
+  InfoTip,
   ProviderIcon,
   Select,
   Skeleton,
@@ -65,8 +70,10 @@ import { CreateRecordDialog } from "./CreateRecordDialog";
 import { PropertiesPanel } from "./Properties";
 import { TimelinePanel } from "./Timeline";
 import { ImportDialog } from "./ListScreen";
-import { MoneyText, PersonChip, RecordPicker, StageBadge, TYPE_ICON, TagList, dayLabel, recordHref } from "./parts";
+import { MoneyText, PersonChip, PriorityBadge, RecordPicker, StageBadge, TYPE_ICON, TagList, dayLabel, pipelinesFor, recordHref } from "./parts";
 import { openInLabel } from "./Sources";
+import { CrmDealLineItems, CrmDealQuotes } from "./DealCommerce";
+import { CrmRecordMailActions, CrmRecordMailPanel } from "./Mail";
 
 /** /crm/{companies|contacts|deals}/[id]: properties left, timeline centre, associations right (tabs on narrow screens). */
 export function CrmRecordScreen({ type, id }: { type: CrmObjectType; id: string }) {
@@ -156,6 +163,13 @@ function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
           <TimelinePanel record={record} suggestions={suggestionsFor(record, associations)} />
         </section>
         <aside className={cn("flex flex-col gap-6 lg:col-span-4 xl:col-span-3", pane === "related" ? "flex" : "hidden lg:flex")} aria-label="Related records">
+          {record.type === "deal" && !record.source ? (
+            <>
+              <CrmDealLineItems deal={record} />
+              <CrmDealQuotes deal={record} />
+            </>
+          ) : null}
+          {!record.source ? <CrmRecordMailPanel record={record} associations={associations} /> : null}
           <AssociationsPanel record={record} associations={associations} />
           {record.type === "company" && !record.source ? <LinkedRecordsCard companyId={record.id} editable={accessLevelAtLeast(record.my_level === "none" ? null : record.my_level, "edit")} /> : null}
         </aside>
@@ -215,6 +229,17 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
                 ) : null}
                 {record.industry ? <span>{record.industry}</span> : null}
               </>
+            ) : record.type === "ticket" ? (
+              <>
+                <StageBadge name={record.stage.name} outcome={record.stage.outcome} />
+                <PriorityBadge priority={record.priority} />
+                <span>Opened {dayLabel(record.created_at)}</span>
+                {record.company ? (
+                  <Link href={recordHref("company", record.company.id)} className="font-semibold text-fg hover:underline">
+                    {record.company.name}
+                  </Link>
+                ) : null}
+              </>
             ) : (
               <>
                 <MoneyText minor={record.amount} currency={record.currency} className="type-title-sm font-semibold text-fg" />
@@ -260,7 +285,9 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
         </span>
         {record.team ? <Badge>{record.team.name}</Badge> : null}
         <div className="flex flex-wrap gap-2 sm:ml-auto">
-          {email ? (
+          {!external ? (
+            <CrmRecordMailActions record={record} associations={associations} email={email ?? null} />
+          ) : email ? (
             <Button asChild variant="secondary" size="sm" leftIcon={<Mail />}>
               <a href={`mailto:${email}`}>Email</a>
             </Button>
@@ -273,6 +300,8 @@ function RecordHeader({ record, canDelete, associations }: { record: CrmRecord; 
         </div>
       </div>
       {record.type === "deal" ? <StageBar deal={record} editable={editable} /> : null}
+      {record.type === "ticket" ? <TicketStatusBar ticket={record} editable={editable} /> : null}
+      {record.type === "ticket" ? <TicketTimes ticket={record} /> : null}
       {merging ? <MergeDialog record={record} onClose={() => setMerging(false)} /> : null}
       {importing && external ? (
         <ImportDialog
@@ -367,6 +396,73 @@ function StageBar({ deal, editable }: { deal: CrmDeal; editable: boolean }) {
   );
 }
 
+/** The ticket's statuses as steps; click one to move it (edit needed). */
+function TicketStatusBar({ ticket, editable }: { ticket: CrmTicket; editable: boolean }) {
+  const { orgId } = useCrm();
+  const pipelines = useCrmPipelines(orgId);
+  const move = useCrmMoveTicket(orgId);
+  const pl = pipelinesFor(pipelines.data, "ticket").find((p) => p.id === ticket.pipeline_id);
+  if (!pl) return null;
+  const at = pl.stages.findIndex((s) => s.id === ticket.stage.id);
+  return (
+    <ol className="flex gap-1 overflow-x-auto pb-1" aria-label={`${pl.name} statuses`}>
+      {pl.stages.map((s, i) => {
+        const current = s.id === ticket.stage.id;
+        return (
+          <li key={s.id} className="min-w-24 flex-1">
+            <button
+              type="button"
+              disabled={!editable || move.isPending}
+              aria-current={current ? "step" : undefined}
+              onClick={() =>
+                current
+                  ? undefined
+                  : move.mutate({ ticketId: ticket.id, stageId: s.id }, { onSuccess: () => toast.success(`Moved to ${s.name}`), onError: (e) => toast.error(errorMessage(e, "Couldn't move the ticket.")) })
+              }
+              className={cn(
+                "flex h-control w-full items-center justify-center truncate rounded-sm px-2 type-caption font-semibold transition-colors disabled:cursor-default",
+                current ? (s.outcome === "closed" ? "bg-success text-success-fg" : "bg-primary text-primary-fg") : i < at ? "bg-primary-soft text-primary-strong" : "bg-sunken text-fg-muted",
+                editable && !current && "hover:bg-primary-soft hover:text-primary-strong",
+              )}
+            >
+              {s.name}
+            </button>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** First response and resolution times. */
+function TicketTimes({ ticket }: { ticket: CrmTicket }) {
+  const facts: { label: string; value: string; info: string }[] = [
+    {
+      label: "First response",
+      value: ticket.first_response_seconds != null ? crmDuration(ticket.first_response_seconds) : "Waiting",
+      info: "From opening to the first email, call or meeting someone logged on the ticket (inbound email doesn't count).",
+    },
+    {
+      label: "Resolution",
+      value: ticket.resolution_seconds != null ? crmDuration(ticket.resolution_seconds) : ticket.stage.outcome === "closed" ? "—" : "Open",
+      info: "From opening to its move into a closed status.",
+    },
+  ];
+  return (
+    <dl className="flex flex-wrap gap-x-8 gap-y-2">
+      {facts.map((f) => (
+        <div key={f.label} className="flex items-center gap-2 type-label">
+          <dt className="flex items-center gap-1 text-fg-muted">
+            {f.label}
+            <InfoTip content={f.info} label={`About ${f.label.toLowerCase()}`} />
+          </dt>
+          <dd className="font-semibold tabular-nums text-fg">{f.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function StageHistoryCard({ deal }: { deal: CrmDeal }) {
   const h = useCrmStageHistory(deal.id);
   return (
@@ -407,9 +503,16 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
   const fail = (e: unknown) => toast.error(errorMessage(e, "Couldn't change the link."));
   const self: CrmSearchHit = { type: record.type, id: record.id, org_id: record.org_id, title: record.title, detail: "", score: 1, updated_at: record.updated_at };
   const exclude = useMemo(() => new Set([...a.companies.map((c) => c.id), ...a.contacts.map((c) => c.id), ...a.deals.map((d) => d.id)]), [a]);
+  const ticketLink = useCrmLinkTicketContact(record.id);
 
   const onPick = (hit: CrmSearchHit) => {
     setAdding(null);
+    if (record.type === "ticket") {
+      if (hit.type === "contact") ticketLink.mutate({ op: "add", contactId: hit.id }, { onError: fail });
+      else if (hit.type === "company") update.mutate({ company: hit.id }, { onError: fail });
+      else if (hit.type === "deal") update.mutate({ deal: hit.id }, { onError: fail });
+      return;
+    }
     if (record.type === "contact" && hit.type === "company") link.mutate({ op: "add_company", contactId: record.id, companyId: hit.id }, { onError: fail });
     else if (record.type === "company" && hit.type === "contact") link.mutate({ op: "add_company", contactId: hit.id, companyId: record.id }, { onError: fail });
     else if (record.type === "deal" && hit.type === "contact") link.mutate({ op: "add_contact", dealId: record.id, contactId: hit.id }, { onError: fail });
@@ -421,7 +524,7 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
   if (record.type !== "company") {
     sections.push({
       type: "company",
-      title: record.type === "deal" ? "Company" : "Companies",
+      title: record.type === "contact" ? "Companies" : "Company",
       rows: a.companies.map((c) => ({ id: c.id, name: c.name, detail: c.domain ?? "", primary: record.type === "contact" && c.is_primary })),
       canAdd: editable && (record.type === "contact" || a.companies.length === 0),
       canCreate: false,
@@ -432,14 +535,14 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
       type: "contact",
       title: "Contacts",
       rows: a.contacts.map((c) => ({ id: c.id, name: c.name, detail: c.job_title || c.email || "" })),
-      canAdd: !external && (record.type === "deal" ? editable : true),
+      canAdd: !external && (record.type === "deal" || record.type === "ticket" ? editable : true),
       canCreate: !external && record.type === "company",
     });
   }
   if (record.type !== "deal") {
     sections.push({
       type: "deal",
-      title: "Deals",
+      title: record.type === "ticket" ? "Deal" : "Deals",
       rows: a.deals.map((d) => ({
         id: d.id,
         name: d.name,
@@ -450,12 +553,36 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
           </span>
         ),
       })),
-      canAdd: !external && record.type === "contact",
-      canCreate: !external,
+      canAdd: !external && (record.type === "contact" || (record.type === "ticket" && editable && a.deals.length === 0)),
+      canCreate: !external && record.type !== "ticket",
+    });
+  }
+  if (record.type !== "ticket" && !external) {
+    sections.push({
+      type: "ticket",
+      title: "Tickets",
+      rows: (a.tickets ?? []).map((t) => ({
+        id: t.id,
+        name: t.name,
+        detail: (
+          <span className="flex items-center gap-2">
+            <span>{t.stage_name}</span>
+            <span>{CRM_TICKET_PRIORITY_LABEL[t.priority]}</span>
+          </span>
+        ),
+      })),
+      canAdd: false,
+      canCreate: true,
     });
   }
 
   const unlink = (type: CrmObjectType, otherId: string) => {
+    if (record.type === "ticket") {
+      if (type === "contact") ticketLink.mutate({ op: "remove", contactId: otherId }, { onError: fail });
+      else if (type === "company") update.mutate({ company: null }, { onError: fail });
+      else if (type === "deal") update.mutate({ deal: null }, { onError: fail });
+      return;
+    }
     if (record.type === "contact" && type === "company") link.mutate({ op: "remove_company", contactId: record.id, companyId: otherId }, { onError: fail });
     else if (record.type === "company" && type === "contact") link.mutate({ op: "remove_company", contactId: otherId, companyId: record.id }, { onError: fail });
     else if (record.type === "deal" && type === "contact") link.mutate({ op: "remove_contact", dealId: record.id, contactId: otherId }, { onError: fail });
@@ -501,7 +628,7 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
                     {editable && record.type === "contact" && s.type === "company" && !r.primary ? (
                       <IconButton label={`Make ${r.name} primary`} size="sm" icon={<Star />} onClick={() => link.mutate({ op: "primary_company", contactId: record.id, companyId: r.id }, { onError: fail })} />
                     ) : null}
-                    {!external && (editable || (record.type === "company" && s.type === "contact")) && !(record.type === "company" && s.type === "deal") ? (
+                    {!external && s.type !== "ticket" && (editable || (record.type === "company" && s.type === "contact")) && !(record.type === "company" && s.type === "deal") ? (
                       <IconButton label={`Unlink ${r.name}`} size="sm" icon={<X />} onClick={() => unlink(s.type, r.id)} />
                     ) : null}
                   </li>
@@ -519,7 +646,7 @@ function AssociationsPanel({ record, associations: a }: { record: CrmRecord; ass
           type={creating}
           open
           onOpenChange={(o) => !o && setCreating(null)}
-          initial={record.type === "company" ? { company: self } : record.type === "contact" ? { contact: self } : {}}
+          initial={record.type === "company" ? { company: self } : record.type === "contact" ? { contact: self } : record.type === "deal" ? { deal: self } : {}}
         />
       ) : null}
     </>

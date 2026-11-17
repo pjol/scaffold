@@ -30,7 +30,7 @@ function DataCell({ data }: { data: AuditEntry["data"] }) {
 /** Audit entries, newest first. `onFilterTarget` adds a "only this target" button per row. */
 export function AuditTable({ entries, onFilterTarget, showTarget = true }: { entries: AuditEntry[]; onFilterTarget?: (e: AuditEntry) => void; showTarget?: boolean }) {
   return (
-    <Table label="Audit log" className="min-w-160">
+    <Table label="Audit log" className="min-w-160" flush>
       <THead>
         <TH>When</TH>
         <TH>Action</TH>

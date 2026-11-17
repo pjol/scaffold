@@ -5,3 +5,4 @@ export * from "./time";
 export * from "./link";
 export * from "./connected";
 export * from "./hooks";
+export * from "./depth";

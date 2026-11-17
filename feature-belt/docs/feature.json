@@ -1,8 +1,8 @@
 {
   "name": "docs",
   "title": "Docs",
-  "version": "1.1.0",
-  "summary": "Org members write Notion-style pages and databases together: nested pages of blocks edited live, comments, history, trash, sharing through access, Markdown import/export and publishing to the web; connected Notion and Google Docs open and edit in the same editor.",
+  "version": "1.2.0",
+  "summary": "Org members write Notion-style pages and databases together: every Notion block type edited live, templates, background imports and exports (Markdown, HTML, Word, CSV, Notion zips), databases with formulas, relations, rollups, nine views, forms and automations, comments, history, sharing through access and publishing to the web; connected Notion and Google Docs open and edit in the same editor.",
   "requires": [
     "access",
     "orgs",
@@ -22,7 +22,7 @@
       "group": "docs",
       "required": "optional",
       "default": "25",
-      "doc": "Largest image or file a page accepts, in MB."
+      "doc": "Largest file of any type a page accepts, in MB."
     },
     {
       "name": "DOCS_TRASH_DAYS",
@@ -47,6 +47,14 @@
       "required": "optional",
       "default": "10m",
       "doc": "How often a version is saved while someone keeps editing (Go duration, at least 1m); idle pages are saved after 2 minutes."
+    },
+    {
+      "name": "DOCS_IMPORT_MAX_MB",
+      "tier": "backend",
+      "group": "docs",
+      "required": "optional",
+      "default": "50",
+      "doc": "Largest file (or zip) an import accepts, in MB; files inside it still follow DOCS_FILE_MAX_MB."
     }
   ],
   "files": [
@@ -123,14 +131,29 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "public-routes",
       "insert": "\"p/[token]\","
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "public-routes",
+      "insert": "\"p/form/[token]\","
     }
   ],
   "stitch": [
     "Place docsNav in the web navigation and decide whether mobile shows docs as a Home entry (docsHomeEntry, default) or a tab of its own.",
     "Choose the role defaults for the org permissions docs.create_shared (top-level pages everyone can edit) and docs.publish (public links on pages; also gated by access.share_public).",
     "Install the agents feature for per-page AI agent scopes (docs uses access_agent_cap through access.ViaAgent) and the search feature for global search (docs implements app.SearchProvider).",
-    "Add to the privacy policy that published pages can be read by anyone with the link, and to the community rules that published pages and comments can be reported.",
+    "Add to the privacy policy that published pages can be read by anyone with the link and publishers may let search engines index them or let visitors copy them (both off by default), that anyone with a public form link can add a row to its database, and that people who can edit a page see who viewed it; add to the community rules that published pages and comments can be reported.",
     "If the app has its own people directory, keep @-mentions in sync with it (mentions use the access directory of org members).",
-    "With connectors 2.0 installed, register the Notion integration (capabilities: read, update and insert content, comments, user information) and the Google OAuth client (Docs and Drive APIs); Docs offers docs.notion.* and docs.google.* capabilities and shows each person's connections under Connected. Without connectors nothing changes."
-  ]
+    "With connectors 2.0 installed, register the Notion integration (capabilities: read, update and insert content, comments, user information) and the Google OAuth client (Docs and Drive APIs); Docs offers docs.notion.* and docs.google.* capabilities and shows each person's connections under Connected. Without connectors nothing changes.",
+    "Other features can show a docs page as the viewer through docs.PageRef(ctx, q, viewer, pageID) (same access check as the page route, agent-capped, trashed pages not found) and docs.PageIDFromPath: wire link cards (channels.RegisterUnfurler(\"/docs/\", …)) and assistant context in the app's stitching."
+  ],
+  "deps": {
+    "web": {
+      "katex": "^0.19.1",
+      "mermaid": "^12.2.0"
+    },
+    "mobile": {
+      "expo-document-picker": "~57.0.3"
+    }
+  }
 }

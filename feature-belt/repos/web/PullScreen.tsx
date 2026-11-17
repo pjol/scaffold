@@ -10,7 +10,17 @@ import {
   reposShortSha,
   reposSupports,
   useAddReposComment,
+  useApplyReposSuggestions,
+  useDiscardReposPendingReview,
+  useReposAutoMerge,
   useReposChecks,
+  useReposPendingReview,
+  useReposViewedFiles,
+  useSetReposPullAssignees,
+  useSetReposPullDraft,
+  useSetReposPullLabels,
+  useSetReposViewed,
+  useUpdateReposPullBranch,
   useDeleteReposComment,
   useEditReposComment,
   useMergeReposPull,
@@ -29,8 +39,10 @@ import {
   useSubmitReposReview,
   useUpdateReposPull,
   type ApiError,
+  type ReposChecks,
   type ReposComment,
   type ReposCheck,
+  type ReposMention,
   type ReposEvent,
   type ReposMergeMethod,
   type ReposMergeability,
@@ -71,6 +83,11 @@ import {
 import {
   AlertTriangle,
   Check,
+  CircleCheck,
+  FileDiff,
+  GitPullRequestDraft,
+  Milestone as MilestoneIcon,
+  Zap,
   CircleDot,
   CircleX,
   Clock,
@@ -90,15 +107,32 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { useUrlState } from "@/lib/url-state";
 import { ReviewerPicker } from "./CompareScreen";
 import { DiffModeToggle, DiffSkeleton, DiffView, useDiffMode } from "./DiffView";
+import { IssueStateIcon, LabelList, LabelPickerDialog, MilestoneMenu, PeopleList, PeoplePicker, Reactions, SideSection, GearButton } from "./issueParts";
 import { RepoMarkdown } from "./Markdown";
 import { Person } from "./parts";
 import { copyText, repoHref, useRepoContext } from "./RepoLayout";
 
 type PullTab = "conversation" | "commits" | "files";
+
+/** Suggestions chosen to commit together, and the names behind <@id> mentions. */
+interface PullCtx {
+  batch: string[];
+  toggle: (commentId: string) => void;
+  clear: () => void;
+  mentions: ReposMention[];
+}
+const PullContext = createContext<PullCtx>({ batch: [], toggle: () => undefined, clear: () => undefined, mentions: [] });
+
+/** ```suggestion … ``` in a comment: the text around it and the replacement lines. */
+export function splitSuggestion(body: string): { before: string; lines: string; after: string } | null {
+  const m = /(^|\n)```suggestion[ \t]*\r?\n([\s\S]*?)(?:\r?\n)?```/.exec(body);
+  if (!m) return null;
+  return { before: body.slice(0, m.index + m[1]!.length), lines: m[2] ?? "", after: body.slice(m.index + m[0].length) };
+}
 
 /** A pull request: conversation, commits and the changed files with line comments; review and merge. */
 export function PullScreen({ number }: { number: number }) {
@@ -106,7 +140,19 @@ export function PullScreen({ number }: { number: number }) {
   const pull = useReposPull(repo.id, number);
   const [tab, setTab] = useUrlState<PullTab>("tab", "conversation");
   const commits = useReposPullCommits(repo.id, number);
-  const diff = useReposPullDiff(repo.id, number, {}, tab === "files");
+  const [ws, setWs] = useUrlState<"" | "1">("w", "");
+  const diff = useReposPullDiff(repo.id, number, { ignoreWhitespace: ws === "1" }, tab === "files");
+  const timeline = useReposTimeline(repo.id, number);
+  const threads = useReposThreads(repo.id, number);
+  const [batch, setBatch] = useState<string[]>([]);
+  const mentions = useMemo(
+    () => [...(pull.data?.mentions ?? []), ...(timeline.data?.mentions ?? []), ...(threads.data?.mentions ?? [])],
+    [pull.data?.mentions, timeline.data?.mentions, threads.data?.mentions],
+  );
+  const ctx = useMemo<PullCtx>(
+    () => ({ batch, toggle: (id) => setBatch((b) => (b.includes(id) ? b.filter((x) => x !== id) : [...b, id])), clear: () => setBatch([]), mentions }),
+    [batch, mentions],
+  );
 
   if (pull.isPending) {
     return (
@@ -126,6 +172,7 @@ export function PullScreen({ number }: { number: number }) {
   }
   const p = pull.data;
   return (
+    <PullContext.Provider value={ctx}>
     <div className="flex flex-col gap-6">
       <PullHeader repo={repo} pull={p} commits={commits.data?.items.length} />
       <div className="-mx-gutter overflow-x-auto px-gutter">
@@ -143,7 +190,67 @@ export function PullScreen({ number }: { number: number }) {
         </TabsList>
       </Tabs>
       </div>
-      {tab === "conversation" ? <Conversation repo={repo} pull={p} /> : tab === "commits" ? <PullCommits repo={repo} pull={p} commits={commits} /> : <PullFiles repo={repo} pull={p} diff={diff} />}
+      {tab === "conversation" ? (
+        <Conversation repo={repo} pull={p} />
+      ) : tab === "commits" ? (
+        <PullCommits repo={repo} pull={p} commits={commits} />
+      ) : (
+        <PullFiles repo={repo} pull={p} diff={diff} ignoreWhitespace={ws === "1"} onIgnoreWhitespace={(on) => setWs(on ? "1" : null)} />
+      )}
+      {batch.length ? <BatchBar repo={repo} pull={p} /> : null}
+    </div>
+    </PullContext.Provider>
+  );
+}
+
+/** Commit the chosen suggestions to the head branch in one commit. */
+function BatchBar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
+  const { batch, clear } = useContext(PullContext);
+  const apply = useApplyReposSuggestions(repo.id, p.number);
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  return (
+    <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-3 self-center rounded-lg border border-border bg-surface-raised px-4 py-2 shadow-lg">
+      <span className="type-label text-fg">
+        {batch.length} {batch.length === 1 ? "suggestion" : "suggestions"} in the batch
+      </span>
+      <Button size="sm" variant="ghost" onClick={clear}>
+        Clear
+      </Button>
+      <Button size="sm" onClick={() => setOpen(true)}>
+        Commit suggestions
+      </Button>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Commit ${batch.length} ${batch.length === 1 ? "suggestion" : "suggestions"} to ${p.head_branch}`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              loading={apply.isPending}
+              onClick={async () => {
+                try {
+                  await apply.mutateAsync({ comment_ids: batch, ...(message.trim() ? { message: message.trim() } : {}), expected_head: p.head_sha });
+                  toast.success("Suggestions committed");
+                  clear();
+                  setOpen(false);
+                } catch (e) {
+                  toast.error(errorMessage(e, "Couldn't apply them."));
+                }
+              }}
+            >
+              Commit changes
+            </Button>
+          </>
+        }
+      >
+        <Field label="Commit message">
+          <Input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Apply suggestions from code review" />
+        </Field>
+      </Dialog>
     </div>
   );
 }
@@ -151,7 +258,15 @@ export function PullScreen({ number }: { number: number }) {
 function stateBadge(p: ReposPull) {
   if (p.state === "merged") return <Badge tone="accent" size="md" icon={<GitMerge />}>Merged</Badge>;
   if (p.state === "closed") return <Badge tone="danger" size="md" icon={<GitPullRequestClosed />}>Closed</Badge>;
+  if (p.draft) return <Badge tone="neutral" size="md" icon={<GitPullRequestDraft />}>Draft</Badge>;
   return <Badge tone="success" size="md" icon={<CircleDot />}>Open</Badge>;
+}
+
+function ChecksStateBadge({ state }: { state: NonNullable<ReposPull["checks_state"]> }) {
+  if (state === "success") return <Badge tone="success" icon={<Check />}>Checks passed</Badge>;
+  if (state === "failure") return <Badge tone="danger" icon={<CircleX />}>Checks failed</Badge>;
+  if (state === "pending") return <Badge tone="warning" icon={<Clock />}>Checks running</Badge>;
+  return null;
 }
 
 function PullHeader({ repo, pull: p, commits }: { repo: ReposRepo; pull: ReposPull; commits?: number | undefined }) {
@@ -199,6 +314,7 @@ function PullHeader({ repo, pull: p, commits }: { repo: ReposRepo; pull: ReposPu
       )}
       <div className="flex flex-wrap items-center gap-2 type-label text-fg-muted">
         {stateBadge(p)}
+        {p.checks_state ? <ChecksStateBadge state={p.checks_state} /> : null}
         <SourceBadge source={p.source ?? repo.source} />
         <span>
           <span className="font-semibold text-fg">{p.author?.display_name || "Deleted user"}</span>{" "}
@@ -296,16 +412,22 @@ function Description({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
             </div>
           </div>
         ) : p.body ? (
-          <RepoMarkdown source={p.body} repoId={repo.id} gitRef={p.head_branch} dir="" />
+          <RepoMarkdown source={p.body} repoId={repo.id} gitRef={p.head_branch} dir="" mentions={p.mentions} />
         ) : (
           <p className="type-body text-fg-muted">No description.</p>
         )}
+        {p.reactions ? (
+          <div className="pt-3">
+            <Reactions repoId={repo.id} number={p.number} subject={{ type: "pull", id: p.id }} reactions={p.reactions} canReact={repo.my_level !== "view"} />
+          </div>
+        ) : null}
       </div>
     </Card>
   );
 }
 
 function CommentCard({ repo, pull, comment: c, compact }: { repo: ReposRepo; pull: ReposPull; comment: ReposComment; compact?: boolean }) {
+  const { mentions } = useContext(PullContext);
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(c.body);
   const [deleting, setDeleting] = useState(false);
@@ -318,6 +440,7 @@ function CommentCard({ repo, pull, comment: c, compact }: { repo: ReposRepo; pul
         <Person user={c.author} />
         <span className="text-fg-muted">{reposRelativeTime(c.created_at)}</span>
         {c.edited_at ? <span className="type-caption text-fg-subtle">edited</span> : null}
+        {c.pending && !compact ? <Badge tone="warning">Pending</Badge> : null}
         {!c.deleted && (c.can_edit || canDelete) ? (
           <span className="ml-auto">
             <Menu trigger={<IconButton label="Comment actions" icon={<MoreHorizontal />} variant="ghost" size="sm" />}>
@@ -362,8 +485,13 @@ function CommentCard({ repo, pull, comment: c, compact }: { repo: ReposRepo; pul
             </div>
           </div>
         ) : (
-          <RepoMarkdown source={c.body} repoId={repo.id} gitRef={pull.head_branch} dir="" />
+          <CommentBody repo={repo} pull={pull} comment={c} mentions={mentions} />
         )}
+        {!c.deleted && !editing && c.reactions && !c.pending ? (
+          <div className="pt-2">
+            <Reactions repoId={repo.id} number={pull.number} subject={{ type: "pull_comment", id: c.id }} reactions={c.reactions} canReact={repo.my_level !== "view"} />
+          </div>
+        ) : null}
       </div>
       <ConfirmDialog
         open={deleting}
@@ -376,6 +504,58 @@ function CommentCard({ repo, pull, comment: c, compact }: { repo: ReposRepo; pul
       >
         It can't be undone.
       </ConfirmDialog>
+    </div>
+  );
+}
+
+/** A comment's Markdown, with a ```suggestion block shown as a change to apply. */
+function CommentBody({ repo, pull, comment: c, mentions }: { repo: ReposRepo; pull: ReposPull; comment: ReposComment; mentions: ReposMention[] }) {
+  const { batch, toggle } = useContext(PullContext);
+  const apply = useApplyReposSuggestions(repo.id, pull.number);
+  const sug = splitSuggestion(c.body);
+  if (!sug) return <RepoMarkdown source={c.body} repoId={repo.id} gitRef={pull.head_branch} dir="" mentions={mentions} />;
+  const canApply = repo.can_push && pull.state === "open" && !!c.path && c.side === "new" && !c.suggestion_applied_sha && !c.pending;
+  const inBatch = batch.includes(c.id);
+  const lines = sug.lines === "" ? [] : sug.lines.split("\n");
+  const range = c.start_line && c.line && c.start_line < c.line ? `lines ${c.start_line}–${c.line}` : `line ${c.line ?? ""}`;
+  return (
+    <div className="flex flex-col gap-2">
+      {sug.before.trim() ? <RepoMarkdown source={sug.before} repoId={repo.id} gitRef={pull.head_branch} dir="" mentions={mentions} /> : null}
+      <div className="overflow-hidden rounded-md border border-border">
+        <div className="flex min-h-9 flex-wrap items-center gap-2 border-b border-border bg-sunken px-3 py-1 type-caption text-fg-muted">
+          <FileDiff className="size-4" aria-hidden />
+          <span>Suggested change to {range}</span>
+          {c.suggestion_applied_sha ? (
+            <Badge tone="success" icon={<CircleCheck />}>
+              Applied in {reposShortSha(c.suggestion_applied_sha)}
+            </Badge>
+          ) : null}
+          {canApply ? (
+            <span className="ml-auto flex flex-wrap justify-end gap-1">
+              <Button size="sm" variant="ghost" onClick={() => toggle(c.id)} aria-pressed={inBatch}>
+                {inBatch ? "Remove from batch" : "Add to batch"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                loading={apply.isPending}
+                onClick={() =>
+                  apply.mutate(
+                    { comment_ids: [c.id], expected_head: pull.head_sha },
+                    { onSuccess: () => toast.success("Suggestion committed"), onError: (e) => toast.error(errorMessage(e, "Couldn't apply it.")) },
+                  )
+                }
+              >
+                Commit suggestion
+              </Button>
+            </span>
+          ) : null}
+        </div>
+        <pre className="overflow-x-auto bg-success-soft px-3 py-2 font-mono type-label text-fg">
+          {lines.length ? lines.map((l, i) => <div key={i}>{`+ ${l}`}</div>) : <span className="text-fg-muted italic">Deletes these lines.</span>}
+        </pre>
+      </div>
+      {sug.after.trim() ? <RepoMarkdown source={sug.after} repoId={repo.id} gitRef={pull.head_branch} dir="" mentions={mentions} /> : null}
     </div>
   );
 }
@@ -404,7 +584,7 @@ function TimelineEntry({ repo, pull, item, threads }: { repo: ReposRepo; pull: R
           </div>
           {r.body || item.threads?.length ? (
             <Card padding="compact" className="ml-9 flex flex-col gap-3">
-              {r.body ? <RepoMarkdown source={r.body} repoId={repo.id} gitRef={pull.head_branch} dir="" /> : null}
+              {r.body ? <ReviewBody repo={repo} pull={pull} body={r.body} /> : null}
               {item.threads?.map((t) => {
                 const full = threads.get(t.id);
                 return full ? <ThreadCard key={t.id} repo={repo} pull={pull} thread={full} showPath /> : null;
@@ -423,6 +603,11 @@ function TimelineEntry({ repo, pull, item, threads }: { repo: ReposRepo; pull: R
   }
 }
 
+function ReviewBody({ repo, pull, body }: { repo: ReposRepo; pull: ReposPull; body: string }) {
+  const { mentions } = useContext(PullContext);
+  return <RepoMarkdown source={body} repoId={repo.id} gitRef={pull.head_branch} dir="" mentions={mentions} />;
+}
+
 interface EventData {
   commits?: number;
   before?: string;
@@ -434,9 +619,23 @@ interface EventData {
   to?: string;
   branch?: string;
   after_merge?: boolean;
+  name?: string;
+  color?: string;
+  title?: string;
+  user_id?: string;
+  again?: boolean;
+  count?: number;
+  source?: "issue" | "pull" | "commit";
+  number?: number;
+  sha?: string;
+  message?: string;
+  closes?: boolean;
+  base?: string;
+  draft?: boolean;
 }
 
 function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
+  const { mentions } = useContext(PullContext);
   const who = e.actor?.display_name || (e.actor ? "Deleted user" : "Someone");
   const noun = reposPullNoun(repo).toLowerCase();
   const d = e.data as EventData;
@@ -444,7 +643,75 @@ function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
   let text: ReactNode;
   switch (e.kind) {
     case "opened":
-      text = `opened this ${noun}`;
+      text = d.draft ? `opened this ${noun} as a draft` : `opened this ${noun}`;
+      break;
+    case "ready_for_review":
+      icon = <Eye />;
+      text = "marked this ready for review";
+      break;
+    case "converted_to_draft":
+      icon = <GitPullRequestDraft />;
+      text = "turned this back into a draft";
+      break;
+    case "labeled":
+    case "unlabeled":
+      icon = <Pencil />;
+      text = (
+        <>
+          {e.kind === "labeled" ? "added" : "removed"} <LabelList labels={[{ id: d.name ?? "", name: d.name ?? "", color: (d.color as never) ?? "neutral", description: "" }]} className="inline-flex" />
+        </>
+      );
+      break;
+    case "assigned":
+    case "unassigned": {
+      icon = <UserPlus />;
+      const name = mentions.find((m) => m.id === d.user_id)?.display_name ?? "someone";
+      text = e.actor && d.user_id === e.actor.id ? (e.kind === "assigned" ? "self-assigned this" : "removed their assignment") : `${e.kind === "assigned" ? "assigned" : "unassigned"} ${name}`;
+      break;
+    }
+    case "milestoned":
+    case "demilestoned":
+      icon = <MilestoneIcon />;
+      text = `${e.kind === "milestoned" ? "added this to" : "removed this from"} the ${d.title ?? ""} milestone`;
+      break;
+    case "referenced":
+      icon = <GitCommitHorizontal />;
+      text =
+        d.source === "commit" ? (
+          <>
+            mentioned this in{" "}
+            <Link href={repoHref(repo.id, `commits/${d.sha}`)} className="font-mono hover:underline">
+              {reposShortSha(d.sha ?? "")}
+            </Link>
+          </>
+        ) : (
+          <>
+            mentioned this in{" "}
+            <Link href={repoHref(repo.id, `${d.source === "pull" ? "pulls" : "issues"}/${d.number}`)} className="font-semibold text-fg hover:underline">
+              {d.title} #{d.number}
+            </Link>
+          </>
+        );
+      break;
+    case "auto_merge_enabled":
+      icon = <Zap />;
+      text = `turned on auto-merge (${METHOD_LABEL[(d.method as ReposMergeMethod) ?? "merge"]?.toLowerCase() ?? d.method})`;
+      break;
+    case "auto_merge_disabled":
+      icon = <Zap />;
+      text = "turned off auto-merge";
+      break;
+    case "branch_updated":
+      icon = <RefreshCw />;
+      text = (
+        <>
+          merged <span className="font-mono">{d.base}</span> into this branch
+        </>
+      );
+      break;
+    case "suggestions_applied":
+      icon = <FileDiff />;
+      text = `applied ${d.count ?? ""} ${d.count === 1 ? "suggestion" : "suggestions"}`;
       break;
     case "pushed":
       icon = <GitCommitHorizontal />;
@@ -476,17 +743,19 @@ function EventLine({ repo, event: e }: { repo: ReposRepo; event: ReposEvent }) {
       icon = <GitMerge />;
       text = (
         <>
-          merged {d.outside_app ? "these commits outside the app" : `with ${d.method === "squash" ? "a squash" : "a merge commit"}`}{" "}
+          merged {d.outside_app ? "these commits outside the app" : d.method === "rebase" ? "by rebasing" : `with ${d.method === "squash" ? "a squash" : "a merge commit"}`}{" "}
           <Link href={repoHref(repo.id, `commits/${String(d.commit)}`)} className="font-mono hover:underline">
             {reposShortSha(String(d.commit ?? ""))}
           </Link>
         </>
       );
       break;
-    case "review_requested":
+    case "review_requested": {
       icon = <UserPlus />;
-      text = "requested a review";
+      const name = mentions.find((m) => m.id === d.user_id)?.display_name;
+      text = `${d.again ? "asked again for a review" : "requested a review"}${name ? ` from ${name}` : ""}`;
       break;
+    }
     case "review_request_removed":
       icon = <X />;
       text = "removed a review request";
@@ -544,10 +813,12 @@ export function ThreadCard({ repo, pull, thread: t, showPath }: { repo: ReposRep
       <div className="flex flex-wrap items-center gap-2">
         {showPath ? (
           <Link href={repoHref(repo.id, `pulls/${pull.number}`, { tab: "files" })} className="min-w-0 truncate font-mono type-caption text-fg-muted hover:underline">
-            {t.root.path}:{t.root.line}
+            {t.root.path}:{t.root.start_line && t.root.start_line < (t.root.line ?? 0) ? `${t.root.start_line}–` : ""}
+            {t.root.line}
           </Link>
         ) : null}
         {t.outdated ? <Badge tone="warning">outdated</Badge> : null}
+        {t.root.pending ? <Badge tone="warning">Pending</Badge> : null}
         {resolved ? <Badge tone="success" icon={<Check />}>Resolved</Badge> : null}
         <span className="ml-auto flex gap-1">
           {resolved ? (
@@ -669,6 +940,9 @@ function MergeBox({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   const m = useReposMergeability(repo.id, p.number);
   const [method, setMethod] = useState<ReposMergeMethod>("merge");
   const [confirm, setConfirm] = useState(false);
+  const setDraft = useSetReposPullDraft(repo.id, p.number);
+  const autoMerge = useReposAutoMerge(repo.id, p.number);
+  const updateBranch = useUpdateReposPullBranch(repo.id, p.number);
   if (m.isPending) return <Skeleton className="h-28 w-full" />;
   if (m.isError) {
     return (
@@ -681,10 +955,62 @@ function MergeBox({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   const methods = d.methods;
   const chosen = methods.includes(method) ? method : (methods[0] ?? "merge");
   const tone = d.state === "clean" ? "border-success" : d.state === "conflicts" ? "border-warning" : "border-border";
+  const rebaseBlocked = chosen === "rebase" && !!d.rebase_blocked;
+  if (d.state === "draft") {
+    return (
+      <Card className="flex flex-col gap-3 border-2 border-border">
+        <p className="flex items-center gap-2 type-body font-semibold text-fg">
+          <GitPullRequestDraft className="size-5 text-fg-muted" aria-hidden />
+          This {reposPullNoun(repo).toLowerCase()} is still a draft
+        </p>
+        <p className="pl-7 type-label text-fg-muted">It can't merge, and code owners aren't asked to review, until it's ready.</p>
+        {d.checks ? <StatusChecks checks={d.checks} /> : null}
+        {p.can_edit ? (
+          <Button
+            variant="outline"
+            className="self-start"
+            loading={setDraft.isPending}
+            onClick={() => setDraft.mutate(false, { onSuccess: () => toast.success("Ready for review"), onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}
+          >
+            Ready for review
+          </Button>
+        ) : null}
+      </Card>
+    );
+  }
   return (
     <Card className={cn("flex flex-col gap-4 border-2", tone)}>
       <MergeStatus repo={repo} pull={p} m={d} />
-      {reposSupports(repo, "checks") ? <ChecksList repoId={repo.id} sha={p.head_sha} /> : null}
+      {d.checks ? <StatusChecks checks={d.checks} /> : reposSupports(repo, "checks") ? <ChecksList repoId={repo.id} sha={p.head_sha} /> : null}
+      {d.behind ? (
+        <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+          <p className="min-w-0 flex-1 type-label text-fg-muted">
+            {p.head_branch} is {d.behind} {d.behind === 1 ? "commit" : "commits"} behind {p.base_branch}.
+          </p>
+          {d.can_update_branch ? (
+            <Button
+              size="sm"
+              variant="outline"
+              loading={updateBranch.isPending}
+              onClick={() => updateBranch.mutate(d.head_sha, { onSuccess: () => toast.success(`Merged ${p.base_branch} into ${p.head_branch}`), onError: (e) => toast.error(errorMessage(e, "Couldn't update the branch.")) })}
+            >
+              Update branch
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {p.auto_merge ? (
+        <Banner tone="info" icon={<Zap />}>
+          <span className="flex flex-wrap items-center gap-2">
+            Auto-merge is on: {p.auto_merge.enabled_by?.display_name ?? "Someone"} turned it on to {METHOD_LABEL[p.auto_merge.method].toLowerCase()} once every requirement passes.
+            {p.can_edit ? (
+              <Button size="sm" variant="ghost" loading={autoMerge.isPending} onClick={() => autoMerge.mutate(null, { onError: (e) => toast.error(errorMessage(e, "Couldn't turn it off.")) })}>
+                Turn off
+              </Button>
+            ) : null}
+          </span>
+        </Banner>
+      ) : null}
       {d.state === "clean" || d.state === "blocked" ? (
         <div className="flex flex-wrap items-center gap-3">
           {methods.length > 1 ? (
@@ -696,10 +1022,23 @@ function MergeBox({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
               options={methods.map((x) => ({ value: x, label: METHOD_LABEL[x] }))}
             />
           ) : null}
-          <Button variant="success" leftIcon={<GitMerge />} disabled={!d.can_merge} onClick={() => setConfirm(true)}>
+          <Button variant="success" leftIcon={<GitMerge />} disabled={!d.can_merge || rebaseBlocked} onClick={() => setConfirm(true)}>
             {chosen === "squash" ? "Squash and merge" : chosen === "rebase" ? "Rebase and merge" : reposPullNoun(repo) === "Merge request" ? "Merge" : "Merge pull request"}
           </Button>
+          {d.can_auto_merge && !p.auto_merge && !rebaseBlocked ? (
+            <Tooltip content="Merges by itself, as you, once approvals, code owners and required checks pass.">
+              <Button
+                variant="outline"
+                leftIcon={<Zap />}
+                loading={autoMerge.isPending}
+                onClick={() => autoMerge.mutate(chosen, { onSuccess: () => toast.success("Auto-merge is on"), onError: (e) => toast.error(errorMessage(e, "Couldn't turn on auto-merge.")) })}
+              >
+                Merge when ready
+              </Button>
+            </Tooltip>
+          ) : null}
           {!repo.can_push ? <span className="type-caption text-fg-muted">People who can edit the repository merge.</span> : null}
+          {rebaseBlocked ? <p className="w-full type-caption text-fg-muted">{d.rebase_blocked}</p> : null}
         </div>
       ) : null}
       <MergeDialog open={confirm} onOpenChange={setConfirm} repo={repo} pull={p} m={d} method={chosen} />
@@ -811,11 +1150,42 @@ export function ChecksList({ repoId, sha }: { repoId: string; sha: string }) {
   );
 }
 
+/** The app's own statuses on the head, with required ones marked (from mergeability). */
+function StatusChecks({ checks: d }: { checks: ReposChecks }) {
+  if (d.items.length === 0) return null;
+  const failed = d.items.filter((c) => c.status === "failure").length;
+  const running = d.items.filter((c) => c.status === "queued" || c.status === "in_progress").length;
+  const summary = failed ? `${failed} failing ${failed === 1 ? "check" : "checks"}` : running ? `${running} ${running === 1 ? "check" : "checks"} waiting` : "All checks passed";
+  return (
+    <section aria-label="Checks" className="flex flex-col gap-2 border-t border-border pt-3">
+      <p className="flex items-center gap-2 type-label font-semibold text-fg">
+        {d.state === "failure" ? CHECK_ICON.failure : d.state === "pending" ? CHECK_ICON.in_progress : CHECK_ICON.success}
+        {summary}
+      </p>
+      <ul className="flex flex-col gap-1 pl-6">
+        {d.items.map((c) => (
+          <li key={c.name} className="flex min-h-8 items-center gap-2 type-label">
+            {CHECK_ICON[c.status]}
+            <span className="min-w-0 truncate font-medium text-fg">{c.name}</span>
+            {c.required ? <Badge tone="neutral">Required</Badge> : null}
+            {c.description ? <span className="hidden min-w-0 truncate text-fg-muted sm:inline">{c.description}</span> : null}
+            {c.url ? (
+              <a href={c.url} target="_blank" rel="noopener noreferrer" className="ml-auto shrink-0 text-primary-strong hover:underline">
+                Details
+              </a>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function MergeDialog({ open, onOpenChange, repo, pull: p, m, method }: { open: boolean; onOpenChange: (o: boolean) => void; repo: ReposRepo; pull: ReposPull; m: ReposMergeability; method: ReposMergeMethod }) {
   const merge = useMergeReposPull(repo.id, p.number);
   const [title, setTitle] = useState("");
   const [del, setDel] = useState(m.delete_branch);
-  const placeholder = method === "squash" ? `${p.title} (#${p.number})` : `Merge pull request #${p.number} from ${p.head_branch}`;
+  const placeholder = method === "squash" ? `${p.title} (#${p.number})` : method === "rebase" ? "Each commit keeps its own message" : `Merge pull request #${p.number} from ${p.head_branch}`;
   return (
     <ConfirmDialog
       open={open}
@@ -830,9 +1200,13 @@ function MergeDialog({ open, onOpenChange, repo, pull: p, m, method }: { open: b
       errorText={(e) => (hasErrorCode(e, "head_moved") ? "The branch has new commits since you looked. Close this and review them first." : errorMessage(e, "Couldn't merge."))}
     >
       <div className="flex flex-col gap-4">
-        <Field label="Commit message">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={placeholder} />
-        </Field>
+        {method !== "rebase" ? (
+          <Field label="Commit message">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={placeholder} />
+          </Field>
+        ) : (
+          <p className="type-label text-fg-muted">Each commit lands on {p.base_branch} with its own message and author; you are the committer.</p>
+        )}
         {m.can_delete_branch ? <Checkbox checked={del} onCheckedChange={setDel} label={`Delete ${p.head_branch} after merging`} /> : null}
       </div>
     </ConfirmDialog>
@@ -855,8 +1229,10 @@ function Sidebar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   const remove = useRemoveReposReviewer(repo.id, p.number);
   const me = useMe().data;
   const checkout = `git fetch origin ${p.head_branch}\ngit switch ${p.head_branch}`;
+  const own = !reposPlatformName(repo);
   return (
     <aside className="flex flex-col gap-6">
+      {own ? <TriageSidebar repo={repo} pull={p} /> : null}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h3 className="type-label font-semibold text-fg">Reviewers</h3>
@@ -922,6 +1298,105 @@ function Sidebar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
   );
 }
 
+/** Assignees, labels, milestone, linked issues and draft, for the app's own repositories. */
+function TriageSidebar({ repo, pull: p }: { repo: ReposRepo; pull: ReposPull }) {
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const [picked, setPicked] = useState<ReposPerson[]>([]);
+  const setLabels = useSetReposPullLabels(repo.id, p.number);
+  const setAssignees = useSetReposPullAssignees(repo.id, p.number);
+  const update = useUpdateReposPull(repo.id, p.number);
+  const setDraft = useSetReposPullDraft(repo.id, p.number);
+  const triage = !!p.can_triage;
+  return (
+    <div className="flex flex-col gap-4">
+      <SideSection
+        title="Assignees"
+        action={
+          triage ? (
+            <GearButton
+              label="Assign people"
+              onClick={() => {
+                setPicked((p.assignees ?? []).map((a) => ({ id: a.id, display_name: a.display_name, avatar_url: a.avatar_url, level: "view" })));
+                setAssigning(true);
+              }}
+            />
+          ) : undefined
+        }
+      >
+        <PeopleList people={p.assignees ?? []} empty="No one yet." />
+      </SideSection>
+      <SideSection title="Labels" action={triage ? <GearButton label="Change labels" onClick={() => setLabelsOpen(true)} /> : undefined}>
+        {p.labels?.length ? <LabelList labels={p.labels} /> : <p className="type-label text-fg-muted">None yet.</p>}
+      </SideSection>
+      <SideSection
+        title="Milestone"
+        action={
+          triage ? (
+            <MilestoneMenu
+              repoId={repo.id}
+              value={p.milestone?.id ?? null}
+              onChange={(id) => update.mutate({ milestone_id: id ?? "" }, { onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}
+              trigger={<IconButton label="Choose a milestone" icon={<MilestoneIcon />} variant="ghost" size="sm" />}
+            />
+          ) : undefined
+        }
+      >
+        {p.milestone ? <span className="type-label font-semibold text-fg">{p.milestone.title}</span> : <p className="type-label text-fg-muted">No milestone.</p>}
+      </SideSection>
+      <SideSection title="Closes">
+        {(p.closing_issues ?? []).length === 0 ? (
+          <p className="type-label text-fg-muted">Write “Fixes #12” in the description to close an issue when this merges into {repo.default_branch}.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {p.closing_issues!.map((is) => (
+              <li key={is.number} className="flex items-start gap-2 type-label">
+                <IssueStateIcon state={is.state} className="mt-0.5 size-4 shrink-0" />
+                <Link href={repoHref(repo.id, `issues/${is.number}`)} className="min-w-0 flex-1 text-fg hover:underline">
+                  {is.title} <span className="text-fg-muted">#{is.number}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SideSection>
+      {p.can_edit && p.state === "open" && !p.draft ? (
+        <Button size="sm" variant="ghost" className="self-start" leftIcon={<GitPullRequestDraft />} loading={setDraft.isPending} onClick={() => setDraft.mutate(true, { onError: (e) => toast.error(errorMessage(e, "Couldn't change it.")) })}>
+          Convert to draft
+        </Button>
+      ) : null}
+      <LabelPickerDialog repoId={repo.id} open={labelsOpen} onOpenChange={setLabelsOpen} value={(p.labels ?? []).map((l) => l.id)} onSave={(ids) => setLabels.mutateAsync(ids)} saving={setLabels.isPending} />
+      <Dialog
+        open={assigning}
+        onOpenChange={setAssigning}
+        title="Assignees"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setAssigning(false)}>
+              Cancel
+            </Button>
+            <Button
+              loading={setAssignees.isPending}
+              onClick={async () => {
+                try {
+                  await setAssignees.mutateAsync(picked.map((x) => x.id));
+                  setAssigning(false);
+                } catch (e) {
+                  toast.error(errorMessage(e, "Couldn't assign them."));
+                }
+              }}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <PeoplePicker repoId={repo.id} value={picked} onChange={setPicked} title="People who can open the repository" />
+      </Dialog>
+    </div>
+  );
+}
+
 // ---- commits and files ---------------------------------------------------------
 
 function PullCommits({ repo, commits }: { repo: ReposRepo; pull: ReposPull; commits: ReturnType<typeof useReposPullCommits> }) {
@@ -957,13 +1432,29 @@ function PullCommits({ repo, commits }: { repo: ReposRepo; pull: ReposPull; comm
   );
 }
 
-function PullFiles({ repo, pull: p, diff }: { repo: ReposRepo; pull: ReposPull; diff: ReturnType<typeof useReposPullDiff> }) {
+function PullFiles({
+  repo,
+  pull: p,
+  diff,
+  ignoreWhitespace,
+  onIgnoreWhitespace,
+}: {
+  repo: ReposRepo;
+  pull: ReposPull;
+  diff: ReturnType<typeof useReposPullDiff>;
+  ignoreWhitespace: boolean;
+  onIgnoreWhitespace: (on: boolean) => void;
+}) {
   const [mode, setMode] = useDiffMode();
   const threads = useReposThreads(repo.id, p.number);
   const add = useAddReposComment(repo.id, p.number);
   const loadFile = useReposDiffFileLoader(repo.id, { pull: p.number });
   const [reviewing, setReviewing] = useState(false);
   const canComment = repo.my_level !== "view";
+  const own = !reposPlatformName(repo);
+  const viewed = useReposViewedFiles(repo.id, p.number, own);
+  const setViewed = useSetReposViewed(repo.id, p.number);
+  const pending = useReposPendingReview(repo.id, p.number, own && canComment);
   if (diff.isPending) return <DiffSkeleton />;
   if (diff.isError) {
     return (
@@ -979,11 +1470,17 @@ function PullFiles({ repo, pull: p, diff }: { repo: ReposRepo; pull: ReposPull; 
         <span className="type-label text-fg-muted">
           {d.files.length} {d.files.length === 1 ? "file" : "files"}, <span className="text-success-strong">+{d.additions}</span> <span className="text-danger-strong">−{d.deletions}</span>
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        {own && viewed.data ? (
+          <span className="type-caption tabular-nums text-fg-muted">
+            {d.files.filter((f) => viewed.data.items.includes(f.path)).length} of {d.files.length} viewed
+          </span>
+        ) : null}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {own ? <Checkbox checked={ignoreWhitespace} onCheckedChange={onIgnoreWhitespace} label={<span className="type-label">Hide whitespace</span>} /> : null}
           <DiffModeToggle mode={mode} onChange={setMode} />
           {canComment && p.state === "open" ? (
             <Button size="sm" onClick={() => setReviewing(true)}>
-              Review changes
+              {pending.data?.comments ? `Finish review (${pending.data.comments})` : "Review changes"}
             </Button>
           ) : null}
         </div>
@@ -995,9 +1492,17 @@ function PullFiles({ repo, pull: p, diff }: { repo: ReposRepo; pull: ReposPull; 
         headRef={p.head_branch}
         filesTruncated={d.files_truncated}
         loadFile={loadFile}
+        {...(own
+          ? {
+              viewed: { paths: viewed.data?.items ?? [], onToggle: (path: string, on: boolean) => setViewed.mutate({ path, viewed: on }) },
+              images: { base: diff.data.base, head: diff.data.head },
+            }
+          : {})}
         comments={{
           threads: threads.data?.items ?? [],
           canComment: canComment,
+          reviews: own && p.state === "open",
+          suggestions: own && p.state === "open",
           onComment: async (c) => {
             try {
               await add.mutateAsync(c);
@@ -1032,6 +1537,10 @@ function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; on
   const canRequestChanges = reposSupports(repo, "request_changes");
   const [state, setState] = useState<"comment" | "approve" | "request_changes">("comment");
   const [body, setBody] = useState("");
+  const appRepo = !reposPlatformName(repo);
+  const pending = useReposPendingReview(repo.id, p.number, appRepo && open);
+  const discard = useDiscardReposPendingReview(repo.id, p.number);
+  const held = pending.data?.comments ?? 0;
   return (
     <Dialog
       open={open}
@@ -1040,12 +1549,22 @@ function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; on
       info={!canDecide ? (own ? `You can't approve your own ${reposPullNoun(repo).toLowerCase()}.` : "Approving and requesting changes needs edit access.") : undefined}
       footer={
         <>
+          {held ? (
+            <Button
+              variant="ghost"
+              className="sm:mr-auto"
+              loading={discard.isPending}
+              onClick={() => discard.mutate(undefined, { onSuccess: () => (toast.success("Pending comments discarded"), onOpenChange(false)), onError: (e) => toast.error(errorMessage(e, "Couldn't discard them.")) })}
+            >
+              Discard {held} pending
+            </Button>
+          ) : null}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
             loading={submit.isPending}
-            disabled={(state !== "approve" && !body.trim())}
+            disabled={state !== "approve" && !body.trim() && held === 0}
             onClick={async () => {
               try {
                 await submit.mutateAsync({ state, body });
@@ -1063,6 +1582,11 @@ function ReviewDialog({ open, onOpenChange, repo, pull: p }: { open: boolean; on
       }
     >
       <div className="flex flex-col gap-4">
+        {held ? (
+          <p className="type-label text-fg-muted">
+            {held} pending {held === 1 ? "comment goes" : "comments go"} out with this review.
+          </p>
+        ) : null}
         <Field label="Summary">
           <TextArea value={body} onChange={(e) => setBody(e.target.value)} minRows={4} autoFocus placeholder={state === "approve" ? "Optional" : "What you found"} />
         </Field>

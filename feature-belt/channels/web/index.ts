@@ -2,6 +2,7 @@
 export { WorkspaceLayout, WorkspaceHome } from "./WorkspaceLayout";
 export { ChannelScreen } from "./ChannelScreen";
 export { ThreadsScreen, LaterScreen, SearchScreen, BrowseScreen } from "./ListScreens";
+export { ActivityScreen, UnreadsScreen, DraftsScreen } from "./MoreScreens";
 export { AdminChannelsScreen } from "./admin/AdminChannelsScreen";
 export { AdminChannelScreen } from "./admin/AdminChannelScreen";
 export { Markdown } from "./Markdown";

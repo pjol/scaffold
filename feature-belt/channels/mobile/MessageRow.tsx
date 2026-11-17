@@ -1,6 +1,5 @@
 import {
   channelsAuthorName,
-  channelsFileSize,
   channelsReplyCount,
   channelsShortTime,
   channelsSystemText,
@@ -9,12 +8,14 @@ import {
   type ChannelsAttachment,
   type ChannelsCachedMessage,
 } from "@scaffoldapp/shared";
-import { Avatar, AvatarGroup, Badge, Button, Spinner, Text, haptic, useTheme } from "@scaffoldapp/ui-native";
+import { Avatar, AvatarGroup, Badge, Button, FilePreview, Spinner, Text, haptic, useTheme } from "@scaffoldapp/ui-native";
 import { Image } from "expo-image";
-import { Bot, FileText, Film, Music, Pin } from "lucide-react-native";
+import { Bot, Pin } from "lucide-react-native";
 import { memo, useState } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { EmojiGlyph } from "./emoji";
 import { ChannelsMarkdown } from "./Markdown";
+import { ForwardCard, LinkPreviews, PollCard } from "./MessageExtras";
 
 export interface MessageRowProps {
   message: ChannelsCachedMessage;
@@ -35,6 +36,14 @@ export interface MessageRowProps {
   onRetry: (m: ChannelsCachedMessage) => void;
   onDiscard: (m: ChannelsCachedMessage) => void;
   onOpenImage: (m: ChannelsCachedMessage, attachmentId: string) => void;
+  onOpenProfile?: (userId: string) => void;
+  onHidePreviews?: (m: ChannelsCachedMessage) => void;
+  /** Names for poll voters (people seen in this conversation). */
+  names?: Map<string, string>;
+  /** A channel or org admin (may close others' polls). */
+  canModerate?: boolean;
+  /** /collapse: previews and media hidden. */
+  collapsed?: boolean;
 }
 
 function useSrc(a: ChannelsAttachment): { src: string; onError: () => void } {
@@ -60,46 +69,21 @@ function ImageTile({ a, size, pending, onPress }: { a: ChannelsAttachment; size:
   );
 }
 
+/** Video, audio and other files through the shared preview kit (opens in-app or in the browser). */
 function FileTile({ a, pending }: { a: ChannelsAttachment; pending: boolean }) {
   const theme = useTheme();
-  const c = theme.colors;
-  const s = theme.space;
   const { src } = useSrc(a);
-  const Icon = a.kind === "video" ? Film : a.kind === "audio" ? Music : FileText;
-  return (
-    <Pressable
-      accessibilityRole="link"
-      accessibilityLabel={`Open ${a.file_name || "file"}`}
-      disabled={pending || !src}
-      onPress={() => void Linking.openURL(src)}
-      style={({ pressed }) => ({
-        flexDirection: "row",
-        alignItems: "center",
-        gap: s[3],
-        minHeight: theme.tap.base,
-        maxWidth: 320,
-        paddingHorizontal: s[3],
-        paddingVertical: s[2],
-        borderRadius: theme.radius.md,
-        borderWidth: 1,
-        borderColor: c.border,
-        backgroundColor: pressed ? c.sunken : c.surface,
-      })}
-    >
-      <Icon color={c.textMuted} size={20} />
-      <View style={{ flex: 1, minWidth: 0 }}>
+  if (pending || !src) {
+    return (
+      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[2], minHeight: theme.tap.base }}>
+        <Spinner label="Uploading" />
         <Text role="label" numberOfLines={1}>
-          {a.file_name || (a.kind === "video" ? "Video" : a.kind === "audio" ? "Audio" : "File")}
+          {a.file_name || "File"}
         </Text>
-        {a.size_bytes ? (
-          <Text role="caption" tone="muted">
-            {channelsFileSize(a.size_bytes)}
-          </Text>
-        ) : null}
       </View>
-      {pending ? <Spinner /> : null}
-    </Pressable>
-  );
+    );
+  }
+  return <FilePreview compact url={src} name={a.file_name || "file"} mime={a.content_type} size={a.size_bytes ?? undefined} downloadUrl={src} style={{ maxWidth: 320 }} />;
 }
 
 /** A message's files: photos in a row, everything else as file rows. */
@@ -201,6 +185,10 @@ export const MessageRow = memo(function MessageRow(p: MessageRowProps) {
             <View style={{ width: s[8], height: s[8], borderRadius: theme.radius.md, alignItems: "center", justifyContent: "center", backgroundColor: c.accentSoft }}>
               <Bot color={c.accentStrong} size={20} />
             </View>
+          ) : m.sender && !m.sender.deleted && p.onOpenProfile ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={`${author}'s profile`} onPress={() => m.sender && p.onOpenProfile?.(m.sender.id)} hitSlop={s[1]}>
+              <Avatar name={author} src={m.sender.avatar_url} size="sm" />
+            </Pressable>
           ) : (
             <Avatar name={author} src={m.sender?.avatar_url ?? null} size="sm" />
           )}
@@ -213,7 +201,7 @@ export const MessageRow = memo(function MessageRow(p: MessageRowProps) {
               </Text>
               {m.kind === "bot" ? (
                 <Badge size="sm" tone="accent">
-                  App
+                  {m.integration ? "Integration" : "App"}
                 </Badge>
               ) : null}
               <Text role="caption" tone="muted">
@@ -233,13 +221,27 @@ export const MessageRow = memo(function MessageRow(p: MessageRowProps) {
             </Text>
           ) : (
             <>
-              {m.body ? <ChannelsMarkdown body={m.body} mentions={m.mentions} meId={meId} /> : null}
+              {m.poll ? (
+                <PollCard message={m} meId={meId} canVote={canInteract} canClose={canInteract && (m.sender?.id === meId || !!p.canModerate)} names={p.names ?? new Map()} />
+              ) : m.body ? (
+                <ChannelsMarkdown body={m.body} mentions={m.mentions} meId={meId} />
+              ) : null}
               {m.edited_at ? (
                 <Text role="caption" tone="muted">
                   Edited
                 </Text>
               ) : null}
-              {m.attachments.length > 0 ? <ChannelsAttachments message={m} onOpenImage={(id) => p.onOpenImage(m, id)} /> : null}
+              {m.forward ? <ForwardCard messageId={m.forward.message_id} meId={meId} /> : null}
+              {m.attachments.length > 0 ? (
+                p.collapsed ? (
+                  <Text role="caption" tone="muted">
+                    {m.attachments.length === 1 ? "1 file (collapsed)" : `${m.attachments.length} files (collapsed)`}
+                  </Text>
+                ) : (
+                  <ChannelsAttachments message={m} onOpenImage={(id) => p.onOpenImage(m, id)} />
+                )
+              ) : null}
+              {!p.collapsed ? <LinkPreviews message={m} own={m.sender?.id === meId} onRemove={() => p.onHidePreviews?.(m)} /> : null}
             </>
           )}
           {m.reactions.length > 0 && !m.deleted ? (
@@ -267,7 +269,7 @@ export const MessageRow = memo(function MessageRow(p: MessageRowProps) {
                       backgroundColor: mine ? c.primarySoft : c.surface,
                     }}
                   >
-                    <Text role="label">{r.emoji}</Text>
+                    <EmojiGlyph value={r.emoji} />
                     <Text role="label" tabular style={{ color: mine ? c.primaryStrong : c.text }}>
                       {r.count}
                     </Text>

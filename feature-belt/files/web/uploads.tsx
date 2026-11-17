@@ -17,6 +17,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, IconButton, cn, toast } from "@scaffoldapp/ui-web";
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, RotateCcw, X } from "lucide-react";
+import { filesCapturePoster } from "./depth";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 /** A file chosen or dropped, with its path inside a dropped folder ("" for loose files). */
@@ -71,7 +72,7 @@ const Ctx = createContext<UploadsContext | null>(null);
 const CONCURRENCY = 3;
 
 /** Sends bytes with XMLHttpRequest so the tray can show progress. */
-const xhrPut: FilesPutFn = (url, headers, body, { signal, onProgress }) =>
+export const xhrPut: FilesPutFn = (url, headers, body, { signal, onProgress }) =>
   new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
@@ -186,6 +187,12 @@ export function FilesUploadsProvider({ children }: { children: ReactNode }) {
           onProgress: (sent) => patch(t.id, { sent }),
         });
         patch(t.id, { state: "done", sent: t.file.size, result });
+        if (result.preview === "video") {
+          // A poster frame for grids and players (best effort; the server re-encodes it).
+          void filesCapturePoster(t.file).then((dataUrl) => {
+            if (dataUrl) void filesEndpoints(api.http).putThumbnail(result.id, dataUrl).then(() => qc.invalidateQueries({ queryKey: ["files", "list"] }), () => undefined);
+          });
+        }
         void qc.invalidateQueries({ queryKey: ["files", "list"] });
         void qc.invalidateQueries({ queryKey: ["files", "drive", t.orgId] });
         if (t.itemId) void qc.invalidateQueries({ queryKey: ["files", "item", t.itemId] });

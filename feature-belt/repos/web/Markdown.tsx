@@ -1,6 +1,6 @@
 "use client";
 
-import { reposInlineText, reposParseMarkdown, reposResolvePath, type ReposMdBlock, type ReposMdInline } from "@scaffoldapp/shared";
+import { reposInlineText, reposIsConnectedId, reposParseMarkdown, reposResolvePath, useReposBlob, type ReposMdBlock, type ReposMdInline, type ReposMention } from "@scaffoldapp/shared";
 import { cn } from "@scaffoldapp/ui-web";
 import Link from "next/link";
 import { Fragment, useMemo, type ReactNode } from "react";
@@ -13,6 +13,8 @@ export interface RepoMarkdownProps {
   gitRef?: string | undefined;
   dir: string;
   className?: string;
+  /** Names for <@id> mention tokens (comments, issues). */
+  mentions?: ReposMention[] | undefined;
 }
 
 function slug(text: string): string {
@@ -24,9 +26,9 @@ function slug(text: string): string {
 }
 
 /** A rendered README: GitHub-flavoured Markdown, raw HTML shown as text. */
-export function RepoMarkdown({ source, repoId, gitRef, dir, className }: RepoMarkdownProps) {
+export function RepoMarkdown({ source, repoId, gitRef, dir, className, mentions }: RepoMarkdownProps) {
   const blocks = useMemo(() => reposParseMarkdown(source), [source]);
-  const ctx = { repoId, gitRef, dir };
+  const ctx: Ctx = { repoId, gitRef, dir, mentions: new Map((mentions ?? []).map((m) => [m.id, m.display_name])), refs: !reposIsConnectedId(repoId) };
   return (
     <div className={cn("flex min-w-0 max-w-prose flex-col gap-4 type-body text-fg [overflow-wrap:anywhere]", className)}>
       {blocks.map((b, i) => (
@@ -36,7 +38,59 @@ export function RepoMarkdown({ source, repoId, gitRef, dir, className }: RepoMar
   );
 }
 
-type Ctx = { repoId: string; gitRef?: string | undefined; dir: string };
+type Ctx = { repoId: string; gitRef?: string | undefined; dir: string; mentions?: Map<string, string>; refs?: boolean };
+
+const RICH_RE = /<@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})>|(^|[^\w&/#])#(\d{1,9})\b/g;
+
+/** Text with <@id> mentions as @names and #12 linked to the issue or pull request. */
+function RichText({ text, ctx }: { text: string; ctx: Ctx }): ReactNode {
+  if (!text.includes("<@") && !(ctx.refs && text.includes("#"))) return text;
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(RICH_RE)) {
+    const at = m.index ?? 0;
+    if (m[1]) {
+      out.push(text.slice(last, at));
+      const name = ctx.mentions?.get(m[1]);
+      out.push(
+        <span key={at} className="rounded-xs bg-primary-soft px-0.5 font-semibold text-primary-strong">
+          @{name ?? "someone"}
+        </span>,
+      );
+      last = at + m[0].length;
+    } else if (m[3] && ctx.refs) {
+      const lead = m[2] ?? "";
+      out.push(text.slice(last, at) + lead);
+      out.push(
+        <Link key={at} href={`/repos/${ctx.repoId}/issues/${m[3]}`} className={linkClass}>
+          #{m[3]}
+        </Link>,
+      );
+      last = at + m[0].length;
+    }
+  }
+  out.push(text.slice(last));
+  return <>{out}</>;
+}
+
+/** An image stored in the repository, read from git (no outside fetch). */
+function RepoImage({ ctx, path, alt }: { ctx: Ctx; path: string; alt: string }) {
+  const blob = useReposBlob(ctx.repoId, { ref: ctx.gitRef, path });
+  const href = `/repos/${ctx.repoId}/blob?${new URLSearchParams({ path, ...(ctx.gitRef ? { ref: ctx.gitRef } : {}) }).toString()}`;
+  if (blob.isPending) return <span className="inline-block h-6 w-24 animate-pulse rounded-xs bg-sunken motion-reduce:animate-none" aria-label={alt || "Loading image"} />;
+  const b = blob.data;
+  if (!b || !b.image || b.too_large || b.encoding !== "base64") {
+    return (
+      <Link href={href} className={linkClass}>
+        {alt || "Image"}
+      </Link>
+    );
+  }
+  const ext = (path.split(".").pop() ?? "png").toLowerCase();
+  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : ext === "ico" ? "image/x-icon" : ext === "bmp" ? "image/bmp" : "image/png";
+  // eslint-disable-next-line @next/next/no-img-element -- a data URL from the repository, not an optimisable remote image
+  return <img src={`data:${mime};base64,${b.content}`} alt={alt} className="inline max-h-[32rem] max-w-full rounded-xs align-middle" loading="lazy" />;
+}
 
 function repoHref(ctx: Ctx, href: string): { internal: boolean; href: string } {
   if (/^(https?:|mailto:)/i.test(href)) return { internal: false, href };
@@ -65,7 +119,11 @@ function Block({ block: b, ctx }: { block: ReposMdBlock; ctx: Ctx }): ReactNode 
         </p>
       );
     case "text":
-      return <p className="whitespace-pre-wrap">{b.text}</p>;
+      return (
+        <p className="whitespace-pre-wrap">
+          <RichText text={b.text} ctx={ctx} />
+        </p>
+      );
     case "code":
       return <CodeView code={b.text} language={b.lang || "plaintext"} numbers={false} className="rounded-md border border-border bg-sunken py-2" />;
     case "hr":
@@ -139,7 +197,11 @@ function Inline({ nodes, ctx }: { nodes: ReposMdInline[]; ctx: Ctx }): ReactNode
       {nodes.map((n, i) => {
         switch (n.t) {
           case "text":
-            return <Fragment key={i}>{n.text}</Fragment>;
+            return (
+              <Fragment key={i}>
+                <RichText text={n.text} ctx={ctx} />
+              </Fragment>
+            );
           case "br":
             return <br key={i} />;
           case "strong":
@@ -179,8 +241,11 @@ function Inline({ nodes, ctx }: { nodes: ReposMdInline[]; ctx: Ctx }): ReactNode
             );
           }
           case "image": {
-            // Images aren't loaded (an outside image would tell its host who reads the README); link to them instead.
+            // Images in the repository come from git; outside images stay links (loading one would tell its host who reads the page).
             const l = repoHref(ctx, n.src);
+            if (l.internal && !n.src.startsWith("#")) {
+              return <RepoImage key={i} ctx={ctx} path={reposResolvePath(ctx.dir, n.src)} alt={n.alt} />;
+            }
             return l.internal ? (
               <Link key={i} href={l.href} className={linkClass}>
                 {n.alt || "Image"}

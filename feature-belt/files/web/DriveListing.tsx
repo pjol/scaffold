@@ -33,13 +33,14 @@ import {
   sourceFilterOptions,
   toast,
 } from "@scaffoldapp/ui-web";
-import { ArrowDownUp, Check, Download, FileUp, FolderInput, FolderPlus, FolderUp, LayoutGrid, List, Plus, RotateCcw, Search, Star, Trash, Upload, Users, X } from "lucide-react";
+import { ArrowDownUp, Check, Download, FileUp, FolderInput, FolderPlus, FolderUp, LayoutGrid, List, Plus, RotateCcw, Search, SlidersHorizontal, Star, Trash, Upload, Users, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { useUrlState } from "@/lib/url-state";
 import { useFilesActions } from "./actions";
 import { ConnectedSearchGroup } from "./ConnectedScreens";
+import { FilesSearchFiltersBar, useFilesSearchFilters } from "./depth";
 import { filesTypeIcon } from "./icons";
 import { ItemList } from "./ItemList";
 import { dragHasFiles, filesFromDrop, filesFromInput, useFilesUploads } from "./uploads";
@@ -117,7 +118,9 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
   const [sourceId, setSourceId] = useUrlState("source", "all");
   const connectedSources = (sources.data?.sources ?? []).filter((x) => x.type === "connected" && x.status === "active");
   const onlySource = connectedSources.find((x) => x.id === sourceId);
-  const search = useFilesSearch(orgId, onlySource ? "" : debounced);
+  const filterState = useFilesSearchFilters();
+  const [showFilters, setShowFilters] = useState(filterState.active);
+  const search = useFilesSearch(orgId, onlySource ? "" : debounced, undefined, filterState.filters);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dropping, setDropping] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -135,7 +138,8 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
     folderInput.current?.setAttribute("webkitdirectory", "");
   }, []);
 
-  const searching = debounced.trim().length > 0;
+  const texting = debounced.trim().length > 0;
+  const searching = texting || filterState.active;
   const list = searching ? null : query;
   const items = useMemo(() => (searching ? (search.data?.items.map((h) => h.item) ?? []) : (query.data?.items ?? [])), [searching, search.data, query.data]);
   const snippets = useMemo(() => Object.fromEntries((search.data?.items ?? []).filter((h) => h.snippet).map((h) => [h.item.id, h.snippet])), [search.data]);
@@ -236,7 +240,7 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
 
   const pending = searching ? search.isPending && !onlySource : query.isPending;
   const error = searching ? search.error : query.error;
-  const withConnected = searching && sourceId === "all" && connectedSources.length > 0;
+  const withConnected = texting && sourceId === "all" && connectedSources.length > 0;
 
   return (
     <div
@@ -287,6 +291,16 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
             wrapperClassName="min-w-0 flex-1 sm:max-w-sm"
           />
           )}
+          {trash ? null : (
+            <IconButton
+              label={showFilters ? "Hide filters" : "Filters"}
+              icon={<SlidersHorizontal />}
+              variant={filterState.active ? "soft" : "ghost"}
+              tooltip
+              aria-pressed={showFilters}
+              onClick={() => setShowFilters((v) => !v)}
+            />
+          )}
           <div className="ml-auto flex items-center gap-2">
             {sortable && !searching ? <SortMenu sort={sort} /> : null}
             <SegmentedControl
@@ -303,7 +317,9 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
         </div>
       )}
 
-      {searching && connectedSources.length > 0 ? (
+      {!trash && chosen.length === 0 && (showFilters || filterState.active) ? <FilesSearchFiltersBar state={filterState} folderId={target?.parentId} /> : null}
+
+      {texting && connectedSources.length > 0 ? (
         <SourceFilter
           options={sourceFilterOptions({ appLabel: "Files", sources: sources.data?.sources ?? [] })}
           value={onlySource || sourceId === "app" ? sourceId : "all"}
@@ -312,7 +328,7 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
         />
       ) : null}
 
-      {searching && onlySource ? (
+      {texting && onlySource ? (
         <ConnectedSearchGroup source={onlySource} q={debounced} orgId={orgId} limit={0} />
       ) : pending ? (
         <SkeletonGroup label="Loading files" className="flex flex-col">
@@ -327,7 +343,21 @@ export function DriveListing({ orgId, title, above, query, target, sharedRoot, s
         withConnected ? (
           <p className="type-caption text-fg-muted">No matches in Files.</p>
         ) : searching ? (
-          <EmptyState icon={<Search />} title={`Nothing matches “${debounced.trim()}”`} action={<Button variant="secondary" onClick={() => setDraft("")}>Clear search</Button>} />
+          <EmptyState
+            icon={<Search />}
+            title={texting ? `Nothing matches “${debounced.trim()}”` : "Nothing matches these filters"}
+            action={
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setDraft("");
+                  filterState.clear();
+                }}
+              >
+                Clear search
+              </Button>
+            }
+          />
         ) : (
           <EmptyState
             icon={empty.icon}

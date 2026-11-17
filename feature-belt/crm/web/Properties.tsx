@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  CRM_FORECAST_LABEL,
+  CRM_TYPE_LABEL,
   accessLevelAtLeast,
   crmFieldText,
   crmMoneyInput,
@@ -17,22 +19,34 @@ import {
   type CrmProperty,
   type CrmRecord,
 } from "@scaffoldapp/shared";
-import { Badge, Button, Card, Checkbox, Dialog, IconButton, Input, Select, Skeleton, SkeletonGroup, TextArea, ToggleChip, toast } from "@scaffoldapp/ui-web";
+import { Badge, Button, Card, Checkbox, Dialog, IconButton, InfoTip, Input, Select, Skeleton, SkeletonGroup, TextArea, ToggleChip, toast } from "@scaffoldapp/ui-web";
 import { Pencil, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { formatDateTime } from "@/lib/format";
 import { useCrm } from "./CrmFrame";
-import { MemberPicker, MoneyText, PersonChip, RecordLink, RecordPicker, StageBadge, TagList, dayLabel } from "./parts";
+
+import { MemberPicker, MoneyText, PersonChip, PriorityBadge, RecordLink, RecordPicker, StageBadge, TagList, dayLabel, pipelinesFor } from "./parts";
+
+/** Built-in selects that can be emptied ("" clears them; a forecast category then follows the stage). */
+const CLEARABLE = new Set(["lead_status", "forecast_category"]);
 
 /** Read-only fields shown at the bottom. */
-const SYSTEM = new Set(["created_at", "updated_at", "last_activity_at", "stage_entered_at", "closed_at", "probability", "weighted_amount", "name"]);
+const SYSTEM = new Set(["created_at", "updated_at", "last_activity_at", "stage_entered_at", "first_response_at", "closed_at", "probability", "weighted_amount", "pipeline", "name"]);
 
 /** Which built-in fields a record page lists, in order (the rest are in the header or associations). */
 const ORDER: Record<CrmObjectType, string[]> = {
-  company: ["domain", "industry", "employees", "phone", "city", "country", "owner", "team", "tags", "description"],
-  contact: ["first_name", "last_name", "emails", "phones", "job_title", "lifecycle_stage", "city", "country", "owner", "team", "tags"],
-  deal: ["amount", "currency", "stage", "close_date", "company", "owner", "team", "tags"],
+  company: ["name", "domain", "industry", "employees", "phone", "city", "country", "owner", "team", "tags", "description"],
+  contact: ["first_name", "last_name", "emails", "phones", "job_title", "lifecycle_stage", "lead_status", "score", "city", "country", "owner", "team", "tags"],
+  deal: ["name", "amount", "currency", "stage", "forecast_category", "close_date", "company", "owner", "team", "tags"],
+  ticket: ["name", "stage", "priority", "category", "channel", "description", "company", "deal", "owner", "team", "tags"],
 };
+
+/** Built-in fields a person can't type into, with why (shown as a tip next to the label). */
+function readOnlyReason(record: CrmRecord, key: string): string | null {
+  if (key === "score") return "The points of every scoring rule this contact matches (CRM settings → Lead scoring). It updates when the contact changes and every few hours.";
+  if (key === "amount" && record.type === "deal" && record.amount_from_items) return "The amount follows the line items' contract value. Turn that off in Line items to type an amount.";
+  return null;
+}
 
 /** Properties on the left of a record page: every field, edited in place when you can edit. */
 export function PropertiesPanel({ record }: { record: CrmRecord }) {
@@ -59,16 +73,23 @@ export function PropertiesPanel({ record }: { record: CrmRecord }) {
   const system = list.filter((p) => SYSTEM.has(p.key) && p.key !== "name");
   return (
     <Card padding="compact" className="flex flex-col gap-4">
-      <h2 className="type-title-sm text-fg">About this {record.type}</h2>
+      <h2 className="type-title-sm text-fg">About this {CRM_TYPE_LABEL[record.type].one}</h2>
       <dl className="flex flex-col gap-3">
         {[...builtin, ...custom].map((p) => (
-          <PropertyRow key={p.key} record={record} prop={p} editable={editable && p.editable} />
+          <PropertyRow key={p.key} record={record} prop={p} editable={editable && p.editable && readOnlyReason(record, p.key) === null} tip={readOnlyReason(record, p.key)} />
         ))}
       </dl>
       <dl className="flex flex-col gap-2 border-t border-border pt-3">
         {system.map((p) => {
           const v = (record as unknown as Record<string, unknown>)[p.key];
-          const text = p.type === "datetime" ? (typeof v === "string" ? formatDateTime(v) : "") : crmFieldText(record, p);
+          const text =
+            p.type === "datetime"
+              ? typeof v === "string"
+                ? formatDateTime(v)
+                : ""
+              : p.key === "pipeline" && (record.type === "deal" || record.type === "ticket")
+                ? record.pipeline_name
+                : crmFieldText(record, p);
           if (!text) return null;
           return (
             <div key={p.key} className="flex items-baseline justify-between gap-3">
@@ -82,7 +103,7 @@ export function PropertiesPanel({ record }: { record: CrmRecord }) {
   );
 }
 
-function PropertyRow({ record, prop, editable }: { record: CrmRecord; prop: CrmProperty; editable: boolean }) {
+function PropertyRow({ record, prop, editable, tip }: { record: CrmRecord; prop: CrmProperty; editable: boolean; tip?: string | null }) {
   const [editing, setEditing] = useState(false);
   const update = useCrmUpdateRecord(record.type, record.id);
   const save = (value: unknown) => {
@@ -96,7 +117,10 @@ function PropertyRow({ record, prop, editable }: { record: CrmRecord; prop: CrmP
   const inlineToggle = prop.type === "checkbox";
   return (
     <div className="group flex flex-col gap-1">
-      <dt className="type-caption text-fg-muted">{prop.label}</dt>
+      <dt className="flex items-center gap-1 type-caption text-fg-muted">
+        {prop.label}
+        {tip ? <InfoTip content={tip} label={`About ${prop.label}`} /> : null}
+      </dt>
       <dd className="min-w-0">
         {editing ? (
           <PropertyEditor record={record} prop={prop} onSave={save} onCancel={() => setEditing(false)} />
@@ -132,11 +156,26 @@ export function PropertyValue({ record, prop }: { record: CrmRecord; prop: CrmPr
     case "tags":
       return record.tags.length ? <TagList tags={record.tags} max={8} /> : empty;
     case "stage":
-      return record.type === "deal" ? <StageBadge name={record.stage.name} outcome={record.stage.outcome} /> : empty;
+      return record.type === "deal" || record.type === "ticket" ? <StageBadge name={record.stage.name} outcome={record.stage.outcome} /> : empty;
     case "amount":
       return record.type === "deal" ? <MoneyText minor={record.amount} currency={record.currency} className="font-semibold" /> : empty;
     case "company":
-      return record.type === "deal" && record.company ? <RecordLink type="company" id={record.company.id} name={record.company.name} /> : empty;
+      return (record.type === "deal" || record.type === "ticket") && record.company ? <RecordLink type="company" id={record.company.id} name={record.company.name} /> : empty;
+    case "deal":
+      return record.type === "ticket" && record.deal ? <RecordLink type="deal" id={record.deal.id} name={record.deal.name} /> : empty;
+    case "priority":
+      return record.type === "ticket" ? <PriorityBadge priority={record.priority} /> : empty;
+    case "score":
+      return record.type === "contact" ? <span className="font-semibold tabular-nums">{record.score.toLocaleString()}</span> : empty;
+    case "forecast_category":
+      return record.type === "deal" && record.forecast_category ? (
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="truncate">{CRM_FORECAST_LABEL[record.forecast_category]}</span>
+          {record.forecast_category_set === false ? <span className="shrink-0 type-caption text-fg-muted">From the stage</span> : null}
+        </span>
+      ) : (
+        empty
+      );
     case "emails":
       return record.type === "contact" && record.emails.length ? (
         <span className="flex min-w-0 flex-col">
@@ -162,7 +201,12 @@ export function PropertyValue({ record, prop }: { record: CrmRecord; prop: CrmPr
         empty
       );
     case "description":
-      return record.type === "company" && record.description ? <span className="whitespace-pre-wrap">{record.description}</span> : empty;
+      return (record.type === "company" || record.type === "ticket") && record.description ? <span className="whitespace-pre-wrap break-words">{record.description}</span> : empty;
+  }
+  if (prop.builtin && prop.type === "select") {
+    const v = (record as unknown as Record<string, unknown>)[prop.key];
+    const label = typeof v === "string" ? (prop.options.find((o) => o.value === v)?.label ?? v) : "";
+    return label ? <span className="truncate">{label}</span> : empty;
   }
   if (prop.type === "date") {
     const v = prop.builtin ? (record as unknown as Record<string, string | null>)[prop.key] : (record.props[prop.key] as string | undefined);
@@ -223,6 +267,8 @@ function PropertyEditor({ record, prop, onSave, onCancel }: { record: CrmRecord;
       return <StageEditor orgId={orgId} record={record} onSave={onSave} onCancel={onCancel} />;
     case "company":
       return <CompanyEditor orgId={orgId} onSave={onSave} onCancel={onCancel} />;
+    case "deal":
+      return <DealEditor orgId={orgId} onSave={onSave} onCancel={onCancel} />;
     case "select":
       return (
         <div className="flex items-center gap-2">
@@ -234,6 +280,9 @@ function PropertyEditor({ record, prop, onSave, onCancel }: { record: CrmRecord;
             options={prop.options.map((o) => ({ value: o.value, label: o.label }))}
           />
           {!prop.builtin ? <IconButton label={`Clear ${prop.label}`} icon={<X />} size="sm" onClick={() => onSave(null)} /> : null}
+          {CLEARABLE.has(prop.key) && (prop.key === "forecast_category" ? record.type === "deal" && !!record.forecast_category_set : !!current) ? (
+            <IconButton label={prop.key === "forecast_category" ? "Follow the stage" : `Clear ${prop.label}`} icon={<X />} size="sm" onClick={() => onSave("")} />
+          ) : null}
           <Button variant="ghost" size="sm" onClick={onCancel}>
             Cancel
           </Button>
@@ -363,16 +412,17 @@ function TeamEditor({ orgId, value, onSave, onCancel }: { orgId: string; value: 
 }
 
 function StageEditor({ orgId, record, onSave, onCancel }: { orgId: string; record: CrmRecord; onSave: (v: unknown) => void; onCancel: () => void }) {
-  const pipelines = useCrmPipelines(orgId, crmSourceIdOf(record));
-  if (record.type !== "deal") return null;
+  const all = useCrmPipelines(orgId, crmSourceIdOf(record));
+  if (record.type !== "deal" && record.type !== "ticket") return null;
+  const pipelines = pipelinesFor(all.data, record.type);
   return (
     <div className="flex items-center gap-2">
       <Select
-        aria-label="Stage"
+        aria-label={record.type === "ticket" ? "Status" : "Stage"}
         className="flex-1"
         value={record.stage.id}
         onValueChange={(v) => onSave(v)}
-        options={(pipelines.data ?? []).flatMap((p) => p.stages.map((s) => ({ value: s.id, label: (pipelines.data?.length ?? 0) > 1 ? `${p.name} · ${s.name}` : s.name })))}
+        options={pipelines.flatMap((p) => p.stages.map((s) => ({ value: s.id, label: pipelines.length > 1 ? `${p.name} · ${s.name}` : s.name })))}
       />
       <Button variant="ghost" size="sm" onClick={onCancel}>
         Cancel
@@ -388,6 +438,19 @@ function CompanyEditor({ orgId, onSave, onCancel }: { orgId: string; onSave: (v:
         <RecordPicker orgId={orgId} types={["company"]} label="Find a company" autoFocus onPick={(h) => onSave(h.id)} />
         <Button variant="ghost" onClick={() => onSave(null)}>
           Remove the company
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+function DealEditor({ orgId, onSave, onCancel }: { orgId: string; onSave: (v: unknown) => void; onCancel: () => void }) {
+  return (
+    <Dialog open onOpenChange={(o) => !o && onCancel()} title="Deal" size="md">
+      <div className="flex flex-col gap-4">
+        <RecordPicker orgId={orgId} types={["deal"]} label="Find a deal" autoFocus onPick={(h) => onSave(h.id)} />
+        <Button variant="ghost" onClick={() => onSave(null)}>
+          Remove the deal
         </Button>
       </div>
     </Dialog>

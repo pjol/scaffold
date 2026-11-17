@@ -53,6 +53,38 @@ import type {
   ReposTreeCommits,
   ReposUpdatePullRequest,
   ReposUpdateRequest,
+  ReposApplySuggestionsRequest,
+  ReposArchiveFormat,
+  ReposArchiveLink,
+  ReposChecks as ReposChecksResult,
+  ReposCITokens,
+  ReposCreatedCIToken,
+  ReposCreateIssueRequest,
+  ReposInsights,
+  ReposIssue,
+  ReposIssueComment,
+  ReposIssuePage,
+  ReposIssueTimeline,
+  ReposLabel,
+  ReposLabelRequest,
+  ReposLabelRow,
+  ReposMergeMethod,
+  ReposMilestone,
+  ReposMilestoneRequest,
+  ReposMention,
+  ReposPendingReview,
+  ReposReaction,
+  ReposReactionEmoji,
+  ReposReactionSubject,
+  ReposRelease,
+  ReposReleaseAsset,
+  ReposReleaseRequest,
+  ReposTemplate,
+  ReposUpdateIssueRequest,
+  ReposWebhook,
+  ReposWebhookDelivery,
+  ReposWebhookEvent,
+  ReposWebhookRequest,
 } from "./types";
 
 /** Query keys. Everything about one repository sits under `reposKeys.repo(id)`. */
@@ -89,6 +121,24 @@ export const reposKeys = {
   checks: (id: string, sha: string) => ["repos", "repo", id, "checks", sha] as const,
   link: (linkId: string) => ["repos", "link", linkId] as const,
   gitInfo: () => ["repos", "git-info"] as const,
+  issues: (id: string) => ["repos", "repo", id, "issues"] as const,
+  issueList: (id: string, q: string) => ["repos", "repo", id, "issues", q] as const,
+  issue: (id: string, n: number) => ["repos", "repo", id, "issue", n] as const,
+  issueTimeline: (id: string, n: number) => ["repos", "repo", id, "issue", n, "timeline"] as const,
+  labels: (id: string) => ["repos", "repo", id, "labels"] as const,
+  milestones: (id: string, state: string) => ["repos", "repo", id, "milestones", state] as const,
+  templates: (id: string, kind: string) => ["repos", "repo", id, "templates", kind] as const,
+  viewed: (id: string, n: number) => ["repos", "repo", id, "pull", n, "viewed"] as const,
+  pending: (id: string, n: number) => ["repos", "repo", id, "pull", n, "pending"] as const,
+  commitStates: (id: string, shas: string) => ["repos", "repo", id, "commit-states", shas] as const,
+  checksFor: (id: string, sha: string, branch: string) => ["repos", "repo", id, "checks-for", sha, branch] as const,
+  ciTokens: (id: string) => ["repos", "repo", id, "ci-tokens"] as const,
+  releases: (id: string) => ["repos", "repo", id, "releases"] as const,
+  release: (id: string, releaseId: string) => ["repos", "repo", id, "release", releaseId] as const,
+  insights: (id: string) => ["repos", "repo", id, "insights"] as const,
+  webhooks: (id: string) => ["repos", "repo", id, "webhooks"] as const,
+  deliveries: (id: string, hookId: string) => ["repos", "repo", id, "webhooks", hookId, "deliveries"] as const,
+  delivery: (id: string, hookId: string, deliveryId: string) => ["repos", "repo", id, "webhooks", hookId, "delivery", deliveryId] as const,
 };
 
 function retryUnlessClientError(count: number, error: ApiError): boolean {
@@ -402,7 +452,7 @@ export function useReposPull(id: string, n: number): UseQueryResult<ReposPull, A
   return useApiQuery(reposKeys.pull(id, n), ({ signal }) => r.pull(id, n, { signal }), read, n > 0);
 }
 
-export function useReposTimeline(id: string, n: number): UseQueryResult<{ items: ReposTimelineItem[] }, ApiError> {
+export function useReposTimeline(id: string, n: number): UseQueryResult<{ items: ReposTimelineItem[]; mentions?: ReposMention[] }, ApiError> {
   const r = useEndpoints(reposEndpoints);
   return useApiQuery(reposKeys.timeline(id, n), ({ signal }) => r.timeline(id, n, { signal }), read, n > 0);
 }
@@ -412,13 +462,23 @@ export function useReposPullCommits(id: string, n: number, enabled = true): UseQ
   return useApiQuery(reposKeys.pullCommits(id, n), ({ signal }) => r.pullCommits(id, n, { signal }), read, enabled && n > 0);
 }
 
-/** The whole change, one file's full patch (`path`), or one commit's (`commit`). */
-export function useReposPullDiff(id: string, n: number, params: { path?: string; commit?: string } = {}, enabled = true): UseQueryResult<{ base: string; head: string; diff: ReposDiff }, ApiError> {
+/** The whole change, one file's full patch (`path`), or one commit's (`commit`); `ignoreWhitespace` hides whitespace-only changes. */
+export function useReposPullDiff(
+  id: string,
+  n: number,
+  params: { path?: string; commit?: string; ignoreWhitespace?: boolean } = {},
+  enabled = true,
+): UseQueryResult<{ base: string; head: string; diff: ReposDiff }, ApiError> {
   const r = useEndpoints(reposEndpoints);
-  return useApiQuery(reposKeys.pullDiff(id, n, params.path ?? "", params.commit ?? ""), ({ signal }) => r.pullDiff(id, n, params, { signal }), read, enabled && n > 0);
+  return useApiQuery(
+    [...reposKeys.pullDiff(id, n, params.path ?? "", params.commit ?? ""), params.ignoreWhitespace ? "ws" : ""],
+    ({ signal }) => r.pullDiff(id, n, params, { signal }),
+    read,
+    enabled && n > 0,
+  );
 }
 
-export function useReposThreads(id: string, n: number): UseQueryResult<{ items: ReposThread[]; head_sha: string }, ApiError> {
+export function useReposThreads(id: string, n: number): UseQueryResult<{ items: ReposThread[]; head_sha: string; mentions?: ReposMention[] }, ApiError> {
   const r = useEndpoints(reposEndpoints);
   return useApiQuery(reposKeys.threads(id, n), ({ signal }) => r.threads(id, n, { signal }), read, n > 0);
 }
@@ -532,6 +592,448 @@ export function useRemoveReposReviewer(id: string, n: number): UseMutationResult
   return useMutation<void, ApiError, string>({ mutationFn: (userId) => r.removeReviewer(id, n, userId), onSuccess: () => invalidatePull(qc, id, n) });
 }
 
+export function useSetReposPullDraft(id: string, n: number): UseMutationResult<ReposPull, ApiError, boolean> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const m = pullMutation<boolean>(id, n, (draft) => r.setDraft(id, n, draft));
+  return useMutation<ReposPull, ApiError, boolean>({ mutationFn: m.mutationFn, onSuccess: m.onSuccess(qc) });
+}
+
+export function useSetReposPullLabels(id: string, n: number): UseMutationResult<ReposPull, ApiError, string[]> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const m = pullMutation<string[]>(id, n, (ids) => r.setPullLabels(id, n, ids));
+  return useMutation<ReposPull, ApiError, string[]>({ mutationFn: m.mutationFn, onSuccess: m.onSuccess(qc) });
+}
+
+export function useSetReposPullAssignees(id: string, n: number): UseMutationResult<ReposPull, ApiError, string[]> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const m = pullMutation<string[]>(id, n, (ids) => r.setPullAssignees(id, n, ids));
+  return useMutation<ReposPull, ApiError, string[]>({ mutationFn: m.mutationFn, onSuccess: m.onSuccess(qc) });
+}
+
+/** Turn auto-merge on with a method, or off with null. */
+export function useReposAutoMerge(id: string, n: number): UseMutationResult<ReposPull, ApiError, ReposMergeMethod | null> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const m = pullMutation<ReposMergeMethod | null>(id, n, (method) => (method ? r.enableAutoMerge(id, n, method) : r.disableAutoMerge(id, n)));
+  return useMutation<ReposPull, ApiError, ReposMergeMethod | null>({ mutationFn: m.mutationFn, onSuccess: m.onSuccess(qc) });
+}
+
+/** Merge the base into the head branch. */
+export function useUpdateReposPullBranch(id: string, n: number): UseMutationResult<ReposPull, ApiError, string | undefined> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  const m = pullMutation<string | undefined>(id, n, (head) => r.updateBranch(id, n, head));
+  return useMutation<ReposPull, ApiError, string | undefined>({ mutationFn: m.mutationFn, onSuccess: m.onSuccess(qc) });
+}
+
+/** Commit chosen ```suggestion blocks to the head branch in one commit. */
+export function useApplyReposSuggestions(id: string, n: number): UseMutationResult<ReposCommitResult, ApiError, ReposApplySuggestionsRequest> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposCommitResult, ApiError, ReposApplySuggestionsRequest>({
+    mutationFn: (body) => r.applySuggestions(id, n, body),
+    onSuccess: () => {
+      invalidatePull(qc, id, n);
+      void qc.invalidateQueries({ queryKey: [...reposKeys.pull(id, n)] });
+    },
+  });
+}
+
+export function useReposViewedFiles(id: string, n: number, enabled = true): UseQueryResult<{ items: string[] }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.viewed(id, n), ({ signal }) => r.viewedFiles(id, n, { signal }), read, enabled && n > 0);
+}
+
+export function useSetReposViewed(id: string, n: number): UseMutationResult<void, ApiError, { path: string; viewed: boolean }, { prev: { items: string[] } | undefined }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { path: string; viewed: boolean }, { prev: { items: string[] } | undefined }>({
+    mutationFn: ({ path, viewed }) => r.setViewed(id, n, path, viewed),
+    onMutate: ({ path, viewed }) => {
+      const prev = qc.getQueryData<{ items: string[] }>(reposKeys.viewed(id, n));
+      const items = new Set(prev?.items ?? []);
+      if (viewed) items.add(path);
+      else items.delete(path);
+      qc.setQueryData(reposKeys.viewed(id, n), { items: [...items] });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => qc.setQueryData(reposKeys.viewed(id, n), ctx?.prev),
+  });
+}
+
+/** Your review in progress (id null when there's none). */
+export function useReposPendingReview(id: string, n: number, enabled = true): UseQueryResult<ReposPendingReview, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.pending(id, n), ({ signal }) => r.pendingReview(id, n, { signal }), read, enabled && n > 0);
+}
+
+export function useDiscardReposPendingReview(id: string, n: number): UseMutationResult<void, ApiError, void> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, void>({ mutationFn: () => r.discardPendingReview(id, n), onSuccess: () => invalidatePull(qc, id, n) });
+}
+
+// ---- issues --------------------------------------------------------------------
+
+/** Issues matching the search syntax (`is:open label:bug assignee:@me`). */
+export function useReposIssues(id: string, q: string): PagedQueryResult<ReposIssue> & { meta: Pick<ReposIssuePage, "counts" | "ignored"> | undefined } {
+  const r = useEndpoints(reposEndpoints);
+  const query = useDebouncedValue(q.trim(), 250);
+  const res = usePagedQuery(reposKeys.issueList(id, query), (cursor, signal) => r.issues(id, { cursor, q: query }, { signal }), {
+    placeholderData: keepPreviousData,
+    retry: retryUnlessClientError,
+  });
+  // The first page's totals and ignored qualifiers (the select keeps pages).
+  const first = res.data?.pages[0] as ReposIssuePage | undefined;
+  return Object.assign(res, { meta: first ? { counts: first.counts, ignored: first.ignored } : undefined });
+}
+
+export function useReposIssue(id: string, n: number): UseQueryResult<ReposIssue, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.issue(id, n), ({ signal }) => r.issue(id, n, { signal }), read, n > 0);
+}
+
+export function useReposIssueTimeline(id: string, n: number): UseQueryResult<ReposIssueTimeline, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.issueTimeline(id, n), ({ signal }) => r.issueTimeline(id, n, { signal }), read, n > 0);
+}
+
+function invalidateIssue(qc: QueryClient, id: string, n: number) {
+  void qc.invalidateQueries({ queryKey: reposKeys.issue(id, n) });
+  void qc.invalidateQueries({ queryKey: reposKeys.issues(id) });
+  void qc.invalidateQueries({ queryKey: reposKeys.info(id) });
+}
+
+export function useCreateReposIssue(id: string): UseMutationResult<ReposIssue, ApiError, ReposCreateIssueRequest> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssue, ApiError, ReposCreateIssueRequest>({
+    mutationFn: (body) => r.createIssue(id, body),
+    onSuccess: (is) => {
+      qc.setQueryData(reposKeys.issue(id, is.number), is);
+      void qc.invalidateQueries({ queryKey: reposKeys.issues(id) });
+      void qc.invalidateQueries({ queryKey: reposKeys.repo(id) });
+    },
+  });
+}
+
+function issueMutation<V>(id: string, n: number, qc: QueryClient, fn: (v: V) => Promise<ReposIssue>) {
+  return {
+    mutationFn: fn,
+    onSuccess: (is: ReposIssue) => {
+      qc.setQueryData(reposKeys.issue(id, n), is);
+      invalidateIssue(qc, id, n);
+    },
+  };
+}
+
+export function useUpdateReposIssue(id: string, n: number): UseMutationResult<ReposIssue, ApiError, ReposUpdateIssueRequest> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssue, ApiError, ReposUpdateIssueRequest>(issueMutation(id, n, qc, (body: ReposUpdateIssueRequest) => r.updateIssue(id, n, body)));
+}
+
+export function useSetReposIssueLabels(id: string, n: number): UseMutationResult<ReposIssue, ApiError, string[]> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssue, ApiError, string[]>(issueMutation(id, n, qc, (ids: string[]) => r.setIssueLabels(id, n, ids)));
+}
+
+export function useSetReposIssueAssignees(id: string, n: number): UseMutationResult<ReposIssue, ApiError, string[]> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssue, ApiError, string[]>(issueMutation(id, n, qc, (ids: string[]) => r.setIssueAssignees(id, n, ids)));
+}
+
+export function useDeleteReposIssue(id: string, n: number): UseMutationResult<void, ApiError, void> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, void>({
+    mutationFn: () => r.deleteIssue(id, n),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: reposKeys.issue(id, n) });
+      void qc.invalidateQueries({ queryKey: reposKeys.issues(id) });
+    },
+  });
+}
+
+export function useAddReposIssueComment(id: string, n: number): UseMutationResult<ReposIssueComment, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssueComment, ApiError, string>({ mutationFn: (body) => r.addIssueComment(id, n, body), onSuccess: () => invalidateIssue(qc, id, n) });
+}
+
+export function useEditReposIssueComment(id: string, n: number): UseMutationResult<ReposIssueComment, ApiError, { commentId: string; body: string }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposIssueComment, ApiError, { commentId: string; body: string }>({
+    mutationFn: ({ commentId, body }) => r.editIssueComment(id, n, commentId, body),
+    onSuccess: () => invalidateIssue(qc, id, n),
+  });
+}
+
+export function useDeleteReposIssueComment(id: string, n: number): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (commentId) => r.deleteIssueComment(id, n, commentId), onSuccess: () => invalidateIssue(qc, id, n) });
+}
+
+/** Add or remove a reaction; `refresh` is the issue or pull request number to refetch. */
+export function useReposReaction(id: string): UseMutationResult<{ items: ReposReaction[] }, ApiError, { type: ReposReactionSubject; subjectId: string; emoji: ReposReactionEmoji; add: boolean; number: number }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ items: ReposReaction[] }, ApiError, { type: ReposReactionSubject; subjectId: string; emoji: ReposReactionEmoji; add: boolean; number: number }>({
+    mutationFn: (v) => r.react(id, { type: v.type, id: v.subjectId }, v.emoji, v.add),
+    onSuccess: (_d, v) => {
+      if (v.type.startsWith("pull")) invalidatePull(qc, id, v.number);
+      else invalidateIssue(qc, id, v.number);
+    },
+  });
+}
+
+export function useReposTemplates(id: string, kind: "issue" | "pull", enabled = true): UseQueryResult<{ items: ReposTemplate[] }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.templates(id, kind), ({ signal }) => r.templates(id, kind, { signal }), { ...read, staleTime: 60_000 }, enabled);
+}
+
+export function useReposLabels(id: string, enabled = true): UseQueryResult<{ items: ReposLabelRow[] }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.labels(id), ({ signal }) => r.labels(id, { signal }), read, enabled);
+}
+
+export function useSaveReposLabel(id: string): UseMutationResult<ReposLabel, ApiError, { labelId?: string; body: ReposLabelRequest }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposLabel, ApiError, { labelId?: string; body: ReposLabelRequest }>({
+    mutationFn: ({ labelId, body }) => (labelId ? r.updateLabel(id, labelId, body) : r.createLabel(id, body)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: reposKeys.labels(id) });
+      void qc.invalidateQueries({ queryKey: reposKeys.issues(id) });
+    },
+  });
+}
+
+export function useDeleteReposLabel(id: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (labelId) => r.deleteLabel(id, labelId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: reposKeys.labels(id) });
+      void qc.invalidateQueries({ queryKey: reposKeys.issues(id) });
+    },
+  });
+}
+
+export function useReposMilestones(id: string, state: "open" | "closed" | "all" = "open", enabled = true): UseQueryResult<{ items: ReposMilestone[] }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.milestones(id, state), ({ signal }) => r.milestones(id, state, { signal }), read, enabled);
+}
+
+export function useSaveReposMilestone(id: string): UseMutationResult<ReposMilestone, ApiError, { milestoneId?: string; body: ReposMilestoneRequest }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposMilestone, ApiError, { milestoneId?: string; body: ReposMilestoneRequest }>({
+    mutationFn: ({ milestoneId, body }) => (milestoneId ? r.updateMilestone(id, milestoneId, body) : r.createMilestone(id, body)),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["repos", "repo", id, "milestones"] }),
+  });
+}
+
+export function useDeleteReposMilestone(id: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (milestoneId) => r.deleteMilestone(id, milestoneId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["repos", "repo", id, "milestones"] }),
+  });
+}
+
+// ---- statuses and CI tokens ----------------------------------------------------
+
+/** The combined status of each commit (commit lists). */
+export function useReposCommitStates(id: string, shas: string[], enabled = true): UseQueryResult<{ states: Record<string, "success" | "failure" | "pending"> }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  const key = shas.join(",");
+  return useApiQuery(reposKeys.commitStates(id, key), ({ signal }) => r.commitStates(id, shas, { signal }), read, enabled && shas.length > 0);
+}
+
+/** A commit's statuses, with the required contexts of `branch` (a pull request's base). */
+export function useReposChecksFor(id: string, sha: string | null | undefined, branch?: string, enabled = true): UseQueryResult<ReposChecksResult, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.checksFor(id, sha ?? "", branch ?? ""), ({ signal }) => r.checksFor(id, sha ?? "", branch, { signal }), read, enabled && !!sha);
+}
+
+export function useReposCITokens(id: string, enabled = true): UseQueryResult<ReposCITokens, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.ciTokens(id), ({ signal }) => r.ciTokens(id, { signal }), read, enabled);
+}
+
+/** Resolves with the secret, shown only now. */
+export function useCreateReposCIToken(id: string): UseMutationResult<ReposCreatedCIToken, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposCreatedCIToken, ApiError, string>({ mutationFn: (name) => r.createCIToken(id, name), onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.ciTokens(id) }) });
+}
+
+export function useRevokeReposCIToken(id: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (tokenId) => r.revokeCIToken(id, tokenId), onSettled: () => void qc.invalidateQueries({ queryKey: reposKeys.ciTokens(id) }) });
+}
+
+// ---- releases, tags, archives, insights ---------------------------------------
+
+export function useReposReleases(id: string): PagedQueryResult<ReposRelease> {
+  const r = useEndpoints(reposEndpoints);
+  return usePagedQuery(reposKeys.releases(id), (cursor, signal) => r.releases(id, { cursor }, { signal }), { retry: retryUnlessClientError });
+}
+
+export function useReposRelease(id: string, releaseId: string | null | undefined): UseQueryResult<ReposRelease, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.release(id, releaseId ?? ""), ({ signal }) => r.release(id, releaseId ?? "", { signal }), read, !!releaseId);
+}
+
+export function useSaveReposRelease(id: string): UseMutationResult<ReposRelease, ApiError, { releaseId?: string; body: ReposReleaseRequest }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposRelease, ApiError, { releaseId?: string; body: ReposReleaseRequest }>({
+    mutationFn: ({ releaseId, body }) => (releaseId ? r.updateRelease(id, releaseId, body) : r.createRelease(id, body)),
+    onSuccess: (rl) => {
+      qc.setQueryData(reposKeys.release(id, rl.id), rl);
+      void qc.invalidateQueries({ queryKey: reposKeys.releases(id) });
+      void qc.invalidateQueries({ queryKey: reposKeys.info(id) });
+    },
+  });
+}
+
+export function useDeleteReposRelease(id: string): UseMutationResult<void, ApiError, { releaseId: string; deleteTag: boolean }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { releaseId: string; deleteTag: boolean }>({
+    mutationFn: ({ releaseId, deleteTag }) => r.deleteRelease(id, releaseId, deleteTag),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.repo(id) }),
+  });
+}
+
+export function useAddReposReleaseAsset(id: string, releaseId: string): UseMutationResult<ReposReleaseAsset, ApiError, { key: string; name: string }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposReleaseAsset, ApiError, { key: string; name: string }>({
+    mutationFn: ({ key, name }) => r.addReleaseAsset(id, releaseId, key, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: reposKeys.release(id, releaseId) });
+      void qc.invalidateQueries({ queryKey: reposKeys.releases(id) });
+    },
+  });
+}
+
+export function useDeleteReposReleaseAsset(id: string, releaseId: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (assetId) => r.deleteReleaseAsset(id, releaseId, assetId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: reposKeys.release(id, releaseId) });
+      void qc.invalidateQueries({ queryKey: reposKeys.releases(id) });
+    },
+  });
+}
+
+/** A short-lived signed link to download a release file. */
+export function useDownloadReposReleaseAsset(id: string): UseMutationResult<{ url: string; name: string }, ApiError, { releaseId: string; assetId: string }> {
+  const r = useEndpoints(reposEndpoints);
+  return useMutation<{ url: string; name: string }, ApiError, { releaseId: string; assetId: string }>({
+    mutationFn: ({ releaseId, assetId }) => r.downloadReleaseAsset(id, releaseId, assetId),
+  });
+}
+
+export function useReposReleaseNotes(id: string): UseMutationResult<{ body: string; pulls: number; commits: number }, ApiError, { target: string; previous?: string }> {
+  const r = useEndpoints(reposEndpoints);
+  return useMutation<{ body: string; pulls: number; commits: number }, ApiError, { target: string; previous?: string }>({
+    mutationFn: ({ target, previous }) => r.releaseNotes(id, target, previous),
+  });
+}
+
+export function useCreateReposTag(id: string): UseMutationResult<{ name: string; sha: string }, ApiError, { name: string; target?: string }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ name: string; sha: string }, ApiError, { name: string; target?: string }>({
+    mutationFn: ({ name, target }) => r.createTag(id, name, target),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.repo(id) }),
+  });
+}
+
+export function useDeleteReposTag(id: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (name) => r.deleteTag(id, name), onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.repo(id) }) });
+}
+
+/** A one-time archive download link (valid for two minutes). */
+export function useReposArchive(id: string): UseMutationResult<ReposArchiveLink, ApiError, { ref?: string | undefined; format: ReposArchiveFormat }> {
+  const r = useEndpoints(reposEndpoints);
+  return useMutation<ReposArchiveLink, ApiError, { ref?: string | undefined; format: ReposArchiveFormat }>({ mutationFn: ({ ref, format }) => r.archive(id, ref, format) });
+}
+
+export function useReposInsights(id: string): UseQueryResult<ReposInsights, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.insights(id), ({ signal }) => r.insights(id, { signal }), read);
+}
+
+// ---- webhooks ------------------------------------------------------------------
+
+export function useReposWebhooks(id: string, enabled = true): UseQueryResult<{ items: ReposWebhook[]; events: ReposWebhookEvent[] }, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.webhooks(id), ({ signal }) => r.webhooks(id, { signal }), read, enabled);
+}
+
+/** Create (no hookId; resolves with the secret, shown once) or update a webhook. */
+export function useSaveReposWebhook(id: string): UseMutationResult<ReposWebhook, ApiError, { hookId?: string; body: ReposWebhookRequest }> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<ReposWebhook, ApiError, { hookId?: string; body: ReposWebhookRequest }>({
+    mutationFn: ({ hookId, body }) => (hookId ? r.updateWebhook(id, hookId, body) : r.createWebhook(id, body)),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.webhooks(id) }),
+  });
+}
+
+export function useDeleteReposWebhook(id: string): UseMutationResult<void, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (hookId) => r.deleteWebhook(id, hookId), onSuccess: () => void qc.invalidateQueries({ queryKey: reposKeys.webhooks(id) }) });
+}
+
+export function usePingReposWebhook(id: string): UseMutationResult<{ queued: boolean }, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ queued: boolean }, ApiError, string>({
+    mutationFn: (hookId) => r.pingWebhook(id, hookId),
+    onSuccess: (_d, hookId) => setTimeout(() => void qc.invalidateQueries({ queryKey: reposKeys.deliveries(id, hookId) }), 1500),
+  });
+}
+
+export function useReposDeliveries(id: string, hookId: string | null): PagedQueryResult<ReposWebhookDelivery> {
+  const r = useEndpoints(reposEndpoints);
+  return usePagedQuery(reposKeys.deliveries(id, hookId ?? ""), (cursor, signal) => r.deliveries(id, hookId ?? "", { cursor }, { signal }), { retry: retryUnlessClientError }, !!hookId);
+}
+
+export function useReposDelivery(id: string, hookId: string, deliveryId: string | null): UseQueryResult<ReposWebhookDelivery, ApiError> {
+  const r = useEndpoints(reposEndpoints);
+  return useApiQuery(reposKeys.delivery(id, hookId, deliveryId ?? ""), ({ signal }) => r.delivery(id, hookId, deliveryId ?? "", { signal }), read, !!deliveryId);
+}
+
+export function useRedeliverReposWebhook(id: string, hookId: string): UseMutationResult<{ queued: boolean }, ApiError, string> {
+  const r = useEndpoints(reposEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ queued: boolean }, ApiError, string>({
+    mutationFn: (deliveryId) => r.redeliver(id, hookId, deliveryId),
+    onSuccess: () => setTimeout(() => void qc.invalidateQueries({ queryKey: reposKeys.deliveries(id, hookId) }), 1500),
+  });
+}
+
 // ---- git credentials -----------------------------------------------------------
 
 export function useReposCredentials(): PagedQueryResult<ReposCredential> {
@@ -578,5 +1080,15 @@ registerRealtimeHandler("repos.pull_changed", (qc, e) => {
 });
 registerRealtimeHandler("repos.repo_changed", (qc, e) => {
   void qc.invalidateQueries({ queryKey: reposKeys.repo(e.data.repo_id) });
+});
+registerRealtimeHandler("repos.issue_changed", (qc, e) => {
+  void qc.invalidateQueries({ queryKey: reposKeys.issue(e.data.repo_id, e.data.number) });
+  void qc.invalidateQueries({ queryKey: reposKeys.issues(e.data.repo_id) });
+  void qc.invalidateQueries({ queryKey: reposKeys.info(e.data.repo_id) });
+});
+registerRealtimeHandler("repos.status_changed", (qc, e) => {
+  void qc.invalidateQueries({ queryKey: ["repos", "repo", e.data.repo_id, "checks-for", e.data.sha] });
+  void qc.invalidateQueries({ queryKey: ["repos", "repo", e.data.repo_id, "commit-states"] });
+  void qc.invalidateQueries({ queryKey: reposKeys.checks(e.data.repo_id, e.data.sha) });
 });
 registerReconnectRefetch(reposKeys.all());

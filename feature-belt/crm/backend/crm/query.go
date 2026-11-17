@@ -55,13 +55,19 @@ func recordJoins(o objectType) string {
 	j := `JOIN access_resources ar ON ar.kind = '` + o.kind() + `' AND ar.id = r.id
 		LEFT JOIN users ou ON ou.id = ar.owner_id AND ou.status <> 'deleted'
 		LEFT JOIN access_teams t ON t.id = r.team_id`
-	if o == objDeal {
+	if o.pipelined() {
 		j += `
 		JOIN crm_stages st ON st.id = r.stage_id
 		JOIN crm_pipelines pl ON pl.id = r.pipeline_id`
 	}
 	return j
 }
+
+// forecastExpr is a deal's forecast category: closed when won, omitted when
+// lost, else the one set on the deal or the one its stage's probability
+// implies (80 %+ commit, 50 %+ best case, else pipeline).
+const forecastExpr = `(CASE st.outcome WHEN 'won' THEN 'closed' WHEN 'lost' THEN 'omitted'
+	ELSE COALESCE(r.forecast_category, CASE WHEN st.probability >= 80 THEN 'commit' WHEN st.probability >= 50 THEN 'best_case' ELSE 'pipeline' END) END)`
 
 // detailJoins adds the associations a row shows, only when the caller can
 // view them.
@@ -75,6 +81,12 @@ func detailJoins(o objectType) string {
 		return `
 		LEFT JOIN LATERAL (SELECT co.id, co.name FROM crm_companies co
 			WHERE co.id = r.company_id AND access_level($1, 'crm.company', co.id, $2) >= 1) dc ON true`
+	case objTicket:
+		return `
+		LEFT JOIN LATERAL (SELECT co.id, co.name FROM crm_companies co
+			WHERE co.id = r.company_id AND access_level($1, 'crm.company', co.id, $2) >= 1) dc ON true
+		LEFT JOIN LATERAL (SELECT d.id, d.name FROM crm_deals d
+			WHERE d.id = r.deal_id AND access_level($1, 'crm.deal', d.id, $2) >= 1) dd ON true`
 	}
 	return ""
 }
@@ -87,11 +99,16 @@ func selectCols(o objectType) string {
 	case objCompany:
 		return `r.id, r.org_id, r.name, r.domain, r.industry, r.employees, r.phone, r.city, r.country, r.description, ` + commonCols
 	case objContact:
-		return `r.id, r.org_id, r.first_name, r.last_name, r.emails, r.phones, r.job_title, r.lifecycle_stage, r.city, r.country,
+		return `r.id, r.org_id, r.first_name, r.last_name, r.emails, r.phones, r.job_title, r.lifecycle_stage, r.lead_status, r.score, r.city, r.country,
 			pc.id, pc.name, ` + commonCols
+	case objTicket:
+		return `r.id, r.org_id, r.name, r.description, r.priority, r.category, r.channel, r.pipeline_id, pl.name,
+			st.id, st.name, st.probability, st.outcome, st.position, dc.id, dc.name, dd.id, dd.name,
+			r.stage_entered_at, r.first_response_at, r.closed_at, ` + commonCols
 	default:
 		return `r.id, r.org_id, r.name, r.amount, r.currency, r.pipeline_id, pl.name, st.id, st.name, st.probability, st.outcome, st.position,
-			to_char(r.close_date, 'YYYY-MM-DD'), dc.id, dc.name, r.stage_entered_at, r.closed_at, ` + commonCols
+			to_char(r.close_date, 'YYYY-MM-DD'), dc.id, dc.name, r.stage_entered_at, r.closed_at, ` + forecastExpr + `, r.forecast_category IS NOT NULL,
+			r.amount_from_items, ` + commonCols
 	}
 }
 
@@ -121,11 +138,28 @@ func scanRecord(o objectType, row pgx.Row, extra ...any) (recordish, error) {
 		c := &Contact{}
 		var coID *uuid.UUID
 		var coName *string
-		dest = []any{&rec.ID, &rec.OrgID, &c.FirstName, &c.LastName, &c.Emails, &c.Phones, &c.JobTitle, &c.LifecycleStage, &c.City, &c.Country, &coID, &coName}
+		dest = []any{&rec.ID, &rec.OrgID, &c.FirstName, &c.LastName, &c.Emails, &c.Phones, &c.JobTitle, &c.LifecycleStage, &c.LeadStatus, &c.Score,
+			&c.City, &c.Country, &coID, &coName}
 		out = c
 		defer func() {
 			if coID != nil && coName != nil {
 				c.Company = &RecordRef{Type: objCompany, ID: *coID, Name: *coName}
+			}
+		}()
+	case objTicket:
+		t := &Ticket{}
+		var coID, dealID *uuid.UUID
+		var coName, dealName *string
+		dest = []any{&rec.ID, &rec.OrgID, &t.Name, &t.Description, &t.Priority, &t.Category, &t.Channel, &t.PipelineID, &t.PipelineName,
+			&t.Stage.ID, &t.Stage.Name, &t.Stage.Probability, &t.Stage.Outcome, &t.Stage.Position, &coID, &coName, &dealID, &dealName,
+			&t.StageEnteredAt, &t.FirstResponseAt, &t.ClosedAt}
+		out = t
+		defer func() {
+			if coID != nil && coName != nil {
+				t.Company = &RecordRef{Type: objCompany, ID: *coID, Name: *coName}
+			}
+			if dealID != nil && dealName != nil {
+				t.Deal = &RecordRef{Type: objDeal, ID: *dealID, Name: *dealName}
 			}
 		}()
 	default:
@@ -134,7 +168,7 @@ func scanRecord(o objectType, row pgx.Row, extra ...any) (recordish, error) {
 		var coName *string
 		dest = []any{&rec.ID, &rec.OrgID, &d.Name, &d.Amount, &d.Currency, &d.PipelineID, &d.PipelineName,
 			&d.Stage.ID, &d.Stage.Name, &d.Stage.Probability, &d.Stage.Outcome, &d.Stage.Position,
-			&d.CloseDate, &coID, &coName, &d.StageEnteredAt, &d.ClosedAt}
+			&d.CloseDate, &coID, &coName, &d.StageEnteredAt, &d.ClosedAt, &d.ForecastCategory, &d.ForecastSet, &d.AmountFromItems}
 		out = d
 		defer func() {
 			if coID != nil && coName != nil {
@@ -176,6 +210,17 @@ func scanRecord(o objectType, row pgx.Row, extra ...any) (recordish, error) {
 		if v.Amount != nil {
 			w := *v.Amount * int64(v.Stage.Probability) / 100
 			v.Weighted = &w
+		}
+	case *Ticket:
+		v.Record = rec
+		v.Record.Title = v.Name
+		if v.FirstResponseAt != nil {
+			n := int64(v.FirstResponseAt.Sub(v.CreatedAt).Seconds())
+			v.FirstResponseSeconds = &n
+		}
+		if v.ClosedAt != nil {
+			n := int64(v.ClosedAt.Sub(v.CreatedAt).Seconds())
+			v.ResolutionSeconds = &n
 		}
 	}
 	return out, nil
@@ -372,6 +417,8 @@ func buildWhere(b *sqlb, o objectType, props []Property, orgID uuid.UUID, spec l
 		case objContact:
 			conds = append(conds, "((r.first_name || ' ' || r.last_name) ILIKE "+pat+" OR array_to_string(r.emails, ' ') ILIKE "+pat+
 				" OR array_to_string(r.phones, ' ') ILIKE "+pat+")")
+		case objTicket:
+			conds = append(conds, "(r.name ILIKE "+pat+" OR r.description ILIKE "+pat+")")
 		default:
 			conds = append(conds, "r.name ILIKE "+pat)
 		}
@@ -569,7 +616,7 @@ func filterSQL(b *sqlb, o objectType, p Property, f Filter, userID uuid.UUID, tz
 			return "(" + e + " IS NULL OR NOT (" + t + " = ANY (" + b.arg(vals) + "::text[])))", nil
 		}
 		return bad()
-	case "team", "pipeline", "stage":
+	case "team", "pipeline", "stage", "deal":
 		switch f.Op {
 		case "empty":
 			return e + " IS NULL", nil

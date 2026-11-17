@@ -5,3 +5,4 @@
  */
 export { PresenceAvatar, PresenceDot, UserPresenceDot, type PresenceDotProps } from "./PresenceDot";
 export { StatusScreen } from "./StatusScreen";
+export { ScheduleScreen } from "./ScheduleScreen";

@@ -22,6 +22,8 @@ type PublicPage struct {
 	Path     []Crumb       `json:"path"` // from the published page down to this one's parent
 	RootID   uuid.UUID     `json:"root_id"`
 	Database *DatabaseInfo `json:"database"`
+	// Settings are the published page's options (publish.go).
+	Settings PublishSettings `json:"settings"`
 }
 
 // publicTarget resolves a link token to a page it opens (the published page,
@@ -70,7 +72,7 @@ func (s *Service) publicBlocked(ctx context.Context, id uuid.UUID) (bool, error)
 }
 
 func scrub(p *Page) {
-	p.CreatedBy, p.UpdatedBy = nil, nil
+	p.CreatedBy, p.UpdatedBy, p.VerifiedBy = nil, nil, nil
 }
 
 // publicPage: GET /docs/public/{token} and /docs/public/{token}/pages/{id}.
@@ -117,15 +119,18 @@ func (s *Service) publicPage(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := PublicPage{Page: p, Blocks: detail.Blocks, Refs: detail.Refs, Views: detail.Views, Database: detail.Database, RootID: l.Ref.ID,
 		Children: []PageSummary{}, Path: []Crumb{}}
+	if out.Settings, err = s.publishSettings(ctx, s.d.Pool, l.Ref.ID); err != nil {
+		return err
+	}
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT `+summaryCols+`, 1, false FROM docs_pages p
+		SELECT `+summaryCols+`, 1, false, p.custom_icon FROM docs_pages p
 		JOIN access_resources ar ON ar.kind = 'docs.page' AND ar.id = p.id AND ar.inherits
 		WHERE p.parent_id = $1 AND NOT p.is_row AND p.deleted_at IS NULL AND p.public_blocked_at IS NULL
 		ORDER BY p.position, p.id LIMIT 200`, p.ID)
 	if err != nil {
 		return err
 	}
-	if out.Children, err = scanSummaries(rows, func(ps *PageSummary) []any { return []any{&ps.HasChildren} }); err != nil {
+	if out.Children, err = summaries(rows, nil); err != nil {
 		return err
 	}
 	if p.ID != l.Ref.ID {
@@ -155,7 +160,7 @@ func (s *Service) publicPage(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Robots-Tag", "noindex")
+	w.Header().Set("X-Robots-Tag", "noindex") // the JSON; the web page's own robots tag follows Settings
 	httpx.OK(w, out)
 	return nil
 }

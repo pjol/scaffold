@@ -42,24 +42,37 @@ type Comment struct {
 	Deleted    bool       `json:"deleted"`
 	CreatedAt  time.Time  `json:"created_at"`
 	CanEdit    bool       `json:"can_edit"`
+	// Multi-line comments cover start_line..line.
+	StartLine *int `json:"start_line"`
+	// Pending: in the caller's review that isn't submitted yet (only they see it).
+	Pending bool `json:"pending"`
+	// SuggestionAppliedSHA: the commit that applied this comment's suggestion.
+	SuggestionAppliedSHA *string    `json:"suggestion_applied_sha"`
+	Reactions            []Reaction `json:"reactions"`
 }
 
 const commentSelect = `
 	SELECT c.id, c.author_id, a.display_name, a.avatar_url, a.status, c.body, c.path, c.line, c.side, c.commit_sha,
 	       c.reply_to, c.review_id, c.resolved_at, c.resolved_by, rb.display_name, rb.avatar_url, rb.status,
-	       c.edited_at, c.deleted_at IS NOT NULL, c.created_at
+	       c.edited_at, c.deleted_at IS NOT NULL, c.created_at, c.start_line, COALESCE(rv.state = 'pending', false), c.suggestion_applied_sha
 	FROM repos_comments c
 	LEFT JOIN users a ON a.id = c.author_id
-	LEFT JOIN users rb ON rb.id = c.resolved_by`
+	LEFT JOIN users rb ON rb.id = c.resolved_by
+	LEFT JOIN repos_reviews rv ON rv.id = c.review_id`
+
+// visibleComment hides other people's pending review comments ($2 is the caller).
+const visibleComment = ` AND (rv.state IS DISTINCT FROM 'pending' OR c.author_id = $2)`
 
 func scanComment(row pgx.Row, me uuid.UUID) (*Comment, error) {
 	var c Comment
 	var aID, rID *uuid.UUID
 	var aName, aAv, aSt, rName, rAv, rSt *string
 	if err := row.Scan(&c.ID, &aID, &aName, &aAv, &aSt, &c.Body, &c.Path, &c.Line, &c.Side, &c.CommitSHA,
-		&c.ReplyTo, &c.ReviewID, &c.ResolvedAt, &rID, &rName, &rAv, &rSt, &c.EditedAt, &c.Deleted, &c.CreatedAt); err != nil {
+		&c.ReplyTo, &c.ReviewID, &c.ResolvedAt, &rID, &rName, &rAv, &rSt, &c.EditedAt, &c.Deleted, &c.CreatedAt,
+		&c.StartLine, &c.Pending, &c.SuggestionAppliedSHA); err != nil {
 		return nil, err
 	}
+	c.Reactions = []Reaction{}
 	c.Author, c.ResolvedBy = userRef(aID, aName, aAv, aSt), userRef(rID, rName, rAv, rSt)
 	if c.Deleted {
 		c.Body = ""
@@ -69,20 +82,37 @@ func scanComment(row pgx.Row, me uuid.UUID) (*Comment, error) {
 }
 
 func (s *Service) comments(ctx context.Context, q db.Querier, pullID, me uuid.UUID, where string) ([]Comment, error) {
-	rows, err := q.Query(ctx, commentSelect+` WHERE c.pull_id = $1 `+where+` ORDER BY c.created_at, c.id`, pullID)
+	rows, err := q.Query(ctx, commentSelect+` WHERE c.pull_id = $1 `+visibleComment+where+` ORDER BY c.created_at, c.id`, pullID, me)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Comment{}
 	for rows.Next() {
 		c, err := scanComment(rows, me)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, *c)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+	}
+	rx, err := s.reactionsFor(ctx, "pull_comment", ids, me)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if r := rx[out[i].ID]; r != nil {
+			out[i].Reactions = r
+		}
+	}
+	return out, nil
 }
 
 // ---- timeline ------------------------------------------------------------------
@@ -137,19 +167,20 @@ func (s *Service) pullTimeline(w http.ResponseWriter, r *http.Request) error {
 	}
 	ctx := r.Context()
 	items := []TimelineItem{}
-	conv, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, `AND c.path IS NULL`)
+	conv, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, ` AND c.path IS NULL AND rv.state IS DISTINCT FROM 'pending'`)
 	if err != nil {
 		return err
 	}
 	for i := range conv {
 		items = append(items, TimelineItem{Type: "comment", At: conv[i].CreatedAt, Comment: &conv[i]})
 	}
-	roots, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, `AND c.path IS NOT NULL AND c.reply_to IS NULL`)
+	roots, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, ` AND c.path IS NOT NULL AND c.reply_to IS NULL AND rv.state IS DISTINCT FROM 'pending'`)
 	if err != nil {
 		return err
 	}
 	replies := map[uuid.UUID]int{}
-	rows, err := s.d.Pool.Query(ctx, `SELECT reply_to, count(*) FROM repos_comments WHERE pull_id = $1 AND reply_to IS NOT NULL AND deleted_at IS NULL GROUP BY reply_to`, p.ID)
+	rows, err := s.d.Pool.Query(ctx, `SELECT c.reply_to, count(*) FROM repos_comments c LEFT JOIN repos_reviews rv ON rv.id = c.review_id
+		WHERE c.pull_id = $1 AND c.reply_to IS NOT NULL AND c.deleted_at IS NULL AND rv.state IS DISTINCT FROM 'pending' GROUP BY c.reply_to`, p.ID)
 	if err != nil {
 		return err
 	}
@@ -174,7 +205,7 @@ func (s *Service) pullTimeline(w http.ResponseWriter, r *http.Request) error {
 	}
 	rows, err = s.d.Pool.Query(ctx, `
 		SELECT r.id, r.author_id, a.display_name, a.avatar_url, a.status, r.state, r.body, r.commit_sha, r.dismissed_at, r.created_at
-		FROM repos_reviews r LEFT JOIN users a ON a.id = r.author_id WHERE r.pull_id = $1 ORDER BY r.created_at, r.id`, p.ID)
+		FROM repos_reviews r LEFT JOIN users a ON a.id = r.author_id WHERE r.pull_id = $1 AND r.state <> 'pending' ORDER BY r.created_at, r.id`, p.ID)
 	if err != nil {
 		return err
 	}
@@ -209,7 +240,29 @@ func (s *Service) pullTimeline(w http.ResponseWriter, r *http.Request) error {
 	}
 	rows.Close()
 	sort.SliceStable(items, func(i, j int) bool { return items[i].At.Before(items[j].At) })
-	httpx.OK(w, map[string]any{"items": items})
+	var text strings.Builder
+	for _, it := range items {
+		switch {
+		case it.Comment != nil:
+			text.WriteString(it.Comment.Body + "\n")
+		case it.Review != nil:
+			text.WriteString(it.Review.Body + "\n")
+		case it.Thread != nil:
+			text.WriteString(it.Thread.Body + "\n")
+		case it.Event != nil:
+			if v, ok := it.Event.Data["user_id"].(string); ok {
+				text.WriteString("<@" + v + ">\n")
+			}
+		}
+		for _, t := range it.Threads {
+			text.WriteString(t.Body + "\n")
+		}
+	}
+	mentions, err := s.mentionRefs(ctx, text.String())
+	if err != nil {
+		return err
+	}
+	httpx.OK(w, map[string]any{"items": items, "mentions": mentions})
 	return nil
 }
 
@@ -228,7 +281,7 @@ func (s *Service) pullThreads(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	all, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, `AND c.path IS NOT NULL`)
+	all, err := s.comments(ctx, s.d.Pool, p.ID, me.UserID, ` AND c.path IS NOT NULL`)
 	if err != nil {
 		return err
 	}
@@ -264,7 +317,15 @@ func (s *Service) pullThreads(w http.ResponseWriter, r *http.Request) error {
 			t.Outdated = blob(*t.Root.CommitSHA, *t.Root.Path) != blob(p.HeadSHA, *t.Root.Path)
 		}
 	}
-	httpx.OK(w, map[string]any{"items": threads, "head_sha": p.HeadSHA})
+	var text strings.Builder
+	for _, c := range all {
+		text.WriteString(c.Body + "\n")
+	}
+	mentions, err := s.mentionRefs(ctx, text.String())
+	if err != nil {
+		return err
+	}
+	httpx.OK(w, map[string]any{"items": threads, "head_sha": p.HeadSHA, "mentions": mentions})
 	return nil
 }
 
@@ -272,11 +333,13 @@ func (s *Service) pullThreads(w http.ResponseWriter, r *http.Request) error {
 
 // CommentInput is a new comment.
 type CommentInput struct {
-	Body    string     `json:"body"`
-	Path    string     `json:"path"`
-	Line    int        `json:"line"`
-	Side    string     `json:"side"` // new (default) | old
-	ReplyTo *uuid.UUID `json:"reply_to"`
+	Body      string     `json:"body"`
+	Path      string     `json:"path"`
+	Line      int        `json:"line"`
+	StartLine int        `json:"start_line"` // multi-line: the first line (same side), 0 for one line
+	Side      string     `json:"side"`       // new (default) | old
+	ReplyTo   *uuid.UUID `json:"reply_to"`
+	Pending   bool       `json:"pending"` // add to your pending review instead of posting now
 }
 
 func cleanBody(b string) (string, error) {
@@ -312,7 +375,7 @@ func (s *Service) createComment(ctx context.Context, me *auth.Identity, repo *Re
 		return nil, err
 	}
 	var path *string
-	var line *int
+	var line, startLine *int
 	var side *string
 	commit := p.HeadSHA
 	if in.ReplyTo != nil {
@@ -320,8 +383,9 @@ func (s *Service) createComment(ctx context.Context, me *auth.Identity, repo *Re
 		var rl *int
 		var rs, rc *string
 		var root *uuid.UUID
-		err := s.d.Pool.QueryRow(ctx, `SELECT path, line, side, commit_sha, reply_to FROM repos_comments WHERE id = $1 AND pull_id = $2 AND deleted_at IS NULL`,
-			*in.ReplyTo, p.ID).Scan(&rp, &rl, &rs, &rc, &root)
+		err := s.d.Pool.QueryRow(ctx, `SELECT c.path, c.line, c.side, c.commit_sha, c.reply_to FROM repos_comments c LEFT JOIN repos_reviews rv ON rv.id = c.review_id
+			WHERE c.id = $1 AND c.pull_id = $2 AND c.deleted_at IS NULL AND (rv.state IS DISTINCT FROM 'pending' OR c.author_id = $3)`,
+			*in.ReplyTo, p.ID, me.UserID).Scan(&rp, &rl, &rs, &rc, &root)
 		if db.IsNoRows(err) {
 			return nil, httpx.NotFound("That comment doesn't exist anymore.")
 		}
@@ -351,6 +415,18 @@ func (s *Service) createComment(ctx context.Context, me *auth.Identity, repo *Re
 			return nil, httpx.BadRequest("side is new or old.")
 		}
 		path, line, side = &clean, &in.Line, &sd
+		if in.StartLine > 0 && in.StartLine != in.Line {
+			if in.StartLine > in.Line || in.Line-in.StartLine > 500 {
+				return nil, httpx.BadRequest("start_line comes before line (up to 500 lines).")
+			}
+			startLine = &in.StartLine
+		}
+	}
+	if in.Pending && review == nil {
+		if path == nil {
+			return nil, httpx.BadRequest("Pending review comments are line comments or replies to them.")
+		}
+		return s.addPendingComment(ctx, me, repo, p, body, path, line, startLine, side, commit, in.ReplyTo)
 	}
 	var reviewID *uuid.UUID
 	q := db.Querier(s.d.Pool)
@@ -360,9 +436,9 @@ func (s *Service) createComment(ctx context.Context, me *auth.Identity, repo *Re
 	var id uuid.UUID
 	write := func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO repos_comments (pull_id, review_id, author_id, body, path, line, side, commit_sha, reply_to)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-			p.ID, reviewID, me.UserID, body, path, line, side, commit, in.ReplyTo).Scan(&id); err != nil {
+			INSERT INTO repos_comments (pull_id, review_id, author_id, body, path, line, side, commit_sha, reply_to, start_line)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			p.ID, reviewID, me.UserID, body, path, line, side, commit, in.ReplyTo, startLine).Scan(&id); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE repos_pulls SET comment_count = comment_count + 1, updated_at = now() WHERE id = $1`, p.ID)
@@ -381,9 +457,93 @@ func (s *Service) createComment(ctx context.Context, me *auth.Identity, repo *Re
 	}
 	if review == nil {
 		s.pullChanged(ctx, repo.ID, p.Number)
-		s.notifyComment(ctx, me, repo, p, c)
+		s.recordRefs(ctx, repo, me, "pull", p.Number, p.Title, body, false)
+		told := s.notifyMentions(ctx, me, repo, body, fmt.Sprintf("#%d: %s", p.Number, p.Title), s.pullLink(repo, p.Number), nil)
+		s.notifyComment(ctx, me, repo, p, c, told)
 	}
 	return c, nil
+}
+
+// addPendingComment adds a line comment to the caller's pending review
+// (made on the first one); nobody else sees it until they submit.
+func (s *Service) addPendingComment(ctx context.Context, me *auth.Identity, repo *Repo, p *Pull, body string, path *string, line, startLine *int, side *string, commit string, replyTo *uuid.UUID) (*Comment, error) {
+	if p.State != "open" {
+		return nil, httpx.Conflict("This pull request is " + p.State + ".")
+	}
+	var id uuid.UUID
+	err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		var reviewID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT id FROM repos_reviews WHERE pull_id = $1 AND author_id = $2 AND state = 'pending'`, p.ID, me.UserID).Scan(&reviewID)
+		if db.IsNoRows(err) {
+			err = tx.QueryRow(ctx, `INSERT INTO repos_reviews (pull_id, author_id, state, commit_sha) VALUES ($1, $2, 'pending', $3)
+				ON CONFLICT (pull_id, author_id) WHERE state = 'pending' DO UPDATE SET commit_sha = EXCLUDED.commit_sha RETURNING id`,
+				p.ID, me.UserID, p.HeadSHA).Scan(&reviewID)
+		}
+		if err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM repos_comments WHERE review_id = $1`, reviewID).Scan(&n); err != nil {
+			return err
+		}
+		if n >= maxCommentsPerReview {
+			return httpx.BadRequest(fmt.Sprintf("A review holds up to %d comments. Submit it first.", maxCommentsPerReview))
+		}
+		return tx.QueryRow(ctx, `INSERT INTO repos_comments (pull_id, review_id, author_id, body, path, line, side, commit_sha, reply_to, start_line)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			p.ID, reviewID, me.UserID, body, path, line, side, commit, replyTo, startLine).Scan(&id)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return scanComment(s.d.Pool.QueryRow(ctx, commentSelect+` WHERE c.id = $1`, id), me.UserID)
+}
+
+// PendingReview is the caller's review in progress.
+type PendingReview struct {
+	ID        *uuid.UUID `json:"id"`
+	Comments  int        `json:"comments"`
+	CommitSHA string     `json:"commit_sha"`
+}
+
+// pendingReview is GET /pulls/{n}/reviews/pending.
+func (s *Service) pendingReview(w http.ResponseWriter, r *http.Request) error {
+	me := auth.MustFromContext(r.Context())
+	_, p, _, err := s.pullFromRoute(r, levelView)
+	if err != nil {
+		return err
+	}
+	var pr PendingReview
+	err = s.d.Pool.QueryRow(r.Context(), `SELECT rv.id, rv.commit_sha, (SELECT count(*) FROM repos_comments c WHERE c.review_id = rv.id AND c.deleted_at IS NULL)::int
+		FROM repos_reviews rv WHERE rv.pull_id = $1 AND rv.author_id = $2 AND rv.state = 'pending'`, p.ID, me.UserID).Scan(&pr.ID, &pr.CommitSHA, &pr.Comments)
+	if err != nil && !db.IsNoRows(err) {
+		return err
+	}
+	httpx.OK(w, pr)
+	return nil
+}
+
+// discardPendingReview is DELETE /pulls/{n}/reviews/pending: drops the
+// caller's pending review and its comments.
+func (s *Service) discardPendingReview(w http.ResponseWriter, r *http.Request) error {
+	me := auth.MustFromContext(r.Context())
+	repo, p, _, err := s.pullFromRoute(r, levelComment)
+	if err != nil {
+		return err
+	}
+	err = db.WithTx(r.Context(), s.d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), `DELETE FROM repos_comments WHERE review_id IN (SELECT id FROM repos_reviews WHERE pull_id = $1 AND author_id = $2 AND state = 'pending')`, p.ID, me.UserID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(r.Context(), `DELETE FROM repos_reviews WHERE pull_id = $1 AND author_id = $2 AND state = 'pending'`, p.ID, me.UserID)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	s.pullChanged(r.Context(), repo.ID, p.Number)
+	httpx.NoContent(w)
+	return nil
 }
 
 type editCommentReq struct {
@@ -437,6 +597,19 @@ func (s *Service) deleteComment(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	err = db.WithTx(r.Context(), s.d.Pool, func(tx pgx.Tx) error {
+		var pending bool
+		err := tx.QueryRow(r.Context(), `SELECT COALESCE(rv.state = 'pending', false) FROM repos_comments c LEFT JOIN repos_reviews rv ON rv.id = c.review_id
+			WHERE c.id = $1 AND c.pull_id = $2 AND c.deleted_at IS NULL AND (rv.state IS DISTINCT FROM 'pending' OR c.author_id = $3)`, cid, p.ID, me.UserID).Scan(&pending)
+		if db.IsNoRows(err) {
+			return httpx.NotFound("Comment not found.")
+		}
+		if err != nil {
+			return err
+		}
+		if pending { // not posted yet: remove it outright
+			_, err := tx.Exec(r.Context(), `DELETE FROM repos_comments WHERE id = $1 AND author_id = $2`, cid, me.UserID)
+			return err
+		}
 		tag, err := tx.Exec(r.Context(), `UPDATE repos_comments SET deleted_at = now(), body = '', updated_at = now()
 			WHERE id = $1 AND pull_id = $2 AND deleted_at IS NULL AND (author_id = $3 OR $4)`, cid, p.ID, me.UserID, lvl >= access.Manage)
 		if err != nil {
@@ -444,6 +617,9 @@ func (s *Service) deleteComment(w http.ResponseWriter, r *http.Request) error {
 		}
 		if tag.RowsAffected() == 0 {
 			return httpx.NotFound("You can delete only your own comments.")
+		}
+		if _, err := tx.Exec(r.Context(), `DELETE FROM repos_reactions WHERE subject_type = 'pull_comment' AND subject_id = $1`, cid); err != nil {
+			return err
 		}
 		_, err = tx.Exec(r.Context(), `UPDATE repos_pulls SET comment_count = greatest(comment_count - 1, 0) WHERE id = $1`, p.ID)
 		return err
@@ -539,18 +715,43 @@ func (s *Service) submitReview(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest(fmt.Sprintf("A review holds up to %d line comments.", maxCommentsPerReview))
 	}
 	body := strings.TrimSpace(in.Body)
-	if state == "changes_requested" && body == "" && len(in.Comments) == 0 {
+	var pendingID *uuid.UUID
+	pendingCount := 0
+	if err := s.d.Pool.QueryRow(r.Context(), `SELECT rv.id, (SELECT count(*) FROM repos_comments c WHERE c.review_id = rv.id)::int
+		FROM repos_reviews rv WHERE rv.pull_id = $1 AND rv.author_id = $2 AND rv.state = 'pending'`, p.ID, me.UserID).Scan(&pendingID, &pendingCount); err != nil && !db.IsNoRows(err) {
+		return err
+	}
+	if state == "changes_requested" && body == "" && len(in.Comments)+pendingCount == 0 {
 		return httpx.BadRequest("Say what should change.")
 	}
-	if state == "commented" && body == "" && len(in.Comments) == 0 {
+	if state == "commented" && body == "" && len(in.Comments)+pendingCount == 0 {
 		return httpx.BadRequest("Write a comment or add line comments.")
 	}
 	if utf8.RuneCountInString(body) > 65536 {
 		return httpx.BadRequest("The review is too long.")
 	}
+	if len(in.Comments)+pendingCount > maxCommentsPerReview {
+		return httpx.BadRequest(fmt.Sprintf("A review holds up to %d line comments.", maxCommentsPerReview))
+	}
 	err = db.WithTx(r.Context(), s.d.Pool, func(tx pgx.Tx) error {
 		var id uuid.UUID
-		if err := tx.QueryRow(r.Context(), `INSERT INTO repos_reviews (pull_id, author_id, state, body, commit_sha)
+		if pendingID != nil {
+			id = *pendingID
+			tag, err := tx.Exec(r.Context(), `UPDATE repos_reviews SET state = $2, body = $3, commit_sha = $4, created_at = clock_timestamp()
+				WHERE id = $1 AND state = 'pending'`, id, state, body, p.HeadSHA)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 {
+				return httpx.Conflict("Your pending review changed meanwhile. Reload and submit again.")
+			}
+			if _, err := tx.Exec(r.Context(), `UPDATE repos_comments SET created_at = clock_timestamp() WHERE review_id = $1`, id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(r.Context(), `UPDATE repos_pulls SET comment_count = comment_count + $2 WHERE id = $1`, p.ID, pendingCount); err != nil {
+				return err
+			}
+		} else if err := tx.QueryRow(r.Context(), `INSERT INTO repos_reviews (pull_id, author_id, state, body, commit_sha)
 			VALUES ($1, $2, $3, $4, $5) RETURNING id`, p.ID, me.UserID, state, body, p.HeadSHA).Scan(&id); err != nil {
 			return err
 		}
@@ -559,9 +760,14 @@ func (s *Service) submitReview(w http.ResponseWriter, r *http.Request) error {
 			if c.ReplyTo == nil && c.Path == "" {
 				return httpx.BadRequest("Line comments in a review need a file and a line.")
 			}
+			c.Pending = false
 			if _, err := s.createComment(r.Context(), me, repo, p, c, rc); err != nil {
 				return err
 			}
+		}
+		// A review answers the request for it; asking again re-requests.
+		if _, err := tx.Exec(r.Context(), `DELETE FROM repos_review_requests WHERE pull_id = $1 AND user_id = $2`, p.ID, me.UserID); err != nil {
+			return err
 		}
 		_, err := tx.Exec(r.Context(), `UPDATE repos_pulls SET updated_at = now() WHERE id = $1`, p.ID)
 		return err
@@ -570,6 +776,15 @@ func (s *Service) submitReview(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.pullChanged(r.Context(), repo.ID, p.Number)
+	if body != "" {
+		s.recordRefs(r.Context(), repo, me, "pull", p.Number, p.Title, body, false)
+		s.notifyMentions(r.Context(), me, repo, body, fmt.Sprintf("#%d: %s", p.Number, p.Title), s.pullLink(repo, p.Number), nil)
+	}
+	s.emitWebhook(r.Context(), repo, me, "pull_request_review", "submitted", map[string]any{"pull_request": s.pullHookView(repo, p),
+		"review": map[string]any{"state": state, "body": body, "commit_id": p.HeadSHA}})
+	if state == "approved" {
+		s.autoMergeAll(context.WithoutCancel(r.Context()), repo)
+	}
 	if p.Author != nil && p.Author.ID != me.UserID {
 		verb := map[string]string{"approved": "approved", "changes_requested": "requested changes on", "commented": "reviewed"}[state]
 		s.notifyIfVisible(r.Context(), repo, notify.Notification{
@@ -660,7 +875,11 @@ func (s *Service) addReviewRequests(ctx context.Context, tx pgx.Tx, repo *Repo, 
 		}
 		if tag.RowsAffected() == 1 {
 			added = append(added, id)
-			if err := addEvent(ctx, tx, pullID, &by, "review_requested", map[string]any{"user_id": id}); err != nil {
+			var reviewed bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM repos_reviews WHERE pull_id = $1 AND author_id = $2 AND state <> 'pending')`, pullID, id).Scan(&reviewed); err != nil {
+				return nil, err
+			}
+			if err := addEvent(ctx, tx, pullID, &by, "review_requested", map[string]any{"user_id": id, "again": reviewed}); err != nil {
 				return nil, err
 			}
 		}
@@ -710,14 +929,15 @@ func (s *Service) notifyReviewRequested(ctx context.Context, me *auth.Identity, 
 }
 
 // notifyComment tells the author and everyone else in the conversation.
-func (s *Service) notifyComment(ctx context.Context, me *auth.Identity, repo *Repo, p *Pull, c *Comment) {
+func (s *Service) notifyComment(ctx context.Context, me *auth.Identity, repo *Repo, p *Pull, c *Comment, skip map[uuid.UUID]bool) {
 	ids := map[uuid.UUID]bool{}
 	if p.Author != nil {
 		ids[p.Author.ID] = true
 	}
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT DISTINCT author_id FROM repos_comments WHERE pull_id = $1 AND author_id IS NOT NULL
-		  AND ($2::uuid IS NULL OR id = $2 OR reply_to = $2)
+		SELECT DISTINCT c.author_id FROM repos_comments c LEFT JOIN repos_reviews rv ON rv.id = c.review_id
+		WHERE c.pull_id = $1 AND c.author_id IS NOT NULL AND rv.state IS DISTINCT FROM 'pending'
+		  AND ($2::uuid IS NULL OR c.id = $2 OR c.reply_to = $2)
 		LIMIT 50`, p.ID, c.ReplyTo)
 	if err == nil {
 		for rows.Next() {
@@ -734,6 +954,9 @@ func (s *Service) notifyComment(ctx context.Context, me *auth.Identity, repo *Re
 		where = fmt.Sprintf(" on %s line %d", *c.Path, *c.Line)
 	}
 	for id := range ids {
+		if skip[id] {
+			continue
+		}
 		s.notifyIfVisible(ctx, repo, notify.Notification{
 			UserID: id, Kind: KindPullComment,
 			Title: fmt.Sprintf("%s commented%s in #%d: %s", s.person(me).Name, where, p.Number, p.Title),
@@ -741,4 +964,51 @@ func (s *Service) notifyComment(ctx context.Context, me *auth.Identity, repo *Re
 			Link:  s.pullLink(repo, p.Number),
 		})
 	}
+}
+
+// postReview submits a "comment" review with line comments in one
+// transaction (agent tools: never approve or request changes).
+func (s *Service) postReview(ctx context.Context, me *auth.Identity, repo *Repo, p *Pull, in ReviewInput) (uuid.UUID, error) {
+	body := strings.TrimSpace(in.Body)
+	if utf8.RuneCountInString(body) > 65536 {
+		return uuid.Nil, httpx.BadRequest("The review is too long.")
+	}
+	var id uuid.UUID
+	err := db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `INSERT INTO repos_reviews (pull_id, author_id, state, body, commit_sha) VALUES ($1, $2, 'commented', $3, $4) RETURNING id`,
+			p.ID, me.UserID, body, p.HeadSHA).Scan(&id); err != nil {
+			return err
+		}
+		rc := &reviewCtx{id: id, tx: tx}
+		for _, c := range in.Comments {
+			if c.Path == "" || c.Line < 1 {
+				return httpx.BadRequest("Line comments in a review need a file and a line.")
+			}
+			if _, err := s.createComment(ctx, me, repo, p, c, rc); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM repos_review_requests WHERE pull_id = $1 AND user_id = $2`, p.ID, me.UserID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE repos_pulls SET updated_at = now() WHERE id = $1`, p.ID)
+		return err
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	s.pullChanged(ctx, repo.ID, p.Number)
+	if body != "" {
+		s.recordRefs(ctx, repo, me, "pull", p.Number, p.Title, body, false)
+	}
+	if p.Author != nil && p.Author.ID != me.UserID {
+		s.notifyIfVisible(ctx, repo, notify.Notification{
+			UserID: p.Author.ID, Kind: KindPullReview,
+			Title: fmt.Sprintf("%s reviewed #%d: %s", s.person(me).Name, p.Number, p.Title),
+			Body:  truncateUTF8(body, 200), Link: s.pullLink(repo, p.Number),
+		})
+	}
+	s.emitWebhook(ctx, repo, me, "pull_request_review", "submitted", map[string]any{"pull_request": s.pullHookView(repo, p),
+		"review": map[string]any{"state": "commented", "body": body, "commit_id": p.HeadSHA}})
+	return id, nil
 }

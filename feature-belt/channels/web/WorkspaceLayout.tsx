@@ -1,12 +1,22 @@
 "use client";
 
-import { orgsNounA, orgsNounTitle, useActiveOrg, useChannelsWorkspace } from "@scaffoldapp/shared";
+import { orgsNounA, orgsNounTitle, useActiveOrg, useChannelsReportZone, useChannelsWorkspace } from "@scaffoldapp/shared";
 import { Button, EmptyState, Skeleton, cn } from "@scaffoldapp/ui-web";
 import { Building2, Hash } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
+import { ChannelsEmojiProvider } from "./emoji";
+import { ShortcutsSheet, useChannelsShortcuts } from "./Shortcuts";
 import { Sidebar } from "./Sidebar";
+
+/** Workspace-wide behaviour: keyboard shortcuts, the device's time zone for reminders and profile cards. */
+function WorkspaceEffects({ orgId }: { orgId: string }) {
+  const ws = useChannelsWorkspace(orgId);
+  useChannelsShortcuts(orgId);
+  useChannelsReportZone(orgId, ws.data?.prefs.timezone);
+  return <ShortcutsSheet />;
+}
 
 /** Fills the viewport under the top bar (and above the phone tab bar) so each pane scrolls on its own. */
 const PANE_HEIGHT =
@@ -71,12 +81,15 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
     );
   }
   return (
-    <div className={cn("flex w-full", PANE_HEIGHT)}>
-      <aside aria-label="Workspace" className={cn("min-h-0 w-full flex-col bg-surface lg:flex lg:w-72 lg:shrink-0 lg:border-r lg:border-border", atHome ? "flex" : "hidden")}>
-        <Sidebar orgId={org.id} orgName={org.name} />
-      </aside>
-      <section className={cn("min-h-0 min-w-0 flex-1 flex-col bg-canvas", atHome ? "hidden lg:flex" : "flex")}>{children}</section>
-    </div>
+    <ChannelsEmojiProvider orgId={org.id}>
+      <div className={cn("flex w-full", PANE_HEIGHT)}>
+        <aside aria-label="Workspace" className={cn("min-h-0 w-full flex-col bg-surface lg:flex lg:w-72 lg:shrink-0 lg:border-r lg:border-border", atHome ? "flex" : "hidden")}>
+          <Sidebar orgId={org.id} orgName={org.name} />
+        </aside>
+        <section className={cn("min-h-0 min-w-0 flex-1 flex-col bg-canvas", atHome ? "hidden lg:flex" : "flex")}>{children}</section>
+      </div>
+      <WorkspaceEffects orgId={org.id} />
+    </ChannelsEmojiProvider>
   );
 }
 

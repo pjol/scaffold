@@ -10,6 +10,8 @@
 - Daily per-user limits on messages and tokens, with the reset time shown when reached. Usage and an estimated cost are recorded per reply; admins see daily totals.
 - Users rename, delete and report replies (moderation queue). Replies render as Markdown that can't inject HTML.
 - Provider-neutral: Anthropic Messages API (default) or OpenAI Responses API; a scripted mock in development only, labelled in the UI.
+- In-context help where the person is: every ⋮ menu on a resource the assistant can read gets **Summarise** (a channel's unread messages, last 24 hours or 7 days; a thread; a page; a call's transcript; a CRM record's timeline) and **Ask about this**. Both open the assistant beside the page (web side panel; a new conversation on mobile) with the resource attached: read as the person, narrowed by their AI agent scope, sent as untrusted data, shown as a chip on the message. Nothing to read (no transcript, nothing unread) is said, not guessed. Quotas and consent apply as to any message.
+- ⌘K: "Ask the assistant: …" with what was typed, and a new conversation (search's quick actions).
 
 ## Data
 
@@ -27,24 +29,25 @@
 | Method | Path | Guard | Purpose |
 |---|---|---|---|
 | GET | `/v1/assistant/status` | user | Provider, model, mock flag, consent, today's usage and limits |
+| GET | `/v1/assistant/contexts` | user | `{items: [{kind, label, feature, scopes: [{id, label, prompt}], prompt}]}`: kinds with a reader, installed, not off in the person's agent scope |
 | POST / DELETE | `/v1/assistant/consent` | user (POST: active) | `{provider}` must name the current provider / withdraw every consent |
 | GET | `/v1/assistant/conversations?q=&cursor=` | user | Page, most recently active first (keyset on `last_message_at, id`) |
 | POST | `/v1/assistant/conversations` | user, active, 30/min | `{title?}` → 201 |
 | GET / PATCH / DELETE | `/v1/assistant/conversations/{id}` | owner (PATCH: active) | Read (`running` while a reply streams), rename `{title}`, delete with messages |
 | GET | `/v1/assistant/conversations/{id}/messages?cursor=` | owner, stream group | Page, newest first. `Accept: text/event-stream` resumes the running reply |
-| POST | `/v1/assistant/conversations/{id}/messages` | owner, active, 20/min, stream group | `{text}` → `text/event-stream` |
+| POST | `/v1/assistant/conversations/{id}/messages` | owner, active, 20/min, stream group | `{text, context?: {kind, id, scope?, title?}}` → `text/event-stream`; the context is read before the stream opens (400 unknown kind/scope, 403 `agent_scope_off`, 404 what the person can't see, 504 `context_timeout`) |
 | POST | `/v1/assistant/conversations/{id}/stop` | owner | Stop the running reply on whichever instance runs it |
 | POST | `/v1/assistant/conversations/{id}/tool-calls/{call_id}` | owner, active, 60/min | `{approved}` for a call awaiting approval in the running reply → 204; 404 `tool_call_not_found` when nothing waits |
 | GET | `/v1/admin/assistant/usage?days=30` | support | Daily totals across users |
 
 The two `messages` routes mount through `app.StreamRoutes` (auth, user rate limit and consent gate, no request timeout); a gone client is detected from failed writes and 15 s heartbeats. Errors before a stream opens are JSON: 503 `assistant_unconfigured`, 403 `ai_consent_required` (`details.provider`, `provider_label`), 429 `quota_exceeded` (`kind`, `limit`, `used`, `resets_at`), 422 `content_rejected`, 409 `turn_in_progress`, 413 `message_too_long`.
 
-Stream events: `message` `{message}` (user message, then the assistant snapshot on connect and the final message), `delta` `{message_id, text}`, `tool_start` `{message_id, call_id, name, source?, input, started_at}`, `tool_approval` `{message_id, call_id, name, source, input, expires_at}`, `tool_decision` `{message_id, call_id, approved}`, `tool_end` `{…, status (ok|error|denied|suggested), summary, duration_ms, suggestion_id?}`, `error` `{message_id, code, message, retryable}`, `done` `{message_id, status, conversation}`. Moderation target: `assistant.message` (snapshot = reply + the prompt before it; removal hides the reply).
+A user message's `parts` can end with `{type: "context", context: {kind, id, label, title, link, scope, scope_label, missing}}`. Stream events: `message` `{message}` (user message, then the assistant snapshot on connect and the final message), `delta` `{message_id, text}`, `tool_start` `{message_id, call_id, name, source?, input, started_at}`, `tool_approval` `{message_id, call_id, name, source, input, expires_at}`, `tool_decision` `{message_id, call_id, approved}`, `tool_end` `{…, status (ok|error|denied|suggested), summary, duration_ms, suggestion_id?}`, `error` `{message_id, code, message, retryable}`, `done` `{message_id, status, conversation}`. Moderation target: `assistant.message` (snapshot = reply + the prompt before it; removal hides the reply).
 
 ## Screens
 
-- **Web** `/assistant` (list + new conversation; on phones the list), `/assistant/new`, `/assistant/<id>`: two panes at ≥ 1024 px, viewport-height thread with a sticky composer (Enter sends, Shift+Enter new line, Stop while streaming), tool activity lines (service badge, approval card with Approve/Decline, suggestion link), copy and report on each reply, retry on a failed reply, consent dialog before the first message, quota and mock banners, rename/delete menu. A new conversation is created on the first message and the URL moves with `history.replaceState`, so the stream isn't interrupted. `/settings/assistant`: provider, permission (allow / turn off), today's usage. `/admin/assistant`: daily table (7/30/90 days). Nav entry, Home tile, settings section and admin tab wire through the registry.
-- **Mobile** Home row → `/assistant` (list, New conversation), `/assistant/[id]` (`new` starts one; inverted list, keyboard-aware composer, share and report per reply, approval cards, consent dialog, quota banner), `/settings/assistant`. Streaming uses `fetch` from `expo/fetch`.
+- **Web** ⋮ menus (registry `resourceMenuProviders`): Summarise (▸ scopes) and Ask about this open `AssistantPanel` (registry `sessionMounts`: a side panel from 768 px, a bottom sheet on phones, "Open in full"); `/assistant/new?ctx_kind=&ctx_id=&ctx_scope=&ctx_title=&mode=summarise|ask` and `?q=` (⌘K) do the same in the full screen; the composer shows the attached chip (removable) and sent messages show it (links to the resource). `/assistant` (list + new conversation; on phones the list), `/assistant/new`, `/assistant/<id>`: two panes at ≥ 1024 px, viewport-height thread with a sticky composer (Enter sends, Shift+Enter new line, Stop while streaming), tool activity lines (service badge, approval card with Approve/Decline, suggestion link), copy and report on each reply, retry on a failed reply, consent dialog before the first message, quota and mock banners, rename/delete menu. A new conversation is created on the first message and the URL moves with `history.replaceState`, so the stream isn't interrupted. `/settings/assistant`: provider, permission (allow / turn off), today's usage. `/admin/assistant`: daily table (7/30/90 days). Nav entry, Home tile, settings section and admin tab wire through the registry.
+- **Mobile** ⋮ sheets (registry `resourceMenuProviders`): Summarise / Ask about this open `/assistant/new?ctx_kind=…` (the same query); Home row → `/assistant` (list, New conversation), `/assistant/[id]` (`new` starts one; attached chip, context chip on sent messages; inverted list, keyboard-aware composer, share and report per reply, approval cards, consent dialog, quota banner), `/settings/assistant`. Streaming uses `fetch` from `expo/fetch`.
 - Every view has skeleton, empty and error states; the not-configured state replaces the thread.
 
 ## Config
@@ -81,6 +84,7 @@ No new Go modules or npm packages (`expo/fetch` ships with Expo). Provider calls
 4. Set daily limits; add prices for unlisted models in `pricing.go`.
 5. Give the features the assistant should use an `app.ToolProvider` with prescriptive descriptions.
 6. Mobile: the assistant is a Home row; if it is central to the app, add a tab instead (`mobile/app/(tabs)`).
+7. In-context help covers the belt's channels, docs, calls and crm kinds through their read tools. For other kinds, or a better reader: `assistant.RegisterContext("files.item", fn, assistant.WithContextLabel("file"))` from stitching, where `fn(ctx, caller, req)` reads through the feature's access-checked code (ctx carries the agent marker) and returns `&assistant.Context{Title, Link, Content}` or `{Missing: "…"}`; the resource's ⋮ menu must pass `kind` and `id`.
 
 ## Extending
 
@@ -88,7 +92,8 @@ No new Go modules or npm packages (`expo/fetch` ships with Expo). Provider calls
 - **Tools** belong in the owning feature's `Tools()`. Names containing delete, send, email, fetch_url or browse are refused at startup; inputs are validated against `InputSchema` before the handler runs; output is capped at ~12k tokens and wrapped as untrusted data.
 - **Per-caller tools** come from `app.DynamicToolProvider.ToolsFor` each turn (12 s budget, 128 at most). Set `Tool.Source` (the service name; it makes the tool external: no name rule, third-party framing of results and errors, approval for writes) and `Tool.Feature` (the agent-scope key; default the module name). A description that reads like instructions is withheld. Their input schemas are untrusted: validation stops after 20,000 schema nodes (`maxSchemaSteps`), so self-referencing `anyOf`/`oneOf` can't pin a CPU.
 - **Agent scope**: with an `app.AgentPolicy` module, each turn hides tools by `FeatureLevel` (off: all; below suggest: writes) and every call runs `GateTool` under `auth.WithAgent(Via "assistant")`: run, refuse (the code becomes the tool error), or suggested (the model is told it waits for review; the UI links `/agents/suggestions/<id>`). External writes that may run still ask for approval.
-- **Clients**: `useAssistantChat(id, { fetch })` owns streaming and writes events into the messages cache; `parseMarkdown` gives both apps the same safe tree.
+- **Clients**: `useAssistantChat(id, { fetch })` owns streaming (`send(text, id?, context?)`) and writes events into the messages cache; `parseMarkdown` gives both apps the same safe tree; `useAssistantContexts`, `assistantContextPrompt`, `assistantContextQuery` / `parseAssistantContextQuery`, `assistantMessageContext`; web `openAssistantPanel(launch)` (`@/features/assistant/store`).
+- **Contexts**: `RegisterContext(kind, fn, WithContextLabel, WithContextScopes, WithContextFeature)` replaces the built-in default for a kind. Before `fn` runs the assistant checks `app.AgentAllows(feature, kind, id, read)`; built-in readers run the features' read tools through `GateTool` like any tool call. Content is capped at ~48 KB (`fitData`), wrapped `"trust":"untrusted"` inside `<attached_context>` (user text can't open or close that block), injection-scanned, and stays in the conversation's history.
 - Don't move user text out of `<user_content>` fences, edit stored history in place (it breaks prompt caching and replayed thinking), or put per-request values in the static prompt.
 
 ## Provenance
@@ -99,6 +104,7 @@ Distilled from ChatMTG (`backend/internal/{llm,agent,chat}`, design §8): turn l
 
 ## Changes
 
+- 1.2.0: in-context help: `RegisterContext` registry with built-in readers for channels (unread / 24 h / 7 days, threads), docs pages, calls transcripts and CRM timelines over those features' read tools; `GET /assistant/contexts`; `context` on send (read as an agent read, untrusted data, chip on the message); web ⋮ Summarise / Ask about this with a side panel, mobile ⋮ to a new conversation; `/assistant/new?ctx_…|q=`; ⌘K quick actions; the mock reports attachments.
 - 1.1.2: gofmt only; no behaviour change.
 - 1.1.1: security review: input validation is bounded by a step budget (a ~100-byte remote schema with self-referencing `oneOf` meant ~4 billion node visits, still running after 10 s in a test, before approval and deaf to the turn's context); an external tool's error text gets the same third-party framing and injection scan as its results.
 - 1.1.0: tools from every `DynamicToolProvider` merged per turn (connected services), labelled with their source, framed as third-party content, with an approval step (Approve/Decline, `assistant_tool_decisions`, `tool_approval`/`tool_decision` events) for external writes; AI agent scope (`app.AgentPolicy`) filters tools per turn and gates every call (suggestions link to their review); the mock calls any offered tool with `call <name> {json}`.

@@ -2,14 +2,14 @@
 
 import { errorMessage, formatCalendarDuration, orgsNoun, useCalendarLinks, useDeleteCalendarLink, useUpdateCalendarLink, type CalendarBookingLink } from "@scaffoldapp/shared";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, IconButton, Skeleton, SkeletonGroup, Stagger, StaggerItem, Switch, toast } from "@scaffoldapp/ui-web";
-import { Copy, ExternalLink, Link2, Lock, Pause, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { Code, Copy, ExternalLink, Link2, Lock, Pause, Pencil, Play, Plus, Trash2, Users } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { ColorDot, copyText } from "./parts";
+import { ColorDot, calendarEmbedSnippet, copyText } from "./parts";
 
 function LinkRow({ link, onDelete }: { link: CalendarBookingLink; onDelete: (l: CalendarBookingLink) => void }) {
   const router = useRouter();
@@ -22,9 +22,14 @@ function LinkRow({ link, onDelete }: { link: CalendarBookingLink; onDelete: (l: 
   const actions = [
     { id: "copy", label: "Copy link", icon: Copy, onSelect: () => void copyText(link.url, toast) },
     { id: "open", label: "Open booking page", icon: ExternalLink, onSelect: () => window.open(link.url, "_blank", "noopener") },
-    { id: "edit", label: "Edit", icon: Pencil, onSelect: () => router.push(`/calendar/links/${link.id}`) },
-    { id: "toggle", label: link.active ? "Pause" : "Turn on", icon: link.active ? Pause : Play, onSelect: () => setActive(!link.active) },
-    { id: "delete", label: "Delete", icon: Trash2, destructive: true, onSelect: () => onDelete(link) },
+    { id: "embed", label: "Copy embed code", icon: Code, onSelect: () => void copyText(calendarEmbedSnippet(link.url, link.title), toast, "Embed code copied") },
+    ...(link.can_edit
+      ? [
+          { id: "edit", label: "Edit", icon: Pencil, onSelect: () => router.push(`/calendar/links/${link.id}`) },
+          { id: "toggle", label: link.active ? "Pause" : "Turn on", icon: link.active ? Pause : Play, onSelect: () => setActive(!link.active) },
+          { id: "delete", label: "Delete", icon: Trash2, destructive: true, onSelect: () => onDelete(link) },
+        ]
+      : []),
   ];
   return (
     <Card padding="compact" className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -46,12 +51,19 @@ function LinkRow({ link, onDelete }: { link: CalendarBookingLink; onDelete: (l: 
           ) : (
             <Badge tone="neutral">Anyone</Badge>
           )}
+          {link.kind !== "personal" ? (
+            <Badge tone="accent" icon={<Users />}>
+              {link.kind === "round_robin" ? "Round robin" : "Collective"}
+              {link.team_name ? ` · ${link.team_name}` : ""}
+            </Badge>
+          ) : null}
+          {link.single_use ? <Badge tone="neutral">{link.used_at ? "Used" : "One booking"}</Badge> : null}
           {link.upcoming_count > 0 ? <Badge tone="primary">{link.upcoming_count} upcoming</Badge> : null}
           {!link.active ? <Badge tone="warning">Paused</Badge> : null}
         </span>
       </Link>
       <div className="flex items-center gap-2 self-end sm:self-center">
-        <Switch checked={link.active} onCheckedChange={setActive} label={<span className="sr-only">Accept bookings on {link.title}</span>} />
+        {link.can_edit ? <Switch checked={link.active} onCheckedChange={setActive} label={<span className="sr-only">Accept bookings on {link.title}</span>} /> : null}
         <IconButton label="Copy link" icon={<Copy />} variant="ghost" size="sm" onClick={() => void copyText(link.url, toast)} />
         <ResourceMenu feature="calendar" kind="calendar.booking_link" id={link.id} title={link.title} actions={actions} />
       </div>

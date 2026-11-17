@@ -11,9 +11,9 @@ import {
   type TrackReferenceOrPlaceholder,
 } from "@livekit/components-react";
 import { CALLS_ROLE_LABELS, callsHandRaisedAt, isCallsHostRole, parseCallsParticipantMeta } from "@scaffoldapp/shared";
-import { Avatar, cn } from "@scaffoldapp/ui-web";
+import { Avatar, IconButton, cn } from "@scaffoldapp/ui-web";
 import { ConnectionQuality, Track, type Participant } from "livekit-client";
-import { Hand, MicOff, MonitorUp, SignalLow, WifiOff } from "lucide-react";
+import { Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow, Star, WifiOff } from "lucide-react";
 
 /** A participant's display facts from the room (server-owned name, role and avatar). */
 export function useParticipantFacts(p: Participant) {
@@ -28,7 +28,25 @@ export function useParticipantFacts(p: Participant) {
 }
 
 /** One person's video (or their avatar when the camera is off), with name, mic, hand and connection. */
-export function Tile({ trackRef, featured, className }: { trackRef: TrackReferenceOrPlaceholder; featured?: boolean; className?: string }) {
+export function Tile({
+  trackRef,
+  featured,
+  className,
+  mirror = true,
+  pinned,
+  spotlit,
+  onPin,
+}: {
+  trackRef: TrackReferenceOrPlaceholder;
+  featured?: boolean;
+  className?: string;
+  /** Your own camera shows mirrored (only to you). */
+  mirror?: boolean;
+  pinned?: boolean;
+  spotlit?: boolean;
+  /** Pin or unpin this tile for yourself. */
+  onPin?: () => void;
+}) {
   const p = trackRef.participant;
   const facts = useParticipantFacts(p);
   const speaking = useIsSpeaking(p);
@@ -42,30 +60,56 @@ export function Tile({ trackRef, featured, className }: { trackRef: TrackReferen
 
   return (
     <div
+      {...(featured ? { "data-calls-featured": "" } : {})}
       className={cn(
-        "relative isolate flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-lg bg-ink-900 text-ink-50 transition-shadow duration-160",
+        "group relative isolate flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-lg bg-ink-900 text-ink-50 transition-shadow duration-160",
         speaking && !screen ? "ring-2 ring-primary ring-offset-0" : "ring-0",
         className,
       )}
       aria-label={`${facts.name}${you}${screen ? ", screen" : ""}`}
     >
       {showVideo && isTrackReference(trackRef) ? (
-        <VideoTrack trackRef={trackRef} className={cn("absolute inset-0 size-full", screen ? "object-contain" : "object-cover", p.isLocal && !screen && "-scale-x-100")} />
+        <VideoTrack trackRef={trackRef} className={cn("absolute inset-0 size-full", screen ? "object-contain" : "object-cover", p.isLocal && !screen && mirror && "-scale-x-100")} />
       ) : (
         <Avatar name={facts.name} src={facts.meta.avatar_url ?? null} size={featured ? "xl" : "lg"} />
       )}
-      {facts.hand && !screen && (
-        <span className="absolute top-2 left-2 flex h-8 items-center gap-1.5 rounded-pill bg-warning px-3 text-warning-fg" title="Hand raised">
-          <Hand className="size-4" aria-hidden />
-          <span className="sr-only">Hand raised</span>
+      {((facts.hand && !screen) || (spotlit && !screen)) && (
+        <span className="absolute top-2 left-2 flex gap-1.5">
+          {facts.hand && !screen && (
+            <span className="flex h-8 items-center gap-1.5 rounded-pill bg-warning px-3 text-warning-fg" title="Hand raised">
+              <Hand className="size-4" aria-hidden />
+              <span className="sr-only">Hand raised</span>
+            </span>
+          )}
+          {spotlit && !screen && (
+            <span className="flex h-8 items-center gap-1.5 rounded-pill bg-primary px-3 text-primary-fg" title="Spotlighted for everyone">
+              <Star className="size-4" aria-hidden />
+              <span className="sr-only">Spotlighted for everyone</span>
+            </span>
+          )}
         </span>
       )}
-      {(quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost) && (
-        <span className="absolute top-2 right-2 flex size-8 items-center justify-center rounded-pill bg-ink-950/70 text-warning" title={quality === ConnectionQuality.Lost ? "Connection lost" : "Weak connection"}>
-          {quality === ConnectionQuality.Lost ? <WifiOff className="size-4" aria-hidden /> : <SignalLow className="size-4" aria-hidden />}
-          <span className="sr-only">{quality === ConnectionQuality.Lost ? "Connection lost" : "Weak connection"}</span>
-        </span>
-      )}
+      <span className="absolute top-2 right-2 z-10 flex gap-1.5">
+        {(quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost) && (
+          <span className="flex size-8 items-center justify-center rounded-pill bg-ink-950/70 text-warning" title={quality === ConnectionQuality.Lost ? "Connection lost" : "Weak connection"}>
+            {quality === ConnectionQuality.Lost ? <WifiOff className="size-4" aria-hidden /> : <SignalLow className="size-4" aria-hidden />}
+            <span className="sr-only">{quality === ConnectionQuality.Lost ? "Connection lost" : "Weak connection"}</span>
+          </span>
+        )}
+        {onPin && (
+          <span className={cn("transition-opacity", pinned ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100")}>
+            <IconButton
+              label={pinned ? `Unpin ${facts.name}` : `Pin ${facts.name}`}
+              icon={pinned ? <PinOff /> : <Pin />}
+              variant="secondary"
+              size="sm"
+              aria-pressed={!!pinned}
+              className="bg-ink-950/70 text-ink-50 hover:bg-ink-950/90"
+              onClick={onPin}
+            />
+          </span>
+        )}
+      </span>
       <span className="absolute inset-x-2 bottom-2 flex">
         <span className="flex min-w-0 max-w-full items-center gap-1.5 rounded-sm bg-ink-950/70 px-2 py-1 type-label text-ink-50">
         {screen ? <MonitorUp className="size-4 shrink-0" aria-hidden /> : null}

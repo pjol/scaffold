@@ -93,6 +93,7 @@ func (s *Service) Tools() []app.Tool {
 			tools[i] = s.withConnected(t, x)
 		}
 	}
+	tools = append(tools, s.issueTools()...)
 	if s.connections() == nil {
 		return tools
 	}

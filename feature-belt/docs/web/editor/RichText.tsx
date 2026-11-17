@@ -3,7 +3,7 @@
 import { docsPlain, docsSpansEqual, type DocsRefs, type DocsSpan } from "@scaffoldapp/shared";
 import { cn } from "@scaffoldapp/ui-web";
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, type ClipboardEvent, type KeyboardEvent } from "react";
-import { getCaret, readSpans, renderSpans, setCaret, textLength, type Decoration } from "./dom";
+import { getCaret, offsetOf, readSpans, renderSpans, setCaret, textLength, type Decoration } from "./dom";
 
 export interface RichTextHandle {
   readonly el: HTMLDivElement | null;
@@ -31,6 +31,8 @@ export interface RichTextProps {
   onSelectionChange?: (caret: { start: number; end: number } | null) => void;
   onOpenPage?: (pageId: string) => void;
   onDecorationClick?: (threadId: string) => void;
+  /** An inline equation chip was clicked: its offsets in the text and where it is. */
+  onEquationClick?: (start: number, end: number, rect: DOMRect) => void;
 }
 
 function labelsKey(spans: readonly DocsSpan[], refs?: DocsRefs): string {
@@ -52,7 +54,7 @@ function labelsKey(spans: readonly DocsSpan[], refs?: DocsRefs): string {
  * (undo, a collaborator, formatting), keeping the caret where it was.
  */
 export const RichText = forwardRef<RichTextHandle, RichTextProps>(function RichText(
-  { spans, refs, editable, placeholder, placeholderWhen = "focus", className, decorations, ariaLabel, onChange, onKeyDown, onEnter, onPaste, onFocus, onBlur, onSelectionChange, onOpenPage, onDecorationClick },
+  { spans, refs, editable, placeholder, placeholderWhen = "focus", className, decorations, ariaLabel, onChange, onKeyDown, onEnter, onPaste, onFocus, onBlur, onSelectionChange, onOpenPage, onDecorationClick, onEquationClick },
   ref,
 ) {
   const elRef = useRef<HTMLDivElement>(null);
@@ -168,11 +170,19 @@ export const RichText = forwardRef<RichTextHandle, RichTextProps>(function RichT
         if (el) onSelectionChange?.(getCaret(el));
       }}
       onMouseDown={(e) => {
-        const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-page-id]");
+        const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-page-id], [data-equation]");
         if (chip) e.preventDefault();
       }}
       onClick={(e) => {
         const target = e.target as HTMLElement;
+        const eq = target.closest<HTMLElement>("[data-equation]");
+        const el = elRef.current;
+        if (eq && el && eq.parentNode) {
+          e.preventDefault();
+          const start = offsetOf(el, eq.parentNode, Array.prototype.indexOf.call(eq.parentNode.childNodes, eq));
+          onEquationClick?.(start, start + (eq.dataset["text"] ?? "").length, eq.getBoundingClientRect());
+          return;
+        }
         const chip = target.closest<HTMLElement>("[data-page-id]");
         if (chip?.dataset["pageId"]) {
           e.preventDefault();

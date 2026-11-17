@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react-native";
-import { Children, Fragment, isValidElement, type ReactNode } from "react";
+import { Children, createContext, Fragment, isValidElement, useContext, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Animated from "react-native-reanimated";
 import { haptic } from "../lib/haptics";
@@ -7,6 +7,14 @@ import { usePressScale } from "../lib/press";
 import { useTheme } from "../theme/ThemeProvider";
 import { InfoTip } from "./InfoTip";
 import { Text } from "./Text";
+
+const InListGroup = createContext(false);
+
+/** A row's side inset: 16 on its own, 0 in a `ListGroup`, whose rows span the column. */
+export function useRowInset(): number {
+  const inset = useTheme().space[4];
+  return useContext(InListGroup) ? 0 : inset;
+}
 
 export interface ListRowProps {
   /** Row title. There is intentionally no subtitle prop: context goes in `info`. */
@@ -31,10 +39,11 @@ export function ListRow({ title, leading, trailing, info, onPress, chevron, dest
   const c = theme.colors;
   const s = theme.space;
   const press = usePressScale(0.99);
+  const inset = useRowInset();
   const row = (
     <Animated.View
       style={[
-        { flexDirection: "row", alignItems: "center", gap: s[3], minHeight: leading ? theme.tap.lg : theme.tap.base, paddingVertical: s[2], paddingHorizontal: s[4], opacity: disabled ? 0.5 : 1 },
+        { flexDirection: "row", alignItems: "center", gap: s[3], minHeight: leading ? theme.tap.lg : theme.tap.base, paddingVertical: s[2], paddingHorizontal: inset, opacity: disabled ? 0.5 : 1 },
         onPress ? press.style : null,
         style,
       ]}
@@ -86,30 +95,30 @@ export interface ListGroupProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** A titled group of rows on a bordered surface (settings lists). */
+/** Rows on the canvas: optional heading, then rows that span the column with hairlines between. No box of its own, so the column doesn't shrink (design.md, house rule 8). */
 export function ListGroup({ title, info, children, style }: ListGroupProps) {
-  const theme = useTheme();
-  const c = theme.colors;
-  const s = theme.space;
+  const s = useTheme().space;
   const rows = Children.toArray(children).filter((child) => isValidElement(child));
   return (
     <View style={[{ gap: s[2] }, style]}>
       {title ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: s[2], paddingHorizontal: s[1] }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: s[2] }}>
           <Text role="label" tone="muted" accessibilityRole="header">
             {title}
           </Text>
           {info ? <InfoTip content={info} label={`About ${title}`} /> : null}
         </View>
       ) : null}
-      <View style={{ backgroundColor: c.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: c.border, overflow: "hidden" }}>
-        {rows.map((row, i) => (
-          <Fragment key={(isValidElement(row) && row.key) || i}>
-            {i > 0 ? <Divider inset={s[4]} /> : null}
-            {row}
-          </Fragment>
-        ))}
-      </View>
+      <InListGroup.Provider value={true}>
+        <View>
+          {rows.map((row, i) => (
+            <Fragment key={(isValidElement(row) && row.key) || i}>
+              {i > 0 ? <Divider /> : null}
+              {row}
+            </Fragment>
+          ))}
+        </View>
+      </InListGroup.Provider>
     </View>
   );
 }

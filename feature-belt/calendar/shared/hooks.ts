@@ -73,6 +73,10 @@ export const calendarKeys = {
   connectedRange: (from: string, to: string, orgId: string | null) => ["calendar", "connected", "range", from, to, orgId ?? ""] as const,
   connectedEvents: () => ["calendar", "connected", "event"] as const,
   connectedEvent: (ref: CalendarConnectedRef) => ["calendar", "connected", "event", ref.connection_id, ref.calendar_id, ref.event_id] as const,
+  calendars: () => ["calendar", "calendars"] as const,
+  rooms: () => ["calendar", "rooms"] as const,
+  roomList: (params: unknown) => ["calendar", "rooms", JSON.stringify(params)] as const,
+  search: (q: string) => ["calendar", "search", q] as const,
 } as const;
 
 // ───────────────────────────────────────────────────────────── realtime ──
@@ -97,6 +101,10 @@ registerRealtimeHandler("calendar.changed", (qc, e) => {
     case "connected":
       invalidateConnected(qc);
       break;
+    case "calendars":
+      void qc.invalidateQueries({ queryKey: calendarKeys.calendars() });
+      void qc.invalidateQueries({ queryKey: calendarKeys.ranges() });
+      break;
   }
 });
 
@@ -108,6 +116,13 @@ function invalidateConnected(qc: QueryClient): void {
   void qc.invalidateQueries({ queryKey: ["calendar", "sources"] });
   void qc.invalidateQueries({ queryKey: calendarKeys.connectedRanges() });
   void qc.invalidateQueries({ queryKey: calendarKeys.connectedEvents() });
+}
+
+/** Events and what shows them changed (ranges, details, bookings, rooms' busy time, search). */
+export function invalidateCalendarEvents(qc: QueryClient): void {
+  invalidateEvents(qc);
+  void qc.invalidateQueries({ queryKey: calendarKeys.rooms() });
+  void qc.invalidateQueries({ queryKey: ["calendar", "search"] });
 }
 
 function invalidateEvents(qc: QueryClient): void {
@@ -470,11 +485,11 @@ export function useDeleteCalendarEvent(): UseMutationResult<void, ApiError, { id
 }
 
 /** Reply to an invitation (applies to the whole series). */
-export function useRespondCalendarEvent(): UseMutationResult<CalendarEventDetail, ApiError, { id: string; response: Exclude<CalendarResponse, "needs_action"> }> {
+export function useRespondCalendarEvent(): UseMutationResult<CalendarEventDetail, ApiError, { id: string; response: Exclude<CalendarResponse, "needs_action">; note?: string }> {
   const api = useEndpoints(calendarEndpoints);
   const qc = useQueryClient();
-  return useMutation<CalendarEventDetail, ApiError, { id: string; response: Exclude<CalendarResponse, "needs_action"> }>({
-    mutationFn: ({ id, response }) => api.respond(id, response),
+  return useMutation<CalendarEventDetail, ApiError, { id: string; response: Exclude<CalendarResponse, "needs_action">; note?: string }>({
+    mutationFn: ({ id, response, note }) => api.respond(id, response, note),
     onSuccess: () => invalidateEvents(qc),
   });
 }

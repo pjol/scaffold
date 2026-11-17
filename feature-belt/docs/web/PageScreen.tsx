@@ -9,48 +9,59 @@ import {
   useDocsBacklinks,
   useDocsChildren,
   useDocsComments,
+  useDocsCreateDatabase,
   useDocsCreatePage,
   useDocsDeletePermanently,
   useDocsDuplicatePage,
-  useDocsExportMarkdown,
-  useDocsFileUrl,
+  useDocsFollow,
   useDocsMovePage,
   useDocsPage,
   useDocsPageSession,
   useDocsPresence,
   useDocsRestorePage,
+  useDocsSaveAsTemplate,
   useDocsSetFavorite,
+  useDocsStopTemplate,
   useDocsTrashPage,
   useDocsUpdatePage,
   useDocsUploadFile,
+  useDocsUseTemplate,
+  useDocsVerify,
   useEndpoints,
   useMe,
+  type DocsCreateDatabaseRequest,
   type DocsPageDetail,
+  type DocsPageFont,
   type DocsSaveState,
 } from "@scaffoldapp/shared";
 import { Avatar, Banner, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Sheet, Skeleton, Tooltip, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
 import {
   ArrowLeft,
+  BadgeCheck,
+  Bell,
+  BellOff,
   Check,
   CloudOff,
   Copy,
   CornerUpRight,
   Download,
-  FileText,
   Globe,
   History,
   ImagePlus,
+  Info,
+  LayoutTemplate,
   Link2,
   Loader2,
   Lock,
+  LockOpen,
   MessageSquare,
   MoveHorizontal,
   Smile,
   Star,
   Trash2,
-  LockOpen,
-  Upload,
   TriangleAlert,
+  Type,
+  Upload,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -59,12 +70,17 @@ import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
 import { CommentsPanel, type CommentTarget } from "./Comments";
 import { DatabaseView } from "./database/DatabaseView";
-import { COVER_CLASS, CoverPicker, HistoryDialog, ImportDialog, PagePicker, PublishDialog } from "./Dialogs";
+import { CoverArt, CoverPicker, HistoryDialog, ImportDialog, PagePicker, PublishDialog } from "./Dialogs";
 import { Editor } from "./editor/Editor";
 import type { EditorSelection } from "./editor/context";
 import { draftOps, toDrafts } from "./editor/ops";
-import { EmojiPicker } from "./EmojiPicker";
+import { ExportDialog } from "./ExportDialog";
 import { Floating } from "./Floating";
+import { Outline } from "./Outline";
+import { IconPicker, PageIcon } from "./PageIcon";
+import { PageInfoDialog } from "./PageInfo";
+import { PageHoverPreviews } from "./PagePreview";
+import { FONT_CLASS, SMALL_TEXT_CLASS } from "./pageStyle";
 import { RowProperties } from "./RowProperties";
 
 export function SaveState({ state, error }: { state: DocsSaveState; error: string | null }) {
@@ -85,17 +101,13 @@ export function SaveState({ state, error }: { state: DocsSaveState; error: strin
   return tip ? <Tooltip content={tip}>{body}</Tooltip> : body;
 }
 
+
 function Cover({ detail, editable }: { detail: DocsPageDetail; editable: boolean }) {
   const cover = detail.page.cover;
-  const file = useDocsFileUrl(cover?.file_id);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   if (!cover) return null;
   return (
-    <div className={cn("group/cover relative h-36 w-full overflow-hidden sm:h-48", cover.color ? COVER_CLASS[cover.color] : "bg-sunken")}>
-      {cover.file_id && file.data?.url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={file.data.url} alt="" className="size-full object-cover" style={{ objectPosition: `center ${cover.position}%` }} />
-      ) : null}
+    <CoverArt cover={cover} className="group/cover h-36 shrink-0 sm:h-48">
       {editable ? (
         <div className="absolute right-4 bottom-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/cover:opacity-100 sm:focus-within:opacity-100 motion-reduce:transition-none">
           <Button size="sm" variant="secondary" onClick={(e) => setAnchor(e.currentTarget)}>
@@ -106,7 +118,7 @@ function Cover({ detail, editable }: { detail: DocsPageDetail; editable: boolean
       <Floating open={!!anchor} anchor={anchor} onClose={() => setAnchor(null)} autoFocus placement="bottom-end" label="Cover">
         <CoverPicker page={detail.page} onDone={() => setAnchor(null)} />
       </Floating>
-    </div>
+    </CoverArt>
   );
 }
 
@@ -209,6 +221,13 @@ export function PageScreen({ id }: { id: string }) {
   return <LoadedPage key={id} detail={detail.data} />;
 }
 
+const VERIFY_CHOICES: { id: string; label: string; days: number }[] = [
+  { id: "forever", label: "Until changed", days: 0 },
+  { id: "7", label: "For 7 days", days: 7 },
+  { id: "30", label: "For 30 days", days: 30 },
+  { id: "90", label: "For 90 days", days: 90 },
+];
+
 function LoadedPage({ detail }: { detail: DocsPageDetail }) {
   const page = detail.page;
   const router = useRouter();
@@ -228,24 +247,30 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
   const viewers = allViewers.filter((v) => v.user.id !== me.data?.id);
   const wide = useMediaQuery("(min-width: 1280px)");
   const [comments, setComments] = useState<{ open: boolean; block: string | null; thread: string | null; pending: CommentTarget | null }>({ open: false, block: null, thread: null, pending: null });
-  const [dialog, setDialog] = useState<null | "history" | "publish" | "move" | "move-blocks" | "import" | "delete">(null);
+  const [dialog, setDialog] = useState<null | "history" | "publish" | "move" | "move-blocks" | "import" | "delete" | "export" | "info">(null);
   const [movingBlocks, setMovingBlocks] = useState<string[]>([]);
   const [iconAnchor, setIconAnchor] = useState<HTMLElement | null>(null);
   const [coverAnchor, setCoverAnchor] = useState<HTMLElement | null>(null);
   const update = useDocsUpdatePage(page.id);
   const favorite = useDocsSetFavorite(page.id);
+  const follow = useDocsFollow(page.id);
+  const verify = useDocsVerify(page.id);
   const createPage = useDocsCreatePage(page.org_id);
+  const createDatabase = useDocsCreateDatabase(page.org_id);
   const move = useDocsMovePage(page.org_id);
   const duplicate = useDocsDuplicatePage(page.org_id);
+  const saveTemplate = useDocsSaveAsTemplate(page.org_id);
+  const stopTemplate = useDocsStopTemplate(page.org_id);
+  const fromTemplate = useDocsUseTemplate(page.org_id);
   const trash = useDocsTrashPage(page.org_id);
   const restore = useDocsRestorePage(page.org_id);
   const del = useDocsDeletePermanently(page.org_id);
   const upload = useDocsUploadFile(page.id);
-  const exporter = useDocsExportMarkdown();
   const children = useDocsChildren(page.id, page.kind === "page");
   const backlinks = useDocsBacklinks(page.id);
   const openThreads = useDocsComments(page.id, "open");
   const editorFocus = useRef<(() => void) | null>(null);
+  const content = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const c = search?.get("comment");
@@ -272,34 +297,68 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
   const onErr = (fallback: string) => (e: unknown) => toast.error(errorMessage(e, fallback));
   const title = docsTitle(page.title);
   const people = Array.from(new Map(viewers.map((v) => [v.user.id, v.user])).values());
+  const font = page.font ?? "default";
+  const blocksNow = snapshot.blocks.length ? snapshot.blocks : detail.blocks;
 
   const actions: ResourceMenuAction[] = [];
   if (!trashed) {
     actions.push({ id: "copy-link", label: "Copy link", icon: Link2, onSelect: () => void navigator.clipboard?.writeText(`${window.location.origin}/docs/${page.id}`).then(() => toast.success("Link copied."), () => toast.error("Couldn't copy the link.")) });
-    if (canEdit && !page.is_row) actions.push({ id: "move", label: "Move to…", icon: CornerUpRight, onSelect: () => setDialog("move") });
-    if (canEdit) actions.push({ id: "duplicate", label: "Duplicate", icon: Copy, onSelect: () => duplicate.mutate(page.id, { onSuccess: (p) => router.push(`/docs/${p.id}`), onError: onErr("Couldn't duplicate the page.") }) });
-    if (canEdit) actions.push({ id: "lock", label: page.locked ? "Allow editing" : "Lock page", icon: page.locked ? LockOpen : Lock, onSelect: () => update.mutate({ locked: !page.locked }, { onError: onErr("Couldn't change the lock.") }) });
-    if (canEdit && page.kind === "page") actions.push({ id: "width", label: page.full_width ? "Normal width" : "Full width", icon: MoveHorizontal, onSelect: () => update.mutate({ full_width: !page.full_width }) });
-    if (canManage) actions.push({ id: "publish", label: detail.published ? "Published to the web…" : "Publish to the web…", icon: Globe, onSelect: () => setDialog("publish") });
-    if (page.kind === "page") actions.push({ id: "history", label: "Page history", icon: History, onSelect: () => setDialog("history") });
     actions.push({
-      id: "export",
-      label: "Export as Markdown",
-      icon: Download,
+      id: "follow",
+      label: detail.following ? "Stop following" : "Follow",
+      icon: detail.following ? BellOff : Bell,
       onSelect: () =>
-        exporter.mutate(page.id, {
-          onSuccess: (md) => {
-            const url = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `${title.replace(/[^\w.-]+/g, "-") || "page"}.md`;
-            a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-          },
-          onError: onErr("Couldn't export the page."),
+        follow.mutate(!detail.following, {
+          onSuccess: (r) => toast.success(r.following ? "You'll hear about edits and comments." : "You won't hear about edits any more."),
+          onError: onErr("Couldn't change following."),
         }),
     });
-    if (canEdit && page.kind === "page") actions.push({ id: "import", label: "Import Markdown here…", icon: Upload, onSelect: () => setDialog("import") });
+    if (canEdit && !page.is_row) actions.push({ id: "move", label: "Move to…", icon: CornerUpRight, onSelect: () => setDialog("move") });
+    if (canEdit) actions.push({ id: "duplicate", label: "Duplicate", icon: Copy, onSelect: () => duplicate.mutate(page.id, { onSuccess: (p) => router.push(`/docs/${p.id}`), onError: onErr("Couldn't duplicate the page.") }) });
+    if (!page.is_row && !page.is_template) {
+      const saved = (p: { id: string }) => toast.success("Saved as a template.", { action: { label: "Open", onClick: () => router.push(`/docs/${p.id}`) } });
+      actions.push({
+        id: "save-template",
+        label: "Save as template",
+        icon: LayoutTemplate,
+        choices: [
+          { id: "private", label: "Only for me", onSelect: () => saveTemplate.mutate({ pageId: page.id }, { onSuccess: saved, onError: onErr("Couldn't save the template.") }) },
+          { id: "shared", label: "For everyone", onSelect: () => saveTemplate.mutate({ pageId: page.id, shared: true }, { onSuccess: saved, onError: onErr("Couldn't save the template.") }) },
+        ],
+      });
+    }
+    if (canEdit) actions.push({ id: "lock", label: page.locked ? "Allow editing" : "Lock page", icon: page.locked ? LockOpen : Lock, onSelect: () => update.mutate({ locked: !page.locked }, { onError: onErr("Couldn't change the lock.") }) });
+    if (canEdit && page.kind === "page") {
+      actions.push({ id: "width", label: page.full_width ? "Normal width" : "Full width", icon: MoveHorizontal, onSelect: () => update.mutate({ full_width: !page.full_width }) });
+      const setFont = (f: DocsPageFont) => () => update.mutate({ font: f }, { onError: onErr("Couldn't change the font.") });
+      actions.push({
+        id: "style",
+        label: "Text style",
+        icon: Type,
+        ...(font !== "default" ? { hint: font === "serif" ? "Serif" : "Mono" } : {}),
+        choices: [
+          { id: "default", label: "Default", checked: font === "default", onSelect: setFont("default") },
+          { id: "serif", label: "Serif", checked: font === "serif", onSelect: setFont("serif") },
+          { id: "mono", label: "Mono", checked: font === "mono", onSelect: setFont("mono") },
+          { id: "small", label: "Small text", checked: !!page.small_text, onSelect: () => update.mutate({ small_text: !page.small_text }, { onError: onErr("Couldn't change the text size.") }) },
+        ],
+      });
+    }
+    if (canEdit)
+      actions.push({
+        id: "verify",
+        label: page.verified ? "Verified" : "Verify page",
+        icon: BadgeCheck,
+        choices: [
+          ...VERIFY_CHOICES.map((c) => ({ id: c.id, label: c.label, onSelect: () => verify.mutate(c.days, { onSuccess: () => toast.success("Verified."), onError: onErr("Couldn't verify the page.") }) })),
+          ...(page.verified_at ? [{ id: "remove", label: "Remove verification", onSelect: () => verify.mutate(null, { onError: onErr("Couldn't remove the verification.") }) }] : []),
+        ],
+      });
+    if (canManage) actions.push({ id: "publish", label: detail.published ? "Published to the web…" : "Publish to the web…", icon: Globe, onSelect: () => setDialog("publish") });
+    if (page.kind === "page") actions.push({ id: "history", label: "Page history", icon: History, onSelect: () => setDialog("history") });
+    actions.push({ id: "info", label: "Page info", icon: Info, onSelect: () => setDialog("info") });
+    actions.push({ id: "export", label: "Export…", icon: Download, onSelect: () => setDialog("export") });
+    if (canEdit && page.kind === "page") actions.push({ id: "import", label: "Import here…", icon: Upload, onSelect: () => setDialog("import") });
     if (canEdit)
       actions.push({
         id: "trash",
@@ -324,6 +383,9 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
   const commentsCount = Object.values(detail.comment_counts).reduce((a, b) => a + b, 0);
   const linkedChildren = new Set(snapshot.blocks.filter((b) => b.type === "page" || b.type === "database").map((b) => b.props.page_id ?? b.props.database_id));
   const loose = (children.data ?? []).filter((c) => !linkedChildren.has(c.id));
+  const showOutline = wide && !comments.open && page.kind === "page";
+  const verifier = page.verified_by ? detail.refs.users[page.verified_by]?.name : null;
+  const hasIcon = !!(page.icon || page.custom_icon);
 
   const panelFor = (header: boolean) => (
     <CommentsPanel
@@ -363,9 +425,9 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
                 <span aria-hidden>/</span>
               </span>
             ))}
-            <span className="truncate px-1 text-fg" aria-current="page">
-              {page.icon ? `${page.icon} ` : ""}
-              {title}
+            <span className="flex min-w-0 items-center gap-1 px-1 text-fg" aria-current="page">
+              <PageIcon icon={page.icon} custom={page.custom_icon} kind={page.kind} size="xs" fallback={false} />
+              <span className="truncate">{title}</span>
             </span>
             {page.locked ? (
               <Tooltip content="Locked: choose Allow editing in ⋮ to change it.">
@@ -419,113 +481,163 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
             </Banner>
           </div>
         ) : null}
+        {page.is_template && !trashed && !page.parent_id ? (
+          <div className="px-gutter pt-4">
+            <Banner tone="info">
+              <span className="flex flex-wrap items-center gap-2">
+                This is a template. Pages made from it copy what&apos;s here.
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={fromTemplate.isPending}
+                  onClick={() => fromTemplate.mutate({ templateId: page.id }, { onSuccess: (p) => router.push(`/docs/${p.id}`), onError: onErr("Couldn't make a page from this template.") })}
+                >
+                  Use this template
+                </Button>
+                {canEdit ? (
+                  <Button size="sm" variant="ghost" onClick={() => stopTemplate.mutate(page.id, { onSuccess: () => toast.success("It's an ordinary page now."), onError: onErr("Couldn't change the template.") })}>
+                    Make it a page
+                  </Button>
+                ) : null}
+              </span>
+            </Banner>
+          </div>
+        ) : null}
         <Cover detail={detail} editable={editable} />
-        <div className={cn("mx-auto flex w-full flex-col gap-4 px-gutter pt-8 pb-24 sm:px-16", page.full_width || page.kind === "database" ? "max-w-content" : "max-w-3xl")}>
-          <div className="flex flex-col gap-2">
-            {page.icon ? (
-              <button
-                type="button"
-                disabled={!editable}
-                aria-label="Change icon"
-                className="w-fit rounded-md type-hero hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring disabled:hover:bg-transparent"
-                onClick={(e) => setIconAnchor(e.currentTarget)}
-              >
-                {page.icon}
-              </button>
-            ) : null}
-            {editable && (!page.icon || !page.cover) ? (
-              <div className="flex gap-1">
-                {!page.icon ? (
-                  <Button variant="ghost" size="sm" leftIcon={<Smile />} onClick={(e) => setIconAnchor(e.currentTarget)}>
-                    Add icon
-                  </Button>
+        <div className="flex justify-center gap-8">
+          <div
+            ref={content}
+            className={cn(
+              "flex w-full min-w-0 flex-col gap-4 px-gutter pt-8 pb-24 sm:px-16",
+              page.full_width || page.kind === "database" ? "max-w-content" : "max-w-3xl",
+              FONT_CLASS[font],
+              page.small_text && SMALL_TEXT_CLASS,
+            )}
+          >
+            <div className="flex flex-col gap-2">
+              {hasIcon ? (
+                <button
+                  type="button"
+                  disabled={!editable}
+                  aria-label="Change icon"
+                  className="w-fit rounded-md hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring disabled:hover:bg-transparent"
+                  onClick={(e) => setIconAnchor(e.currentTarget)}
+                >
+                  <PageIcon icon={page.icon} custom={page.custom_icon} kind={page.kind} size="lg" />
+                </button>
+              ) : null}
+              {editable && (!hasIcon || !page.cover) ? (
+                <div className="flex gap-1">
+                  {!hasIcon ? (
+                    <Button variant="ghost" size="sm" leftIcon={<Smile />} onClick={(e) => setIconAnchor(e.currentTarget)}>
+                      Add icon
+                    </Button>
+                  ) : null}
+                  {!page.cover ? (
+                    <Button variant="ghost" size="sm" leftIcon={<ImagePlus />} onClick={(e) => setCoverAnchor(e.currentTarget)}>
+                      Add cover
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              <TitleField detail={detail} editable={editable} onEnter={() => editorFocus.current?.()} />
+              {page.verified ? (
+                <p className="flex w-fit items-center gap-1 rounded-pill bg-success-soft px-2 py-0.5 type-caption text-success-strong">
+                  <BadgeCheck aria-hidden className="size-3.5" />
+                  Verified{verifier ? ` by ${verifier}` : ""}
+                  {page.verified_until ? ` until ${new Date(page.verified_until).toLocaleDateString()}` : ""}
+                </p>
+              ) : page.verified_at && page.verified_until ? (
+                <p className="flex w-fit items-center gap-1 rounded-pill bg-warning-soft px-2 py-0.5 type-caption text-warning-strong">
+                  <BadgeCheck aria-hidden className="size-3.5" />
+                  Verification ended {new Date(page.verified_until).toLocaleDateString()}
+                </p>
+              ) : null}
+            </div>
+            {page.is_row && detail.database ? (
+              <div className="flex flex-col gap-2 border-b border-border pb-4">
+                {detail.database.title ? (
+                  <Link href={`/docs/${detail.database.id}`} className="w-fit type-caption text-fg-muted hover:text-fg hover:underline">
+                    In {detail.database.icon ? `${detail.database.icon} ` : ""}
+                    {detail.database.title}
+                  </Link>
                 ) : null}
-                {!page.cover ? (
-                  <Button variant="ghost" size="sm" leftIcon={<ImagePlus />} onClick={(e) => setCoverAnchor(e.currentTarget)}>
-                    Add cover
-                  </Button>
-                ) : null}
+                <RowProperties row={page} database={detail.database} refs={detail.refs} editable={canEdit && !trashed} />
               </div>
             ) : null}
-            <TitleField detail={detail} editable={editable} onEnter={() => editorFocus.current?.()} />
-          </div>
-          {page.is_row && detail.database ? (
-            <div className="flex flex-col gap-2 border-b border-border pb-4">
-              {detail.database.title ? (
-                <Link href={`/docs/${detail.database.id}`} className="w-fit type-caption text-fg-muted hover:text-fg hover:underline">
-                  In {detail.database.icon ? `${detail.database.icon} ` : ""}
-                  {detail.database.title}
-                </Link>
-              ) : null}
-              <RowProperties row={page} database={detail.database} refs={detail.refs} editable={canEdit && !trashed} />
-            </div>
-          ) : null}
-          {page.kind === "database" ? (
-            <DatabaseView db={page} views={detail.views} orgId={page.org_id} editable={editable} />
-          ) : session ? (
-            <FocusBridge register={(fn) => (editorFocus.current = fn)} session={session} editable={editable}>
-              <Editor
-                pageId={page.id}
-                orgId={page.org_id}
-                session={session}
-                snap={snapshot}
-                refs={detail.refs}
-                editable={editable}
-                canComment={canComment}
-                viewers={viewers}
-                commentCounts={detail.comment_counts}
-                threads={openThreads.data ?? []}
-                activeThread={comments.thread}
-                onFocusBlock={setFocusedBlock}
-                onOpenComments={openComments}
-                onComment={(target) => setComments({ open: true, block: null, thread: null, pending: target })}
-                onOpenPage={(pid) => router.push(`/docs/${pid}`)}
-                onCreateSubpage={() => createPage.mutateAsync({ parent_id: page.id }).then((p) => p.id, (e) => (toast.error(errorMessage(e, "Couldn't create the page.")), null))}
-                onCreateDatabase={() =>
-                  createPage.mutateAsync({ parent_id: page.id, kind: "database", inline: true, title: "Untitled database" }).then(
-                    (p) => p.id,
-                    (e) => (toast.error(errorMessage(e, "Couldn't create the database.")), null),
-                  )
-                }
-                onUpload={(file) => upload.mutateAsync({ file, name: file.name })}
-                onMoveToPage={(ids) => {
-                  setMovingBlocks(ids);
-                  setDialog("move-blocks");
-                }}
-              />
-            </FocusBridge>
-          ) : (
-            <Skeleton className="h-24 w-full" />
-          )}
-          {loose.length ? (
-            <section className="flex flex-col gap-1 border-t border-border pt-4" aria-label="Pages inside">
-              <h2 className="type-label font-semibold text-fg-muted">Pages inside</h2>
-              {loose.map((c) => (
-                <Link key={c.id} href={`/docs/${c.id}`} className="flex min-h-control items-center gap-2 rounded-sm px-1 type-body text-fg hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring">
-                  <span aria-hidden className="flex size-6 items-center justify-center">
-                    {c.icon ?? <FileText className="size-4 text-fg-muted" />}
-                  </span>
-                  <span className="truncate underline decoration-border-strong underline-offset-4">{docsTitle(c.title)}</span>
-                </Link>
-              ))}
-            </section>
-          ) : null}
-          {backlinks.data?.length ? (
-            <details className="border-t border-border pt-4">
-              <summary className="cursor-pointer type-label text-fg-muted hover:text-fg">
-                {backlinks.data.length} {backlinks.data.length === 1 ? "page links" : "pages link"} here
-              </summary>
-              <div className="flex flex-col gap-1 pt-2">
-                {backlinks.data.map((b) => (
-                  <Link key={b.id} href={`/docs/${b.id}`} className="flex min-h-control items-center gap-2 rounded-sm px-1 type-body text-fg hover:bg-sunken">
-                    <span aria-hidden>{b.icon ?? <FileText className="size-4 text-fg-muted" />}</span>
-                    {docsTitle(b.title)}
+            {page.kind === "database" ? (
+              <DatabaseView db={page} views={detail.views} orgId={page.org_id} editable={editable} />
+            ) : session ? (
+              <FocusBridge register={(fn) => (editorFocus.current = fn)} session={session} editable={editable}>
+                <Editor
+                  pageId={page.id}
+                  orgId={page.org_id}
+                  session={session}
+                  snap={snapshot}
+                  refs={detail.refs}
+                  editable={editable}
+                  canComment={canComment}
+                  viewers={viewers}
+                  commentCounts={detail.comment_counts}
+                  threads={openThreads.data ?? []}
+                  activeThread={comments.thread}
+                  onFocusBlock={setFocusedBlock}
+                  onOpenComments={openComments}
+                  onComment={(target) => setComments({ open: true, block: null, thread: null, pending: target })}
+                  onOpenPage={(pid) => router.push(`/docs/${pid}`)}
+                  onCreateSubpage={() => createPage.mutateAsync({ parent_id: page.id }).then((p) => p.id, (e) => (toast.error(errorMessage(e, "Couldn't create the page.")), null))}
+                  onCreateDatabase={(viewType) =>
+                    (viewType
+                      ? createDatabase
+                          .mutateAsync({ parent_id: page.id, inline: true, title: "Untitled database", view_type: viewType as NonNullable<DocsCreateDatabaseRequest["view_type"]> })
+                          .then((r) => r.page.id)
+                      : createPage.mutateAsync({ parent_id: page.id, kind: "database", inline: true, title: "Untitled database" }).then((p) => p.id)
+                    ).catch((e: unknown) => (toast.error(errorMessage(e, "Couldn't create the database.")), null))
+                  }
+                  onUpload={(file) => upload.mutateAsync({ file, name: file.name })}
+                  onMoveToPage={(ids) => {
+                    setMovingBlocks(ids);
+                    setDialog("move-blocks");
+                  }}
+                />
+              </FocusBridge>
+            ) : (
+              <Skeleton className="h-24 w-full" />
+            )}
+            {loose.length ? (
+              <section className="flex flex-col gap-1 border-t border-border pt-4" aria-label="Pages inside">
+                <h2 className="type-label font-semibold text-fg-muted">Pages inside</h2>
+                {loose.map((c) => (
+                  <Link key={c.id} href={`/docs/${c.id}`} className="flex min-h-control items-center gap-2 rounded-sm px-1 type-body text-fg hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring">
+                    <PageIcon icon={c.icon} custom={c.custom_icon} kind={c.kind} size="sm" />
+                    <span className="truncate underline decoration-border-strong underline-offset-4">{docsTitle(c.title)}</span>
                   </Link>
                 ))}
-              </div>
-            </details>
+              </section>
+            ) : null}
+            {backlinks.data?.length ? (
+              <details className="border-t border-border pt-4">
+                <summary className="cursor-pointer type-label text-fg-muted hover:text-fg">
+                  {backlinks.data.length} {backlinks.data.length === 1 ? "page links" : "pages link"} here
+                </summary>
+                <div className="flex flex-col gap-1 pt-2">
+                  {backlinks.data.map((b) => (
+                    <Link key={b.id} href={`/docs/${b.id}`} className="flex min-h-control items-center gap-2 rounded-sm px-1 type-body text-fg hover:bg-sunken">
+                      <PageIcon icon={b.icon} custom={b.custom_icon} kind={b.kind} size="sm" />
+                      {docsTitle(b.title)}
+                    </Link>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </div>
+          {showOutline ? (
+            <aside className="sticky top-16 h-fit shrink-0 pt-10 pr-4">
+              <Outline blocks={snapshot.blocks} scrollRoot="docs-page-scroll" />
+            </aside>
           ) : null}
         </div>
+        <PageHoverPreviews container={content} />
       </div>
       {comments.open && wide ? <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-surface">{panelFor(true)}</aside> : null}
       {!wide ? (
@@ -534,20 +646,7 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
         </Sheet>
       ) : null}
       <Floating open={!!iconAnchor} anchor={iconAnchor} onClose={() => setIconAnchor(null)} autoFocus label="Page icon">
-        <EmojiPicker
-          onPick={(emoji) => {
-            setIconAnchor(null);
-            update.mutate({ icon: emoji }, { onError: onErr("Couldn't change the icon.") });
-          }}
-          {...(page.icon
-            ? {
-                onRemove: () => {
-                  setIconAnchor(null);
-                  update.mutate({ icon: null });
-                },
-              }
-            : {})}
-        />
+        <IconPicker page={page} onDone={() => setIconAnchor(null)} />
       </Floating>
       <Floating open={!!coverAnchor} anchor={coverAnchor} onClose={() => setCoverAnchor(null)} autoFocus label="Cover">
         <CoverPicker page={page} onDone={() => setCoverAnchor(null)} />
@@ -555,6 +654,8 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
       <HistoryDialog open={dialog === "history"} onOpenChange={(o) => setDialog(o ? "history" : null)} page={page} canRestore={editable} />
       <PublishDialog open={dialog === "publish"} onOpenChange={(o) => setDialog(o ? "publish" : null)} page={page} />
       <ImportDialog open={dialog === "import"} onOpenChange={(o) => setDialog(o ? "import" : null)} orgId={page.org_id} parentId={page.id} />
+      <ExportDialog open={dialog === "export"} onOpenChange={(o) => setDialog(o ? "export" : null)} detail={detail} blocks={blocksNow} />
+      <PageInfoDialog open={dialog === "info"} onOpenChange={(o) => setDialog(o ? "info" : null)} detail={detail} blocks={blocksNow} />
       <PagePicker
         open={dialog === "move"}
         onOpenChange={(o) => setDialog(o ? "move" : null)}
@@ -599,7 +700,7 @@ function LoadedPage({ detail }: { detail: DocsPageDetail }) {
         onConfirm={() => del.mutateAsync(page.id).then(() => router.push("/docs"))}
         errorText={(e) => errorMessage(e, "Couldn't delete the page.")}
       >
-        Its subpages, comments, history and files go too. It can't be undone.
+        Its subpages, comments, history and files go too. It can&apos;t be undone.
       </ConfirmDialog>
     </div>
   );

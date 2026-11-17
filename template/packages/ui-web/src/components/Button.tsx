@@ -3,7 +3,7 @@
 import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react";
 import { Children, cloneElement, forwardRef, isValidElement, type ReactElement, type ReactNode } from "react";
 import { cn } from "../lib/cn";
-import { Slot } from "../lib/slot";
+import { resolveChild, Slot } from "../lib/slot";
 import { useMotionTokens } from "../motion/tokens";
 import { Spinner } from "./Spinner";
 
@@ -84,7 +84,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   const lead = loading ? <Spinner size={spinnerSize[size]} /> : leftIcon;
 
   if (asChild) {
-    const only = Children.only(children);
+    const only = Children.only(resolveChild(children));
     const child =
       isValidElement<{ children?: ReactNode }>(only) && (lead || rightIcon)
         ? cloneElement(

@@ -3,7 +3,57 @@
 import { isChannelsEmojiOnly, parseChannelsMarkdown, type ChannelsBlock, type ChannelsInline, type ChannelsMention, type ChannelsUser } from "@scaffoldapp/shared";
 import { cn } from "@scaffoldapp/ui-web";
 import Link from "next/link";
-import { Fragment, memo, useMemo, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { CustomEmoji } from "./emoji";
+
+type Token = { text: string; role: string };
+
+/** Colour roles of highlighted code, on semantic tokens (same map as the file preview kit). */
+const ROLE_CLASS: Record<string, string> = {
+  keyword: "text-primary-strong",
+  string: "text-success-strong",
+  number: "text-warning-strong",
+  comment: "text-fg-muted italic",
+  function: "text-info-strong",
+  type: "text-accent-strong",
+  attr: "text-warning-strong",
+  meta: "text-danger-strong",
+  deletion: "text-danger-strong",
+  addition: "text-success-strong",
+};
+
+/** A code block, highlighted once the highlighter loads (lazily; plain until then). */
+function CodeBlock({ text, lang }: { text: string; lang: string }) {
+  const [lines, setLines] = useState<Token[][] | null>(null);
+  useEffect(() => {
+    let live = true;
+    if (text.length > 20_000) return undefined;
+    void import("@scaffoldapp/shared/preview/highlight").then((h) => {
+      if (live) setLines(lang ? h.filePreviewHighlight(text, lang.toLowerCase()) : h.filePreviewHighlight(text, ""));
+    }, () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [text, lang]);
+  return (
+    <pre className="overflow-x-auto rounded-md border border-border bg-sunken px-3 py-2 font-mono type-label text-fg" aria-label={lang ? `${lang} code` : "Code"}>
+      <code>
+        {lines
+          ? lines.map((line, i) => (
+              <Fragment key={i}>
+                {i > 0 && "\n"}
+                {line.map((t, j) => (
+                  <span key={j} className={ROLE_CLASS[t.role]}>
+                    {t.text}
+                  </span>
+                ))}
+              </Fragment>
+            ))
+          : text}
+      </code>
+    </pre>
+  );
+}
 
 export interface MarkdownProps {
   body: string;
@@ -87,6 +137,8 @@ function Inline({ nodes, names, meId }: { nodes: ChannelsInline[]; names: Map<st
                 {n.text}
               </span>
             );
+          case "custom_emoji":
+            return <CustomEmoji key={i} name={n.name} />;
         }
       })}
     </>
@@ -105,11 +157,7 @@ function Blocks({ blocks, names, meId }: { blocks: ChannelsBlock[]; names: Map<s
               </p>
             );
           case "code":
-            return (
-              <pre key={i} className="overflow-x-auto rounded-md border border-border bg-sunken px-3 py-2 font-mono type-label text-fg">
-                <code>{b.text}</code>
-              </pre>
-            );
+            return <CodeBlock key={i} text={b.text} lang={b.lang} />;
           case "quote":
             return (
               <blockquote key={i} className="flex flex-col gap-1 border-l-4 border-border-strong pl-3 text-fg-muted">

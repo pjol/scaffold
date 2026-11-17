@@ -13,18 +13,15 @@ import {
   calendarZoneLabel,
   errorMessage,
   formatCalendarDay,
-  formatCalendarTime,
   calendarConferenceOptions,
   calendarFindCalendar,
   calendarProviderLabel,
   calendarWritableCalendars,
   orgsNoun,
   sourceProductLabel,
-  useCalendarFindTime,
   useCalendarSources,
   useCreateCalendarConnectedEvent,
   useUpdateCalendarConnectedEvent,
-  useCalendarFreeBusy,
   useCalendarPeople,
   useCalendarSettings,
   useCreateCalendarEvent,
@@ -42,13 +39,19 @@ import {
   type CalendarScope,
   type CalendarShowAs,
   type CalendarVisibility,
+  type CalendarAutoDecline,
+  type CalendarEventRoom,
+  type CalendarEventType,
+  useCalendarCalendars,
 } from "@scaffoldapp/shared";
 import { Button, Checkbox, Chip, Dialog, Field, IconButton, Input, ProviderIcon, SegmentedControl, Select, SourceBadge, Switch, TextArea, cn, toast } from "@scaffoldapp/ui-web";
-import { Check, Globe, Mail, Plus, Video, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Check, Globe, Mail, Video, X } from "lucide-react";
+import { useState } from "react";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { APP_NAME } from "@/lib/app";
-import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ZoneSelect } from "./parts";
+import { FindTime } from "./FindTime";
+import { CALENDAR_COLOR_CLASSES, CALENDAR_COLOR_NAMES, ColorDot, ZoneSelect } from "./parts";
+import { RoomPicker } from "./RoomPicker";
 
 const CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"] as const;
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -86,10 +89,15 @@ interface FormState {
   /** Meeting provider for "add": a CalendarConferenceOption id and its account. */
   provider: string;
   providerConn: string;
+  eventType: CalendarEventType;
+  autoDecline: CalendarAutoDecline;
+  declineMessage: string;
+  rooms: CalendarEventRoom[];
 }
 
 const calendarKey = (r: CalendarCalendarRef) => `${r.connection_id}|${r.calendar_id}`;
 const calendarRefOf = (key: string): CalendarCalendarRef | null => {
+  if (key.startsWith("cal:")) return null;
   const i = key.indexOf("|");
   return i > 0 ? { connection_id: key.slice(0, i), calendar_id: key.slice(i + 1) } : null;
 };
@@ -112,6 +120,9 @@ export type EventDialogTarget =
       video?: boolean;
       /** Start in one of the person's connected calendars. */
       calendar?: CalendarCalendarRef | null;
+      /** Duplicate: start from this event's details at the new time. */
+      copy?: CalendarEventDetail;
+      eventType?: CalendarEventType;
     }
   | { mode: "edit"; event: CalendarEventDetail }
   | { mode: "edit-connected"; event: CalendarConnectedEventDetail };
@@ -175,6 +186,10 @@ function initialState(target: EventDialogTarget, zone: string, defaults: number[
       calendar: calendarKey({ connection_id: e.connection_id, calendar_id: e.calendar_id }),
       provider: "",
       providerConn: "",
+      eventType: "default",
+      autoDecline: "none",
+      declineMessage: "",
+      rooms: [],
     };
   }
   if (target.mode === "edit") {
@@ -207,19 +222,45 @@ function initialState(target: EventDialogTarget, zone: string, defaults: number[
       color: e.color,
       reminders: e.reminders,
       sendUpdates: true,
-      calendar: "app",
+      calendar: e.calendar ? `cal:${e.calendar.id}` : "app",
       provider: "",
       providerConn: "",
+      eventType: e.event_type ?? "default",
+      autoDecline: e.auto_decline ?? "none",
+      declineMessage: e.decline_message ?? "",
+      rooms: e.rooms ?? [],
     };
   }
   const startDate = calendarDateKey(target.startsAt, zone);
   const endDate = target.allDay ? startDate : calendarDateKey(target.endsAt, zone);
-  const guests: Guest[] = [
-    ...(target.people ?? []).map((person): Guest => ({ kind: "user", person })),
-    ...(target.emails ?? []).map((email): Guest => ({ kind: "email", email, name: "" })),
-  ];
+  const c = target.copy;
+  const guests: Guest[] = c
+    ? c.attendees.map((a): Guest => (a.user_id ? { kind: "user", person: { id: a.user_id, display_name: a.name, avatar_url: a.avatar_url } } : { kind: "email", email: a.email, name: a.name }))
+    : [
+        ...(target.people ?? []).map((person): Guest => ({ kind: "user", person })),
+        ...(target.emails ?? []).map((email): Guest => ({ kind: "email", email, name: "" })),
+      ];
+  const type = c?.event_type ?? target.eventType ?? "default";
+  if (c) {
+    const base = initialState({ mode: "edit", event: c }, zone, defaults, videoAvailable);
+    return {
+      ...base,
+      title: c.title,
+      startDate,
+      startTime: hhmm(calendarMinutesOfDay(target.startsAt, zone)),
+      endDate,
+      endTime: hhmm(calendarMinutesOfDay(target.endsAt, zone)),
+      timezone: zone,
+      byDay: [CODES[calendarWeekday(startDate)]!],
+      repeat: "none",
+      guests,
+      conference: c.conference_url && videoAvailable ? "add" : "keep",
+      rooms: [],
+      calendar: c.calendar && c.role === "owner" ? `cal:${c.calendar.id}` : "app",
+    };
+  }
   return {
-    title: target.title ?? "",
+    title: target.title ?? (type === "out_of_office" ? "Out of office" : type === "focus" ? "Focus time" : ""),
     description: target.description ?? "",
     location: "",
     allDay: !!target.allDay,
@@ -245,6 +286,10 @@ function initialState(target: EventDialogTarget, zone: string, defaults: number[
     calendar: target.calendar ? calendarKey(target.calendar) : "app",
     provider: "",
     providerConn: "",
+    eventType: type,
+    autoDecline: type === "default" ? "none" : "new",
+    declineMessage: "",
+    rooms: [],
   };
 }
 
@@ -277,6 +322,7 @@ const REMINDER_CHOICES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 export function EventDialog({ target, zone, onClose, onSaved }: { target: EventDialogTarget; zone: string; onClose: () => void; onSaved?: (e: CalendarEventDetail) => void }) {
   const settings = useCalendarSettings();
   const sources = useCalendarSources();
+  const calendars = useCalendarCalendars();
   const [f, setF] = useState<FormState>(() => initialState(target, zone, settings.data?.default_reminders ?? [10], settings.data?.video_available ?? false));
   const [errors, setErrors] = useState<Partial<Record<"title" | "time" | "guests" | "repeat", string>>>({});
   const [scopeOpen, setScopeOpen] = useState(false);
@@ -300,6 +346,10 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
   const videoAvailable = providers.length > 0 || (!connectedTarget && (settings.data?.video_available ?? false));
   const chosenProvider = providers.find((o) => optionKey(o) === `${f.provider}|${f.providerConn}`) ?? providers[0];
   const hasExternal = f.guests.some((g) => g.kind === "email");
+  const block = f.eventType !== "default";
+  // The app's calendars you may add events to (yours, your teams', ones shared with you to change).
+  const appCalendars = (calendars.data?.items ?? []).filter((c) => c.level === "edit" || c.level === "manage");
+  const primaryCal = appCalendars.find((c) => c.is_primary && c.mine);
   const dayNum = Number(f.startDate.slice(8));
   const nth = nthOfMonth(f.startDate);
   const nthLabel = `${nth.startsWith("-1") ? "last" : ORD[Number(nth.slice(0, -2)) - 1]} ${DAY_NAMES[calendarWeekday(f.startDate)]}`;
@@ -378,6 +428,17 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
       if (scope) b.scope = scope;
       b.occurrence_start = editing.occurrence_start;
     }
+    const calId = f.calendar.startsWith("cal:") ? f.calendar.slice(4) : null;
+    if (calId && scope !== "this" && (!editing || editing.calendar?.id !== calId)) b.calendar_id = calId;
+    if (!editing && f.eventType !== "default") b.event_type = f.eventType;
+    if (f.eventType !== "default") {
+      b.auto_decline = f.autoDecline;
+      b.decline_message = f.declineMessage.trim();
+      delete b.attendees;
+      delete b.conference;
+    } else if (scope !== "this") {
+      b.room_ids = f.rooms.map((r) => r.id);
+    }
     return b;
   };
 
@@ -450,6 +511,46 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
             <Input value={f.title} onChange={(e) => set("title", e.target.value)} autoFocus maxLength={200} placeholder="Add a title" />
           </Field>
 
+          {!editing && !editingConnected && !connectedTarget ? (
+            <SegmentedControl<CalendarEventType>
+              aria-label="Kind of event"
+              value={f.eventType}
+              onValueChange={(v) =>
+                setF((s) => ({
+                  ...s,
+                  eventType: v,
+                  autoDecline: v === "default" ? "none" : "new",
+                  title: !s.title || ["Out of office", "Focus time"].includes(s.title) ? (v === "out_of_office" ? "Out of office" : v === "focus" ? "Focus time" : "") : s.title,
+                }))
+              }
+              options={[
+                { value: "default", label: "Event" },
+                { value: "out_of_office", label: "Out of office" },
+                { value: "focus", label: "Focus time" },
+              ]}
+            />
+          ) : null}
+          {block ? (
+            <div className="flex flex-col gap-3 rounded-md bg-sunken p-4">
+              <Field label="Invitations during it" info="Declines invitations to one-off events with your message. Colleagues see that you're away or focusing.">
+                <Select
+                  value={f.autoDecline}
+                  onValueChange={(v) => set("autoDecline", v as CalendarAutoDecline)}
+                  options={[
+                    { value: "new", label: "Decline new invitations" },
+                    { value: "all", label: "Decline new and existing invitations" },
+                    { value: "none", label: "Don't decline" },
+                  ]}
+                />
+              </Field>
+              {f.autoDecline !== "none" ? (
+                <Field label="Message">
+                  <Input value={f.declineMessage} onChange={(e) => set("declineMessage", e.target.value)} maxLength={500} placeholder={f.eventType === "focus" ? "In focus time; ask me after" : "Away until Monday"} />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
+
           {editingConnected ? (
             <Field label="Calendar">
               <span className="flex min-h-control items-center gap-2 type-body text-fg">
@@ -457,14 +558,18 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
                 <span className="min-w-0 truncate text-fg-muted">{editingConnected.calendar_name}</span>
               </span>
             </Field>
-          ) : !editing && writable.length > 0 ? (
-            <Field label="Calendar" info={`Events in a connected calendar are saved there, and ${product === APP_NAME ? "that platform" : product} sends the invitations.`}>
+          ) : (!editing || editing.role === "owner") && (writable.length > 0 || appCalendars.length > 1) ? (
+            <Field label="Calendar" info={`Events in a connected calendar are saved there, and ${product === APP_NAME ? "that platform" : product} sends the invitations. On a colleague's calendar you share, the event is theirs.`}>
               <Select
-                value={f.calendar}
+                value={f.calendar === "app" && primaryCal ? `cal:${primaryCal.id}` : f.calendar}
                 onValueChange={(v) => setF((s) => ({ ...s, calendar: v, provider: "", providerConn: "" }))}
                 options={[
-                  { value: "app", label: `${APP_NAME} calendar` },
-                  ...writable.map((w) => ({
+                  ...(appCalendars.length > 0
+                    ? appCalendars
+                        .filter((c) => !editing || c.mine || c.team_id)
+                        .map((c) => ({ value: `cal:${c.id}`, label: c.mine ? c.name : `${c.name} · ${c.team_name ? "team" : (c.owner?.display_name ?? "")}`, icon: <ColorDot color={c.color} /> }))
+                    : [{ value: "app", label: `${APP_NAME} calendar` }]),
+                  ...(editing ? [] : writable).map((w) => ({
                     value: calendarKey({ connection_id: w.source.id, calendar_id: w.calendar.id }),
                     label: `${w.calendar.primary && w.calendar.name === w.source.account ? sourceProductLabel(w.source.provider ?? "", w.source.product) : w.calendar.name} · ${w.source.account}`,
                     icon: <ProviderIcon provider={w.source.provider ?? ""} product={w.source.product ?? null} size={16} />,
@@ -608,19 +713,34 @@ export function EventDialog({ target, zone, onClose, onSaved }: { target: EventD
           </div>
           )}
 
+          {block ? null : (
+          <>
           <GuestPicker guests={f.guests} onChange={(g) => set("guests", g)} platform={connectedTarget ? product : null} />
           {userGuests.length > 0 && !f.allDay ? (
-            <GuestAvailability
+            <FindTime
               people={userGuests.map((g) => g.person)}
               date={f.startDate}
               zone={f.timezone}
               startMin={toMin(f.startTime)}
               endMin={toMin(f.endTime)}
+              onDate={(d) => setF((st) => ({ ...st, startDate: d, endDate: calendarAddDays(st.endDate, calendarDaysBetween(st.startDate, d)) }))}
               onPick={(s, e) => setF((st) => ({ ...st, startDate: calendarDateKey(s, st.timezone), startTime: hhmm(calendarMinutesOfDay(s, st.timezone)), endDate: calendarDateKey(e, st.timezone), endTime: hhmm(calendarMinutesOfDay(e, st.timezone)) }))}
             />
           ) : null}
+          {connectedTarget ? null : (
+            <RoomPicker
+              rooms={f.rooms}
+              onChange={(r) => set("rooms", r)}
+              from={times() && !f.allDay ? times()!.startsAt : null}
+              to={times() && !f.allDay ? times()!.endsAt : null}
+              {...(editing ? { eventId: editing.event_id } : {})}
+              guests={f.guests.length + 1}
+            />
+          )}
+          </>
+          )}
 
-          <div className="flex flex-col gap-3">
+          <div className={cn("flex flex-col gap-3", block && "hidden")}>
             <Field label="Location">
               <Input value={f.location} onChange={(e) => set("location", e.target.value)} maxLength={500} placeholder="Room, address or link" />
             </Field>
@@ -891,72 +1011,6 @@ function GuestPicker({ guests, onChange, platform }: { guests: Guest[]; onChange
 }
 
 /** Colleagues' busy time on the event's day (free/busy only) and the next times everyone is free. */
-function GuestAvailability({ people, date, zone, startMin, endMin, onPick }: { people: CalendarPerson[]; date: string; zone: string; startMin: number; endMin: number; onPick: (s: string, e: string) => void }) {
-  const from = calendarDayStart(date, zone);
-  const to = calendarDayStart(calendarAddDays(date, 1), zone);
-  const ids = people.map((p) => p.id);
-  const fb = useCalendarFreeBusy(ids, from, to);
-  const duration = Math.max(15, endMin - startMin);
-  // Rounded to the quarter hour so the query key stays stable between renders.
-  const findFrom = useMemo(() => new Date(Math.max(Math.ceil(Date.now() / 900_000) * 900_000, new Date(from).getTime())).toISOString(), [from]);
-  const suggestions = useCalendarFindTime({ user_ids: ids, from: findFrom, to: calendarDayStart(calendarAddDays(date, 7), zone), duration });
-  const lo = 7 * 60;
-  const hi = 20 * 60;
-  const pct = (m: number) => `${((Math.min(hi, Math.max(lo, m)) - lo) / (hi - lo)) * 100}%`;
-  const rows = useMemo(() => fb.data?.items ?? [], [fb.data]);
-  return (
-    <div className="flex flex-col gap-3" aria-label="Guests' availability">
-      <span className="type-label font-semibold text-fg">Availability on {formatCalendarDay(date)}</span>
-      <div className="flex flex-col gap-2">
-        {fb.isPending ? (
-          <div className="h-8 animate-pulse rounded-sm bg-sunken motion-reduce:animate-none" />
-        ) : fb.isError ? (
-          <p className="type-caption text-fg-muted">{errorMessage(fb.error, "Couldn't load availability.")}</p>
-        ) : (
-          rows.map((r) => (
-            <div key={r.user.id} className="flex items-center gap-3">
-              <span className="w-28 shrink-0 truncate type-caption text-fg">{r.user.display_name}</span>
-              <div className="relative h-6 flex-1 rounded-sm bg-sunken">
-                <div className="absolute inset-y-0 rounded-sm border border-primary" style={{ left: pct(startMin), width: `calc(${pct(endMin)} - ${pct(startMin)})` }} aria-hidden />
-                {r.busy.map((b, i) => {
-                  const s = calendarDateKey(b.starts_at, zone) < date ? 0 : calendarMinutesOfDay(b.starts_at, zone);
-                  const e = calendarDateKey(b.ends_at, zone) > date ? 1440 : calendarMinutesOfDay(b.ends_at, zone);
-                  return (
-                    <div
-                      key={i}
-                      title={b.title ?? "Busy"}
-                      className="absolute inset-y-1 rounded-sm bg-fg-muted"
-                      style={{ left: pct(s), width: `calc(${pct(e)} - ${pct(s)})` }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          ))
-        )}
-        <div className="flex items-center gap-3 type-caption text-fg-subtle" aria-hidden>
-          <span className="w-28 shrink-0" />
-          <span className="flex flex-1 justify-between">
-            <span>7 AM</span>
-            <span>1 PM</span>
-            <span>8 PM</span>
-          </span>
-        </div>
-      </div>
-      {suggestions.data && suggestions.data.slots.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="type-caption text-fg-muted">Everyone's free</span>
-          {suggestions.data.slots.slice(0, 4).map((s) => (
-            <Chip key={s.starts_at} size="sm" icon={<Plus />} onClick={() => onPick(s.starts_at, s.ends_at)}>
-              {formatCalendarDay(calendarDateKey(s.starts_at, zone))} {formatCalendarTime(s.starts_at, zone)}
-            </Chip>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 /** Asks which occurrences of a recurring event a save or delete applies to. */
 export function ScopeDialog({
   open,

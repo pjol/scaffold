@@ -23,16 +23,17 @@ type Stage struct {
 	Name        string    `json:"name"`
 	Position    int       `json:"position"`
 	Probability int       `json:"probability"`
-	Outcome     string    `json:"outcome"` // open | won | lost
+	Outcome     string    `json:"outcome"` // deals: open | won | lost; tickets: open | closed
 }
 
-// Pipeline is an org's sequence of deal stages.
+// Pipeline is an org's sequence of deal stages or ticket statuses.
 type Pipeline struct {
-	ID       uuid.UUID `json:"id"`
-	OrgID    uuid.UUID `json:"org_id"`
-	Name     string    `json:"name"`
-	Position int       `json:"position"`
-	Stages   []Stage   `json:"stages"`
+	ID         uuid.UUID  `json:"id"`
+	OrgID      uuid.UUID  `json:"org_id"`
+	ObjectType objectType `json:"object_type"`
+	Name       string     `json:"name"`
+	Position   int        `json:"position"`
+	Stages     []Stage    `json:"stages"`
 }
 
 type stageInput struct {
@@ -53,7 +54,17 @@ func defaultStages() []stageInput {
 	}
 }
 
-func validateStages(in []stageInput) error {
+// defaultTicketStages is the service pipeline every org starts with.
+func defaultTicketStages() []stageInput {
+	return []stageInput{
+		{Name: "New", Outcome: "open"},
+		{Name: "Waiting on contact", Outcome: "open"},
+		{Name: "Waiting on us", Outcome: "open"},
+		{Name: "Closed", Outcome: "closed"},
+	}
+}
+
+func validateStages(o objectType, in []stageInput) error {
 	if len(in) == 0 || len(in) > 30 {
 		return httpx.BadRequest("A pipeline needs 1 to 30 stages.")
 	}
@@ -69,17 +80,24 @@ func validateStages(in []stageInput) error {
 			return httpx.BadRequest(fmt.Sprintf("Two stages are called “%s”. Give each a different name.", st.Name))
 		}
 		seen[strings.ToLower(st.Name)] = true
-		switch st.Outcome {
-		case "", "open":
+		switch {
+		case st.Outcome == "" || st.Outcome == "open":
 			st.Outcome = "open"
 			open++
 			if st.Probability < 0 || st.Probability > 100 {
 				return httpx.BadRequest("Probability must be between 0 and 100.")
 			}
-		case "won":
+			if o == objTicket {
+				st.Probability = 0
+			}
+		case st.Outcome == "won" && o == objDeal:
 			st.Probability = 100
-		case "lost":
+		case st.Outcome == "lost" && o == objDeal:
 			st.Probability = 0
+		case st.Outcome == "closed" && o == objTicket:
+			st.Probability = 0
+		case o == objTicket:
+			return httpx.BadRequest("A ticket status is open or closed.")
 		default:
 			return httpx.BadRequest("A stage's outcome is open, won or lost.")
 		}
@@ -91,11 +109,15 @@ func validateStages(in []stageInput) error {
 }
 
 func createPipelineTx(ctx context.Context, tx pgx.Tx, orgID, userID uuid.UUID, name string, stages []stageInput) (uuid.UUID, error) {
+	return createPipelineOf(ctx, tx, orgID, userID, objDeal, name, stages)
+}
+
+func createPipelineOf(ctx context.Context, tx pgx.Tx, orgID, userID uuid.UUID, o objectType, name string, stages []stageInput) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := tx.QueryRow(ctx, `
-		INSERT INTO crm_pipelines (org_id, name, position, created_by)
-		VALUES ($1, $2, (SELECT COALESCE(max(position) + 1, 0) FROM crm_pipelines WHERE org_id = $1), $3) RETURNING id`,
-		orgID, name, nullUUID(userID)).Scan(&id)
+		INSERT INTO crm_pipelines (org_id, object_type, name, position, created_by)
+		VALUES ($1, $4, $2, (SELECT COALESCE(max(position) + 1, 0) FROM crm_pipelines WHERE org_id = $1 AND object_type = $4), $3) RETURNING id`,
+		orgID, name, nullUUID(userID), string(o)).Scan(&id)
 	if db.IsUniqueViolation(err, "crm_pipelines_name_key") {
 		return id, httpx.Conflict("A pipeline with that name already exists.")
 	}
@@ -113,9 +135,9 @@ func createPipelineTx(ctx context.Context, tx pgx.Tx, orgID, userID uuid.UUID, n
 
 func (s *Service) loadPipelines(ctx context.Context, q db.Querier, orgID uuid.UUID) ([]Pipeline, error) {
 	rows, err := q.Query(ctx, `
-		SELECT p.id, p.org_id, p.name, p.position, s.id, s.name, s.position, s.probability, s.outcome
+		SELECT p.id, p.org_id, p.object_type, p.name, p.position, s.id, s.name, s.position, s.probability, s.outcome
 		FROM crm_pipelines p JOIN crm_stages s ON s.pipeline_id = p.id
-		WHERE p.org_id = $1 ORDER BY p.position, p.id, s.position, s.id`, orgID)
+		WHERE p.org_id = $1 ORDER BY p.object_type, p.position, p.id, s.position, s.id`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +146,7 @@ func (s *Service) loadPipelines(ctx context.Context, q db.Querier, orgID uuid.UU
 	for rows.Next() {
 		var p Pipeline
 		var st Stage
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Position, &st.ID, &st.Name, &st.Position, &st.Probability, &st.Outcome); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.ObjectType, &p.Name, &p.Position, &st.ID, &st.Name, &st.Position, &st.Probability, &st.Outcome); err != nil {
 			return nil, err
 		}
 		if n := len(out); n == 0 || out[n-1].ID != p.ID {
@@ -147,6 +169,7 @@ func (s *Service) listPipelines(w http.ResponseWriter, r *http.Request) error {
 }
 
 type pipelineReq struct {
+	ObjectType string                  `json:"object_type"` // create: deal (default) or ticket
 	Name       *string                 `json:"name"`
 	Position   *int                    `json:"position"`
 	Stages     []stageInput            `json:"stages"`
@@ -165,10 +188,19 @@ func (s *Service) createPipeline(w http.ResponseWriter, r *http.Request) error {
 	if name == "" || len([]rune(name)) > 80 {
 		return httpx.BadRequest("Give the pipeline a name of up to 80 characters.")
 	}
+	o := objDeal
+	if req.ObjectType == string(objTicket) {
+		o = objTicket
+	} else if req.ObjectType != "" && req.ObjectType != string(objDeal) {
+		return httpx.BadRequest("object_type is deal or ticket.")
+	}
 	if req.Stages == nil {
 		req.Stages = defaultStages()
+		if o == objTicket {
+			req.Stages = defaultTicketStages()
+		}
 	}
-	if err := validateStages(req.Stages); err != nil {
+	if err := validateStages(o, req.Stages); err != nil {
 		return err
 	}
 	var id uuid.UUID
@@ -181,7 +213,7 @@ func (s *Service) createPipeline(w http.ResponseWriter, r *http.Request) error {
 			return httpx.BadRequest(orgNounA() + " can have at most 50 pipelines.")
 		}
 		var err error
-		if id, err = createPipelineTx(ctx, tx, orgID, me(r), name, req.Stages); err != nil {
+		if id, err = createPipelineOf(ctx, tx, orgID, me(r), o, name, req.Stages); err != nil {
 			return err
 		}
 		return audit.Log(ctx, tx, me(r), "crm.pipeline.create", "crm.pipeline", id.String(), map[string]any{"org_id": orgID, "name": name})
@@ -222,18 +254,19 @@ func (s *Service) updatePipeline(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.Decode(r, &req); err != nil {
 		return err
 	}
-	if req.Stages != nil {
-		if err := validateStages(req.Stages); err != nil {
-			return err
-		}
-	}
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		var before string
-		if err := tx.QueryRow(ctx, `SELECT name FROM crm_pipelines WHERE id = $1 AND org_id = $2 FOR UPDATE`, pid, orgID).Scan(&before); err != nil {
+		var o objectType
+		if err := tx.QueryRow(ctx, `SELECT name, object_type FROM crm_pipelines WHERE id = $1 AND org_id = $2 FOR UPDATE`, pid, orgID).Scan(&before, &o); err != nil {
 			if db.IsNoRows(err) {
 				return httpx.NotFound("Pipeline not found.")
 			}
 			return err
+		}
+		if req.Stages != nil {
+			if err := validateStages(o, req.Stages); err != nil {
+				return err
+			}
 		}
 		data := map[string]any{"org_id": orgID, "name": before}
 		if req.Name != nil {
@@ -255,7 +288,7 @@ func (s *Service) updatePipeline(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		if req.Stages != nil {
-			if err := s.replaceStages(ctx, tx, me(r), orgID, pid, req.Stages, req.StageMoves); err != nil {
+			if err := s.replaceStages(ctx, tx, me(r), orgID, pid, o, req.Stages, req.StageMoves); err != nil {
 				return err
 			}
 			names := []string{}
@@ -274,7 +307,7 @@ func (s *Service) updatePipeline(w http.ResponseWriter, r *http.Request) error {
 	return s.respondPipeline(w, r, orgID, pid, http.StatusOK)
 }
 
-func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, pid uuid.UUID, stages []stageInput, moves map[uuid.UUID]uuid.UUID) error {
+func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, pid uuid.UUID, o objectType, stages []stageInput, moves map[uuid.UUID]uuid.UUID) error {
 	rows, err := tx.Query(ctx, `SELECT id FROM crm_stages WHERE pipeline_id = $1`, pid)
 	if err != nil {
 		return err
@@ -314,7 +347,7 @@ func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, p
 		kept[id] = true
 	}
 	// Closed-state bookkeeping follows each stage's (possibly new) outcome.
-	if _, err := tx.Exec(ctx, `UPDATE crm_deals d SET closed_at = CASE WHEN st.outcome = 'open' THEN NULL ELSE COALESCE(d.closed_at, now()) END
+	if _, err := tx.Exec(ctx, `UPDATE `+o.table()+` d SET closed_at = CASE WHEN st.outcome = 'open' THEN NULL ELSE COALESCE(d.closed_at, now()) END
 		FROM crm_stages st WHERE st.id = d.stage_id AND d.pipeline_id = $1
 		AND (st.outcome = 'open') = (d.closed_at IS NOT NULL)`, pid); err != nil {
 		return err
@@ -324,7 +357,7 @@ func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, p
 			continue
 		}
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM crm_deals WHERE stage_id = $1`, id).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM `+o.table()+` WHERE stage_id = $1`, id).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
@@ -333,7 +366,7 @@ func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, p
 				var name string
 				_ = tx.QueryRow(ctx, `SELECT name FROM crm_stages WHERE id = $1`, id).Scan(&name)
 				e := httpx.NewError(http.StatusConflict, "stage_has_deals",
-					fmt.Sprintf("“%s” has %s. Choose a stage to move them to.", name, plural(n, "deal", "deals")))
+					fmt.Sprintf("“%s” has %s. Choose a stage to move them to.", name, plural(n, o.label(), o.labelPlural())))
 				e.Details = map[string]any{"stage_id": id, "deal_count": n}
 				return e
 			}
@@ -341,7 +374,12 @@ func (s *Service) replaceStages(ctx context.Context, tx pgx.Tx, userID, orgID, p
 			if err != nil {
 				return asHTTP(err)
 			}
-			if err := bulkMoveStage(ctx, tx, userID, orgID, id, st); err != nil {
+			if o == objTicket {
+				err = bulkMoveTicketStage(ctx, tx, userID, orgID, id, st)
+			} else {
+				err = bulkMoveStage(ctx, tx, userID, orgID, id, st)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -398,7 +436,8 @@ func (s *Service) deletePipeline(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		var deals, pipelines int
-		if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM crm_deals WHERE pipeline_id = $1), (SELECT count(*) FROM crm_pipelines WHERE org_id = $2)`,
+		if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM crm_deals WHERE pipeline_id = $1) + (SELECT count(*) FROM crm_tickets WHERE pipeline_id = $1),
+			(SELECT count(*) FROM crm_pipelines WHERE org_id = $2 AND object_type = (SELECT object_type FROM crm_pipelines WHERE id = $1))`,
 			pid, orgID).Scan(&deals, &pipelines); err != nil {
 			return err
 		}
@@ -406,7 +445,7 @@ func (s *Service) deletePipeline(w http.ResponseWriter, r *http.Request) error {
 			return httpx.Conflict("Keep at least one pipeline.")
 		}
 		if deals > 0 {
-			e := httpx.NewError(http.StatusConflict, "pipeline_has_deals", fmt.Sprintf("“%s” has %s. Move them to another pipeline first.", name, plural(deals, "deal", "deals")))
+			e := httpx.NewError(http.StatusConflict, "pipeline_has_deals", fmt.Sprintf("“%s” has %s. Move them to another pipeline first.", name, plural(deals, "record", "records")))
 			e.Details = map[string]any{"deal_count": deals}
 			return e
 		}
@@ -454,6 +493,45 @@ func moveDealStageTx(ctx context.Context, tx pgx.Tx, userID, orgID uuid.UUID, d 
 	return addEvent(ctx, tx, orgID, objDeal, d.ID, "stage_changed", userID, data)
 }
 
+// moveTicketStageTx moves a ticket to a status (possibly in another
+// pipeline): closed_at follows the status, and the move is on the timeline.
+func moveTicketStageTx(ctx context.Context, tx pgx.Tx, userID, orgID uuid.UUID, t *Ticket, to *stageInfo) error {
+	if _, err := tx.Exec(ctx, `UPDATE crm_tickets SET stage_id = $2, pipeline_id = $3, stage_entered_at = now(),
+		closed_at = CASE WHEN $4 = 'open' THEN NULL ELSE COALESCE(closed_at, now()) END, updated_at = now() WHERE id = $1`,
+		t.ID, to.ID, to.PipelineID, to.Outcome); err != nil {
+		return err
+	}
+	data := map[string]any{"from_stage": t.Stage.Name, "to_stage": to.Name, "to_outcome": to.Outcome}
+	if !t.StageEnteredAt.IsZero() {
+		data["seconds_in_stage"] = int64(time.Since(t.StageEnteredAt).Seconds())
+	}
+	return addEvent(ctx, tx, orgID, objTicket, t.ID, "stage_changed", userID, data)
+}
+
+// bulkMoveTicketStage moves every ticket in a removed status to another.
+func bulkMoveTicketStage(ctx context.Context, tx pgx.Tx, userID, orgID, from uuid.UUID, to *stageInfo) error {
+	rows, err := tx.Query(ctx, `SELECT t.id, st.name, t.stage_entered_at FROM crm_tickets t JOIN crm_stages st ON st.id = t.stage_id WHERE t.stage_id = $1`, from)
+	if err != nil {
+		return err
+	}
+	var list []*Ticket
+	for rows.Next() {
+		t := &Ticket{Stage: StageRef{ID: from}}
+		if err := rows.Scan(&t.ID, &t.Stage.Name, &t.StageEnteredAt); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, t)
+	}
+	rows.Close()
+	for _, t := range list {
+		if err := moveTicketStageTx(ctx, tx, userID, orgID, t, to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type stageReq struct {
 	StageID uuid.UUID `json:"stage_id"`
 }
@@ -482,6 +560,27 @@ func (s *Service) moveStage(w http.ResponseWriter, r *http.Request) error {
 // moveDeal is the stage move REST, bulk and agent tools share.
 func (s *Service) moveDeal(ctx context.Context, userID, id, stageID uuid.UUID) (recordish, error) {
 	return s.update(ctx, userID, objDeal, id, map[string]json.RawMessage{"stage": json.RawMessage(`"` + stageID.String() + `"`)})
+}
+
+// moveTicketStage: POST /v1/crm/tickets/{id}/stage {stage_id} (edit).
+func (s *Service) moveTicketStage(w http.ResponseWriter, r *http.Request) error {
+	id, err := idParam(r, "id")
+	if err != nil {
+		return err
+	}
+	var req stageReq
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	if req.StageID == uuid.Nil {
+		return httpx.BadRequest("Choose a status.")
+	}
+	rec, err := s.update(r.Context(), me(r), objTicket, id, map[string]json.RawMessage{"stage": json.RawMessage(`"` + req.StageID.String() + `"`)})
+	if err != nil {
+		return err
+	}
+	httpx.OK(w, rec)
+	return nil
 }
 
 // StageStay is one stay of a deal in a stage.
@@ -595,7 +694,11 @@ func (s *Service) board(w http.ResponseWriter, r *http.Request) error {
 		}
 		pid = &id
 	}
-	b, err := s.loadBoard(ctx, me(r), orgID, pid, spec)
+	o := objDeal
+	if r.URL.Query().Get("object") == string(objTicket) {
+		o = objTicket
+	}
+	b, err := s.loadBoard(ctx, me(r), orgID, o, pid, spec)
 	if err != nil {
 		return err
 	}
@@ -603,12 +706,12 @@ func (s *Service) board(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Service) loadBoard(ctx context.Context, userID, orgID uuid.UUID, pid *uuid.UUID, spec listSpec) (*Board, error) {
-	board, err := s.boardTotals(ctx, userID, orgID, pid, spec)
+func (s *Service) loadBoard(ctx context.Context, userID, orgID uuid.UUID, o objectType, pid *uuid.UUID, spec listSpec) (*Board, error) {
+	board, err := s.boardTotals(ctx, userID, orgID, o, pid, spec)
 	if err != nil {
 		return nil, err
 	}
-	props, err := s.loadProperties(ctx, s.d.Pool, orgID, objDeal)
+	props, err := s.loadProperties(ctx, s.d.Pool, orgID, o)
 	if err != nil {
 		return nil, err
 	}
@@ -621,7 +724,10 @@ func (s *Service) loadBoard(ctx context.Context, userID, orgID uuid.UUID, pid *u
 		stageID := col.Stage.ID
 		cs.where = append(append([]func(*sqlb) string{}, spec.where...), func(b *sqlb) string { return "r.stage_id = " + b.arg(stageID) })
 		cs.SortKey, cs.SortDir, cs.Cursor, cs.Limit = "close_date", "asc", "", boardColumnSize
-		page, err := s.queryRecords(ctx, s.d.Pool, userID, orgID, objDeal, props, cs, false)
+		if o == objTicket {
+			cs.SortKey, cs.SortDir = "priority", "desc"
+		}
+		page, err := s.queryRecords(ctx, s.d.Pool, userID, orgID, o, props, cs, false)
 		if err != nil {
 			return nil, err
 		}
@@ -631,17 +737,21 @@ func (s *Service) loadBoard(ctx context.Context, userID, orgID uuid.UUID, pid *u
 }
 
 // stageTotals sums visible deals per stage and currency.
-func (s *Service) stageTotals(ctx context.Context, userID, orgID uuid.UUID, props []Property, spec listSpec) (map[uuid.UUID][]MoneyTotal, map[uuid.UUID]int, error) {
+func (s *Service) stageTotals(ctx context.Context, userID, orgID uuid.UUID, o objectType, props []Property, spec listSpec) (map[uuid.UUID][]MoneyTotal, map[uuid.UUID]int, error) {
 	b := newSQL(ctx, userID)
-	where, err := buildWhere(b, objDeal, props, orgID, spec, userID)
+	where, err := buildWhere(b, o, props, orgID, spec, userID)
 	if err != nil {
 		return nil, nil, err
 	}
+	sums := `r.currency, count(*), COALESCE(sum(r.amount), 0)::bigint, COALESCE(sum(r.amount * st.probability / 100), 0)::bigint`
+	group := `r.stage_id, r.currency`
+	if o == objTicket { // tickets have no amounts: counts only
+		sums, group = `'', count(*), 0::bigint, 0::bigint`, `r.stage_id`
+	}
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT r.stage_id, r.currency, count(*), COALESCE(sum(r.amount), 0)::bigint,
-		       COALESCE(sum(r.amount * st.probability / 100), 0)::bigint
-		`+visibleFrom(objDeal)+` `+where+`
-		GROUP BY r.stage_id, r.currency ORDER BY r.stage_id, count(*) DESC`, b.args...)
+		SELECT r.stage_id, `+sums+`
+		`+visibleFrom(o)+` `+where+`
+		GROUP BY `+group+` ORDER BY r.stage_id, count(*) DESC`, b.args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -656,7 +766,9 @@ func (s *Service) stageTotals(ctx context.Context, userID, orgID uuid.UUID, prop
 			return nil, nil, err
 		}
 		counts[id] += n
-		totals[id] = append(totals[id], t)
+		if t.Currency != "" {
+			totals[id] = append(totals[id], t)
+		}
 	}
 	return totals, counts, rows.Err()
 }

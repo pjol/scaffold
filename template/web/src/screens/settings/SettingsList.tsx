@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, ListRow, Stagger, StaggerItem, cn } from "@scaffoldapp/ui-web";
+import { Button, ListGroup, ListRow, Stagger, StaggerItem, cn } from "@scaffoldapp/ui-web";
 import { LogOut } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -26,7 +26,7 @@ function Row({ link }: { link: SectionLink }) {
   );
 }
 
-/** Settings on phones: the sections as rows (one card per group, headed when the registry uses groups), Admin for staff, then Sign out. */
+/** Settings on phones: the sections as rows (one `ListGroup` per group, headed when the registry uses groups), Admin for staff, then Sign out. */
 export function SettingsList() {
   const { groups, admin } = useSettingsLinks();
   const signOut = useSignOut();
@@ -35,23 +35,20 @@ export function SettingsList() {
     <Screen title="Settings">
       <div className={cn("flex flex-col", groups.length > 1 ? "gap-6" : "gap-4")}>
         {groups.map((group) => (
-          <section key={group.id} className="flex flex-col gap-2">
-            {group.label && <h2 className="px-1 type-label font-semibold text-fg-muted">{group.label}</h2>}
-            <Card padding="none" className="p-1">
-              <Stagger as="ul" className="flex flex-col">
-                {group.links.map((link) => (
-                  <StaggerItem as="li" key={link.href}>
-                    <Row link={link} />
-                  </StaggerItem>
-                ))}
-              </Stagger>
-            </Card>
-          </section>
+          <ListGroup key={group.id} {...(group.label ? { title: group.label } : {})}>
+            <Stagger as="ul" className="flex flex-col">
+              {group.links.map((link) => (
+                <StaggerItem as="li" key={link.href}>
+                  <Row link={link} />
+                </StaggerItem>
+              ))}
+            </Stagger>
+          </ListGroup>
         ))}
         {admin && (
-          <Card padding="none" className="p-1">
+          <ListGroup>
             <Row link={admin} />
-          </Card>
+          </ListGroup>
         )}
       </div>
       <Button

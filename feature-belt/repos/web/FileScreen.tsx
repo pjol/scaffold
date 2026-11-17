@@ -14,8 +14,8 @@ import {
   type ApiError,
   type ReposBlameRange,
 } from "@scaffoldapp/shared";
-import { Button, Card, ErrorState, IconButton, SegmentedControl, Skeleton, SkeletonGroup, Tooltip, cn, toast } from "@scaffoldapp/ui-web";
-import { Download, History, Pencil, Trash2, WrapText } from "lucide-react";
+import { Button, Card, ErrorState, IconButton, Menu, MenuItem, SegmentedControl, Skeleton, SkeletonGroup, Tooltip, cn, toast } from "@scaffoldapp/ui-web";
+import { Download, History, Link2, Pencil, Pin, Trash2, WrapText } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -53,16 +53,24 @@ export function FileScreen() {
   const last = useReposCommits(repo.id, { ref: gitRef, path });
   const download = useReposDownload(repo.id);
 
+  // #L12 or #L10-L20 selects lines on load and when the hash changes (links on this page, back/forward).
   useEffect(() => {
-    const s = parseLines(window.location.hash);
-    if (s) {
+    const read = () => {
+      const s = parseLines(window.location.hash);
       setSelected(s);
-      setView((v) => (v === "preview" ? "code" : v));
-    }
+      if (s) setView((v) => (v === "preview" ? "code" : v));
+    };
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
   }, []);
+  const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
-    if (selected && blob.data) document.getElementById(`L${selected.from}`)?.scrollIntoView({ block: "center" });
-  }, [blob.data, selected]);
+    if (!selected || !blob.data || scrolled) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById(`L${selected.from}`)?.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    setScrolled(true);
+  }, [blob.data, selected, scrolled]);
 
   const blameByLine = useMemo(() => {
     const m = new Map<number, ReposBlameRange>();
@@ -96,6 +104,13 @@ export function FileScreen() {
 
   const b = blob.data;
   const isBranch = !/^[0-9a-f]{40}$/.test(gitRef);
+  const lineHash = selected ? (selected.from === selected.to ? `#L${selected.from}` : `#L${selected.from}-L${selected.to}`) : "";
+  const lineWords = selected ? (selected.from === selected.to ? `line ${selected.from}` : `lines ${selected.from}–${selected.to}`) : "";
+  const copyPermalink = () => {
+    if (!b) return;
+    void copyText(window.location.origin + repoHref(repo.id, "blob", { ref: b.sha, path }) + lineHash, selected ? `Permalink to ${lineWords} copied` : "Permalink copied");
+  };
+  const copyLineLink = () => void copyText(window.location.origin + repoHref(repo.id, "blob", { ref: gitRef, path }) + lineHash, `Link to ${lineWords} copied`);
   const lastCommit = last.data?.items[0];
   return (
     <div className="flex flex-col gap-4">
@@ -148,6 +163,16 @@ export function FileScreen() {
                 {b.encoding === "utf-8" && view !== "preview" ? (
                   <IconButton label={wrap ? "Don't wrap lines" : "Wrap lines"} icon={<WrapText />} variant={wrap ? "soft" : "ghost"} size="sm" tooltip onClick={() => setWrap(!wrap)} />
                 ) : null}
+                <Menu trigger={<IconButton label={selected ? `Copy a link to ${lineWords}` : "Copy a link"} icon={<Link2 />} variant="ghost" size="sm" />}>
+                  <MenuItem icon={<Pin />} onSelect={copyPermalink}>
+                    {selected ? `Copy permalink to ${lineWords}` : "Copy permalink"}
+                  </MenuItem>
+                  {selected ? (
+                    <MenuItem icon={<Link2 />} onSelect={copyLineLink}>
+                      Copy link to {lineWords} on {isBranch ? gitRef : "this commit"}
+                    </MenuItem>
+                  ) : null}
+                </Menu>
                 <IconButton label="Download" icon={<Download />} variant="ghost" size="sm" tooltip loading={download.isPending} onClick={() => void save()} />
                 {repo.can_push && isBranch && b.editable ? (
                   <Tooltip content="Edit this file">
@@ -207,17 +232,10 @@ export function FileScreen() {
         </Panel>
       ) : null}
       {selected && b?.encoding === "utf-8" ? (
-        <div className="flex justify-end">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              const sha = b.sha;
-              const hash = selected.from === selected.to ? `#L${selected.from}` : `#L${selected.from}-L${selected.to}`;
-              void copyText(window.location.origin + repoHref(repo.id, "blob", { ref: sha, path }) + hash, "Link to these lines copied");
-            }}
-          >
-            Copy link to {selected.from === selected.to ? `line ${selected.from}` : `lines ${selected.from}–${selected.to}`}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span className="type-caption text-fg-muted">Selected {lineWords}. Shift-click a line number to extend.</span>
+          <Button variant="ghost" size="sm" leftIcon={<Pin />} onClick={copyPermalink}>
+            Copy permalink
           </Button>
         </div>
       ) : null}

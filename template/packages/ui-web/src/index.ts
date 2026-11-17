@@ -30,7 +30,7 @@ export { useMediaQuery, useHoverCapable, useIsDesktop, useControllableState, use
 export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./components/Button";
 export { IconButton, type IconButtonProps, type IconButtonVariant, type IconButtonSize } from "./components/IconButton";
 export { Card, type CardProps, type CardVariant } from "./components/Card";
-export { ListRow, Divider, type ListRowProps } from "./components/ListRow";
+export { ListRow, ListGroup, Divider, type ListRowProps, type ListGroupProps } from "./components/ListRow";
 export { Badge, type BadgeProps, type BadgeTone, type BadgeVariant } from "./components/Badge";
 export { Chip, ToggleChip, type ChipProps, type ToggleChipProps } from "./components/Chip";
 export { Avatar, type AvatarProps, type AvatarSize, type AvatarImageProps } from "./components/Avatar";
@@ -73,6 +73,20 @@ export { RatingStars, type RatingStarsProps } from "./components/RatingStars";
 export { PhotoUploader, type PhotoUploaderProps, type PhotoUploadResult, type UploadedPhoto } from "./components/PhotoUploader";
 export { PhotoGrid, type PhotoGridProps } from "./components/PhotoGrid";
 export { PhotoLightbox, formatPhotoTime, type PhotoLightboxProps, type GalleryPhoto } from "./components/PhotoLightbox";
+
+// files
+export {
+  FilePreview,
+  FilePreviewDialog,
+  FileIcon,
+  filePreviewIcon,
+  filePreviewTone,
+  filePreviewKind,
+  type FilePreviewProps,
+  type FilePreviewDialogProps,
+  type FileIconProps,
+  type FilePreviewKind,
+} from "./components/FilePreview";
 
 // legal
 export { LegalDocument, formatEffectiveDate, type LegalDocumentProps, type LegalDocumentData, type LegalSection, type LegalBlock } from "./components/LegalDocument";

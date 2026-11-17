@@ -8,13 +8,14 @@ import { useApiQuery, type QueryOverrides } from "../hooks/internal";
 import { registerRealtimeHandler, registerReconnectRefetch } from "../hooks/realtime-handlers";
 import { topic } from "../realtime/topics";
 import { presenceEndpoints, type PresenceEndpoints } from "./api";
-import type { Presence, PresenceMine, PresencePlatform, PresenceSetStatusRequest } from "./types";
+import type { Presence, PresenceCreatePresetRequest, PresenceMine, PresencePlatform, PresenceSchedule, PresenceSetStatusRequest, PresenceStatusPreset } from "./types";
 
 // ───────────────────────────────────────────────────────────── keys ──
 
 export const presenceKeys = {
   all: () => ["presence"] as const,
   me: () => ["presence", "me"] as const,
+  presets: () => ["presence", "presets"] as const,
   user: (id: string) => ["presence", "user", id] as const,
 };
 
@@ -158,6 +159,46 @@ export function useSetPresenceDND(): UseMutationResult<PresenceMine, ApiError, s
 export function useSetPresenceAway(): UseMutationResult<PresenceMine, ApiError, boolean> {
   const p = useEndpoints(presenceEndpoints);
   return useMineMutation((away: boolean) => p.setAway(away));
+}
+
+/** Save your Do Not Disturb schedule (`presenceDefaultSchedule` for a starting point), or remove it with `null`. */
+export function useSetPresenceSchedule(): UseMutationResult<PresenceMine, ApiError, PresenceSchedule | null> {
+  const p = useEndpoints(presenceEndpoints);
+  return useMineMutation((body: PresenceSchedule | null) => (body ? p.setSchedule(body) : p.clearSchedule()));
+}
+
+/** Statuses you saved (oldest first). */
+export function usePresenceStatusPresets(options?: QueryOverrides<{ items: PresenceStatusPreset[] }>): UseQueryResult<{ items: PresenceStatusPreset[] }, ApiError> {
+  const p = useEndpoints(presenceEndpoints);
+  return useApiQuery(presenceKeys.presets(), ({ signal }) => p.presets({ signal }), { staleTime: 5 * 60_000, ...options });
+}
+
+/** Save a status as a preset (at most 10; the same one twice is refused). */
+export function useCreatePresenceStatusPreset(): UseMutationResult<PresenceStatusPreset, ApiError, PresenceCreatePresetRequest> {
+  const p = useEndpoints(presenceEndpoints);
+  const qc = useQueryClient();
+  return useMutation<PresenceStatusPreset, ApiError, PresenceCreatePresetRequest>({
+    mutationFn: (body) => p.createPreset(body),
+    onSuccess: (preset) =>
+      qc.setQueryData<{ items: PresenceStatusPreset[] }>(presenceKeys.presets(), (old) => ({ items: [...(old?.items ?? []), preset] })),
+  });
+}
+
+/** Remove a saved status (optimistic). */
+export function useDeletePresenceStatusPreset(): UseMutationResult<void, ApiError, string, { items: PresenceStatusPreset[] } | undefined> {
+  const p = useEndpoints(presenceEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string, { items: PresenceStatusPreset[] } | undefined>({
+    mutationFn: (id) => p.deletePreset(id),
+    onMutate: (id) => {
+      const previous = qc.getQueryData<{ items: PresenceStatusPreset[] }>(presenceKeys.presets());
+      if (previous) qc.setQueryData(presenceKeys.presets(), { items: previous.items.filter((x) => x.id !== id) });
+      return previous;
+    },
+    onError: (_e, _id, previous) => {
+      if (previous) qc.setQueryData(presenceKeys.presets(), previous);
+    },
+  });
 }
 
 // ───────────────────────────────────────────────────────────── session ──

@@ -18,6 +18,8 @@ function Board({ orgId, currency, sources }: { orgId: string; currency: string; 
   const src = useMobileSource(sources, "board");
   const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
   const pipelines = useCrmPipelines(orgId, sourceId);
+  // Ticket pipelines have their own board on the web; this one moves deals.
+  const dealPipelines = (pipelines.data ?? []).filter((p) => (p.object_type ?? "deal") === "deal");
   const [pipelineId, setPipelineId] = useState<string | undefined>(undefined);
   useEffect(() => setPipelineId(undefined), [sourceId]);
   const [who, setWho] = useState<"all" | "me">("all");
@@ -50,10 +52,10 @@ function Board({ orgId, currency, sources }: { orgId: string; currency: string; 
     <Screen edges={["bottom"]} gap={s[4]} refreshControl={<RefreshControl refreshing={board.isRefetching} onRefresh={() => void board.refetch()} />}>
       <Stack.Screen options={{ title: board.data?.pipeline.name ?? "Deals board" }} />
       <MobileSourceFilter state={src} />
-      {pipelines.data && pipelines.data.length > 1 ? (
+      {dealPipelines.length > 1 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: s[2] }}>
-          {pipelines.data.map((p) => (
-            <Chip key={p.id} size="sm" selected={(pipelineId ?? pipelines.data?.[0]?.id) === p.id} onPress={() => setPipelineId(p.id)}>
+          {dealPipelines.map((p) => (
+            <Chip key={p.id} size="sm" selected={(pipelineId ?? board.data?.pipeline.id ?? dealPipelines[0]?.id) === p.id} onPress={() => setPipelineId(p.id)}>
               {p.name}
             </Chip>
           ))}

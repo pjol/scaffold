@@ -1,0 +1,713 @@
+{
+  "provenance": {
+    "date": "2026-11-05",
+    "generator": "TestInteropWriteGoFixtures in internal/aauth/interop_test.go",
+    "go": "go1.27.3",
+    "keys": "Throwaway keys generated for this file. They protect nothing.",
+    "package": "sayso/backend/internal/aauth",
+    "regenerate": "See testdata/README.md. Regenerate js-verdicts.json after this file."
+  },
+  "now": 1790600000,
+  "keys": {
+    "agent_ed25519": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "ilm58z3ahqB35puEXgGoTZCiy5jh69QNSLgLiqWRS6E",
+      "alg": "Ed25519",
+      "kid": "agent-ed",
+      "d": "_myBd1dRMMdzvVMFsK1qHnNQgvZHBT5PaAETzP4o4uY"
+    },
+    "agent_es256": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "fFVn5VdYLlwIxpK8uJhdvBdrNDdWgtV2NPPriIr88AM",
+      "y": "wjlrQmIAxRRRUyspF1W5CR9o-2RZpsgtIW1qbd3Z_Fc",
+      "alg": "ES256",
+      "kid": "agent-ec",
+      "d": "8FUHaHN6AaI5wGE0wLHPky-Vq6fYiQcE83rafznAnQg"
+    },
+    "ap_ed25519": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "dU2FumULKeoPmGVjXmk6qsqUBzQCTfh7N94wYi-WpfM",
+      "alg": "Ed25519",
+      "kid": "ap-ed",
+      "d": "gTFgEcZoOgIXgxGTlkCPqCT_0YMxMRLhvrx4wUEA2ZU"
+    },
+    "ap_es256": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "hjdTT9iEMMOchrJeXTaBcpHB79pJktMpB2-kJ7KcZ7o",
+      "y": "4mJYXqdU13XY-20o0Zd6XLOqpmCnI86DQ-mDozE0FiY",
+      "alg": "ES256",
+      "kid": "ap-ec",
+      "d": "xkHm5_wJM2cnWcPQBhwn-KfwYeZc5MITOtl7nUMV0j0"
+    },
+    "as_es256": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "nQavxDm3D1fModmgl9NGmd9DKUCFXswgLGPXgIzAYYc",
+      "y": "APd74X4UzOUbnqtPrH5ANdn1C6nCyedmZURJk23rZxs",
+      "alg": "ES256",
+      "kid": "as-ec",
+      "d": "5PyBhhqVxuOmQitVx9b0PaQKnMuvlqVR-sncnP7ZEgo"
+    },
+    "ps_ed25519": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "kJv8jUxaHD3hVgsEnalH_7f_Xwsp3XiO_NCyPAsHQ9w",
+      "alg": "Ed25519",
+      "kid": "ps-ed",
+      "d": "ZPXYDYnX7N3IgQEe5rmsPgFQCdWCXp5efuledqLoepw"
+    },
+    "ps_es256": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "D9t1CPldyrOTEDVGzX9l2voO4E34vdc9jXtqZHzdsxc",
+      "y": "nUMX7BdzszbS-15fLdhl6JGb-6cqpDnnx900jYEUPnU",
+      "alg": "ES256",
+      "kid": "ps-ec",
+      "d": "lN8-l4xXB4YaqCjHTbjTK3BTDzWrPUmXrvcFy7FTIUQ"
+    },
+    "res_ed25519": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "52YRFQM1qqAqhetO6GbaLlfNgG3vNgasmnO-B_ZMNm8",
+      "alg": "Ed25519",
+      "kid": "res-ed",
+      "d": "ZunhX-FqHqNNSvsJ-p9mGqPugmx4zhSatBHgS2AzbGE"
+    },
+    "ss_ed25519": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "A1crWZUnvlhUlLP4wKvYZWYgjTww32ow67cpj_IFXn0",
+      "alg": "Ed25519",
+      "kid": "ss-ed",
+      "d": "zQu4CF9tnpunf6iLjJ9bw4TAuzsMXQbgscQIVLZPzbo"
+    },
+    "ss_es256": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "K7Fmixs34kTJSykKol1g4_N3f7sjIiyTx71HjhrxZAQ",
+      "y": "ZKK_FipHzT0-BUbYrTixf7Jwpdy9LrTEmd4R6Ia7N1M",
+      "alg": "ES256",
+      "kid": "ss-ec",
+      "d": "PR6FYoK43kUpQXRuakhxtzzsuLvjqNexWhKJDNxL7gs"
+    }
+  },
+  "issuers": [
+    {
+      "issuer": "https://agent.example",
+      "dwk": "aauth-agent.json",
+      "jwks": {
+        "keys": [
+          {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "dU2FumULKeoPmGVjXmk6qsqUBzQCTfh7N94wYi-WpfM",
+            "alg": "Ed25519",
+            "kid": "ap-ed"
+          },
+          {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "hjdTT9iEMMOchrJeXTaBcpHB79pJktMpB2-kJ7KcZ7o",
+            "y": "4mJYXqdU13XY-20o0Zd6XLOqpmCnI86DQ-mDozE0FiY",
+            "alg": "ES256",
+            "kid": "ap-ec"
+          }
+        ]
+      }
+    },
+    {
+      "issuer": "https://ps.example",
+      "dwk": "aauth-person.json",
+      "jwks": {
+        "keys": [
+          {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "kJv8jUxaHD3hVgsEnalH_7f_Xwsp3XiO_NCyPAsHQ9w",
+            "alg": "Ed25519",
+            "kid": "ps-ed"
+          },
+          {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "D9t1CPldyrOTEDVGzX9l2voO4E34vdc9jXtqZHzdsxc",
+            "y": "nUMX7BdzszbS-15fLdhl6JGb-6cqpDnnx900jYEUPnU",
+            "alg": "ES256",
+            "kid": "ps-ec"
+          }
+        ]
+      }
+    },
+    {
+      "issuer": "https://as.example",
+      "dwk": "aauth-access.json",
+      "jwks": {
+        "keys": [
+          {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "nQavxDm3D1fModmgl9NGmd9DKUCFXswgLGPXgIzAYYc",
+            "y": "APd74X4UzOUbnqtPrH5ANdn1C6nCyedmZURJk23rZxs",
+            "alg": "ES256",
+            "kid": "as-ec"
+          }
+        ]
+      }
+    },
+    {
+      "issuer": "https://resource.example",
+      "dwk": "aauth-resource.json",
+      "jwks": {
+        "keys": [
+          {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "52YRFQM1qqAqhetO6GbaLlfNgG3vNgasmnO-B_ZMNm8",
+            "alg": "Ed25519",
+            "kid": "res-ed"
+          }
+        ]
+      }
+    },
+    {
+      "issuer": "https://ss.example",
+      "dwk": "aauth-supervisor.json",
+      "jwks": {
+        "keys": [
+          {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "A1crWZUnvlhUlLP4wKvYZWYgjTww32ow67cpj_IFXn0",
+            "alg": "Ed25519",
+            "kid": "ss-ed"
+          },
+          {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "K7Fmixs34kTJSykKol1g4_N3f7sjIiyTx71HjhrxZAQ",
+            "y": "ZKK_FipHzT0-BUbYrTixf7Jwpdy9LrTEmd4R6Ia7N1M",
+            "alg": "ES256",
+            "kid": "ss-ec"
+          }
+        ]
+      }
+    }
+  ],
+  "tokens": [
+    {
+      "name": "agent-token-ed25519",
+      "typ": "aa-agent+jwt",
+      "alg": "Ed25519",
+      "jwt": "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lZCIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJpbG01OHozYWhxQjM1cHVFWGdHb1RaQ2l5NWpoNjlRTlNMZ0xpcVdSUzZFIiwiYWxnIjoiRWQyNTUxOSIsImtpZCI6ImFnZW50LWVkIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.mCvkBHINTbh3ppDo6_cu3qzj1eHWW96LvsjAx0Fb5C2bOSFa1P4OkZarvfCXLZt4a4AM-7ABYEif-JKod8jdDg",
+      "issuer_key": "ap_ed25519"
+    },
+    {
+      "name": "agent-token-es256",
+      "typ": "aa-agent+jwt",
+      "alg": "ES256",
+      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lYyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJmRlZuNVZkWUxsd0l4cEs4dUpoZHZCZHJORGRXZ3RWMk5QUHJpSXI4OEFNIiwieSI6IndqbHJRbUlBeFJSUlV5c3BGMVc1Q1I5by0yUlpwc2d0SVcxcWJkM1pfRmMiLCJhbGciOiJFUzI1NiIsImtpZCI6ImFnZW50LWVjIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.ZBsFJCMN9nkOF7p6KtuXbVuyYYZZOkxGacairHugh6NTitnyyz5Loijr5aF91g-QoRZ_W7zX7gi3xgJpYMTVqg",
+      "issuer_key": "ap_es256"
+    },
+    {
+      "name": "person-token",
+      "typ": "aa-person+jwt",
+      "alg": "Ed25519",
+      "jwt": "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtcGVyc29uK2p3dCIsImtpZCI6InBzLWVkIn0.eyJpc3MiOiJodHRwczovL3BzLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1wZXJzb24uanNvbiIsImp0aSI6ImZpeHR1cmUtcGVyc29uIiwiaWF0IjoxNzkwNjAwMDAwLCJleHAiOjE3OTA2MDMwMDAsImF1ZCI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsInN1YiI6IjhmMTRlNDVmY2VlYTE2N2E1YTM2ZGVkZDRiZWEyNTQzIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6ImlsbTU4ejNhaHFCMzVwdUVYZ0dvVFpDaXk1amg2OVFOU0xnTGlxV1JTNkUiLCJhbGciOiJFZDI1NTE5Iiwia2lkIjoiYWdlbnQtZWQifX0sIm1pc3Npb25fczI1NiI6Ind2VUp1UWhGTndNVVgzR3pUaFpNdzNESy1GVjhneHNPeTIzRV9hQmUtRFUiLCJ0ZW5hbnQiOiJhY21lLmV4YW1wbGUifQ.JPdA6XsXY53SxfYFmtBoUOV3ggbggWKtGu1B6ayuQWTowb-HP2xdCODm8XqtbiMpN4UOCBDdpuJcUk1iEGzJAQ",
+      "issuer_key": "ps_ed25519"
+    },
+    {
+      "name": "resource-token",
+      "typ": "aa-resource+jwt",
+      "alg": "Ed25519",
+      "jwt": "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtcmVzb3VyY2Urand0Iiwia2lkIjoicmVzLWVkIn0.eyJpc3MiOiJodHRwczovL3Jlc291cmNlLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1yZXNvdXJjZS5qc29uIiwianRpIjoiZml4dHVyZS1yZXNvdXJjZSIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAwMzAwLCJhdWQiOiJodHRwczovL3BzLmV4YW1wbGUiLCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSIsInN1YiI6IjhmMTRlNDVmY2VlYTE2N2E1YTM2ZGVkZDRiZWEyNTQzIiwicHJlc2VudGVkX2p0aSI6ImZpeHR1cmUtcGVyc29uIiwiYWdlbnRfamt0IjoiaHUwQUZoTllDWGd1SGFtcDFneXdwTHF2dkRsWmxjQnVhLVZCdmxLUjdwbyIsInNjb3BlIjoiZGF0YS5yZWFkIiwibWlzc2lvbl9zMjU2Ijoid3ZVSnVRaEZOd01VWDNHelRoWk13M0RLLUZWOGd4c095MjNFX2FCZS1EVSIsInRlbmFudCI6ImFjbWUuZXhhbXBsZSIsInIzX3VyaSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZS9yMy9hIiwicjNfczI1NiI6IlNhMC1nQ2NVR0tZbDdOX0txUS1qYmplaWdWajJBZnRFUzROWmpGUF8zVUkiLCJidWRnZXQiOnsiYW1vdW50Ijo1MDAwMDAwLCJ1bml0IjoiVVNEIiwiZGVjaW1hbHMiOjZ9fQ.6X_2n-mqX31AyVqabaBpELgdPX-yw_QM6IDDXwLu-0odxB_Qhr81WxWbzqnaxxISQiS25RhJZ77pMA5eTmxSCQ",
+      "issuer_key": "res_ed25519"
+    },
+    {
+      "name": "auth-token-ps",
+      "typ": "aa-auth+jwt",
+      "alg": "Ed25519",
+      "jwt": "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYXV0aCtqd3QiLCJraWQiOiJwcy1lZCJ9.eyJpc3MiOiJodHRwczovL3BzLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1wZXJzb24uanNvbiIsImp0aSI6ImZpeHR1cmUtYXV0aC1wcyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJhdWQiOiJodHRwczovL3Jlc291cmNlLmV4YW1wbGUiLCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSIsInN1YiI6IjhmMTRlNDVmY2VlYTE2N2E1YTM2ZGVkZDRiZWEyNTQzIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6ImlsbTU4ejNhaHFCMzVwdUVYZ0dvVFpDaXk1amg2OVFOU0xnTGlxV1JTNkUiLCJhbGciOiJFZDI1NTE5Iiwia2lkIjoiYWdlbnQtZWQifX0sInNjb3BlIjoiZGF0YS5yZWFkIn0.T_eW_XKpf9sSo66amsE8jX7K20dtbAe0ni9FWVatcW4X9Agezorew8ToNbf3kjbh0U25-ZEjKRzxyddiCcmbBg",
+      "issuer_key": "ps_ed25519"
+    },
+    {
+      "name": "auth-token-as",
+      "typ": "aa-auth+jwt",
+      "alg": "ES256",
+      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWF1dGgrand0Iiwia2lkIjoiYXMtZWMifQ.eyJpc3MiOiJodHRwczovL2FzLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hY2Nlc3MuanNvbiIsImp0aSI6ImZpeHR1cmUtYXV0aC1hcyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJhdWQiOiJodHRwczovL3Jlc291cmNlLmV4YW1wbGUiLCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSIsInN1YiI6IjhmMTRlNDVmY2VlYTE2N2E1YTM2ZGVkZDRiZWEyNTQzIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6ImZGVm41VmRZTGx3SXhwSzh1SmhkdkJkck5EZFdndFYyTlBQcmlJcjg4QU0iLCJ5Ijoid2psclFtSUF4UlJSVXlzcEYxVzVDUjlvLTJSWnBzZ3RJVzFxYmQzWl9GYyIsImFsZyI6IkVTMjU2Iiwia2lkIjoiYWdlbnQtZWMifX0sInNjb3BlIjoiZGF0YS5yZWFkIn0.FUE6OfIY_Hfsr6QwiDpDe-cJrrDRAdpPfMNeqjoJH1bvc1F9YPS4XyuGTbPczmAlCHfKZf3ACOqAKmAfuwZ-rQ",
+      "issuer_key": "as_es256"
+    }
+  ],
+  "requests": [
+    {
+      "name": "agent-ed25519-post",
+      "alg": "Ed25519",
+      "scheme": "jwt",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "authority": "ps.example",
+      "path": "/person",
+      "query": "",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:n31Vg9eOiGGT4S0h5CfugWnx/cSK222NsdFAdXseE0KR7BxKbhg1n3ctkKb33LoOQtT471Lynneg4ue8tU8gCg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lZCIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJpbG01OHozYWhxQjM1cHVFWGdHb1RaQ2l5NWpoNjlRTlNMZ0xpcVdSUzZFIiwiYWxnIjoiRWQyNTUxOSIsImtpZCI6ImFnZW50LWVkIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.mCvkBHINTbh3ppDo6_cu3qzj1eHWW96LvsjAx0Fb5C2bOSFa1P4OkZarvfCXLZt4a4AM-7ABYEif-JKod8jdDg\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "base": "\"@method\": POST\n\"@authority\": ps.example\n\"@path\": /person\n\"content-type\": application/json\n\"content-digest\": sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:\n\"signature-key\": sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lZCIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJpbG01OHozYWhxQjM1cHVFWGdHb1RaQ2l5NWpoNjlRTlNMZ0xpcVdSUzZFIiwiYWxnIjoiRWQyNTUxOSIsImtpZCI6ImFnZW50LWVkIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.mCvkBHINTbh3ppDo6_cu3qzj1eHWW96LvsjAx0Fb5C2bOSFa1P4OkZarvfCXLZt4a4AM-7ABYEif-JKod8jdDg\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+      "signer_key": "agent_ed25519"
+    },
+    {
+      "name": "agent-ed25519-get",
+      "alg": "Ed25519",
+      "scheme": "jwt",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc?x=1",
+      "authority": "ps.example",
+      "path": "/pending/abc",
+      "query": "x=1",
+      "headers": [
+        [
+          "signature",
+          "sig=:2wjfZbrDP76G3ZWECBvohQ+zI/zgjqNfmhVAXJmytKmFDr1xn4WGAzU4DrfeusY0XbG1HWiyBfN8Lj9ospC7CA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lZCIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJpbG01OHozYWhxQjM1cHVFWGdHb1RaQ2l5NWpoNjlRTlNMZ0xpcVdSUzZFIiwiYWxnIjoiRWQyNTUxOSIsImtpZCI6ImFnZW50LWVkIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.mCvkBHINTbh3ppDo6_cu3qzj1eHWW96LvsjAx0Fb5C2bOSFa1P4OkZarvfCXLZt4a4AM-7ABYEif-JKod8jdDg\""
+        ]
+      ],
+      "body_b64": "",
+      "base": "\"@method\": GET\n\"@authority\": ps.example\n\"@path\": /pending/abc\n\"signature-key\": sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lZCIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJpbG01OHozYWhxQjM1cHVFWGdHb1RaQ2l5NWpoNjlRTlNMZ0xpcVdSUzZFIiwiYWxnIjoiRWQyNTUxOSIsImtpZCI6ImFnZW50LWVkIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.mCvkBHINTbh3ppDo6_cu3qzj1eHWW96LvsjAx0Fb5C2bOSFa1P4OkZarvfCXLZt4a4AM-7ABYEif-JKod8jdDg\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000",
+      "signer_key": "agent_ed25519"
+    },
+    {
+      "name": "agent-es256-post",
+      "alg": "ES256",
+      "scheme": "jwt",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "authority": "ps.example",
+      "path": "/person",
+      "query": "",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:2LH306om7sBhpu7eFv9rAsCEaf0npYlwCsdQpBnnOCoKSSDEsw6Wvq9nwC7CJgRGYiIhWxWUR7w+Rf1Dyjeukw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lYyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJmRlZuNVZkWUxsd0l4cEs4dUpoZHZCZHJORGRXZ3RWMk5QUHJpSXI4OEFNIiwieSI6IndqbHJRbUlBeFJSUlV5c3BGMVc1Q1I5by0yUlpwc2d0SVcxcWJkM1pfRmMiLCJhbGciOiJFUzI1NiIsImtpZCI6ImFnZW50LWVjIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.ZBsFJCMN9nkOF7p6KtuXbVuyYYZZOkxGacairHugh6NTitnyyz5Loijr5aF91g-QoRZ_W7zX7gi3xgJpYMTVqg\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "base": "\"@method\": POST\n\"@authority\": ps.example\n\"@path\": /person\n\"content-type\": application/json\n\"content-digest\": sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:\n\"signature-key\": sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lYyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJmRlZuNVZkWUxsd0l4cEs4dUpoZHZCZHJORGRXZ3RWMk5QUHJpSXI4OEFNIiwieSI6IndqbHJRbUlBeFJSUlV5c3BGMVc1Q1I5by0yUlpwc2d0SVcxcWJkM1pfRmMiLCJhbGciOiJFUzI1NiIsImtpZCI6ImFnZW50LWVjIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.ZBsFJCMN9nkOF7p6KtuXbVuyYYZZOkxGacairHugh6NTitnyyz5Loijr5aF91g-QoRZ_W7zX7gi3xgJpYMTVqg\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+      "signer_key": "agent_es256"
+    },
+    {
+      "name": "agent-es256-get",
+      "alg": "ES256",
+      "scheme": "jwt",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "authority": "ps.example",
+      "path": "/pending/abc",
+      "query": "",
+      "headers": [
+        [
+          "signature",
+          "sig=:hPiXG27vmbobg9wVdEHwY05UvZg/Rc2D6aKfnDR+cYfLnCdbRuB4K34J568NpRPQ9zYw7vU54SCvhlU+RdFWLg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lYyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJmRlZuNVZkWUxsd0l4cEs4dUpoZHZCZHJORGRXZ3RWMk5QUHJpSXI4OEFNIiwieSI6IndqbHJRbUlBeFJSUlV5c3BGMVc1Q1I5by0yUlpwc2d0SVcxcWJkM1pfRmMiLCJhbGciOiJFUzI1NiIsImtpZCI6ImFnZW50LWVjIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.ZBsFJCMN9nkOF7p6KtuXbVuyYYZZOkxGacairHugh6NTitnyyz5Loijr5aF91g-QoRZ_W7zX7gi3xgJpYMTVqg\""
+        ]
+      ],
+      "body_b64": "",
+      "base": "\"@method\": GET\n\"@authority\": ps.example\n\"@path\": /pending/abc\n\"signature-key\": sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwianRpIjoiZml4dHVyZS1hZ2VudC1lYyIsImlhdCI6MTc5MDYwMDAwMCwiZXhwIjoxNzkwNjAzMDAwLCJzdWIiOiJhYXV0aDphc3Npc3RhbnRAYWdlbnQuZXhhbXBsZSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJmRlZuNVZkWUxsd0l4cEs4dUpoZHZCZHJORGRXZ3RWMk5QUHJpSXI4OEFNIiwieSI6IndqbHJRbUlBeFJSUlV5c3BGMVc1Q1I5by0yUlpwc2d0SVcxcWJkM1pfRmMiLCJhbGciOiJFUzI1NiIsImtpZCI6ImFnZW50LWVjIn19LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.ZBsFJCMN9nkOF7p6KtuXbVuyYYZZOkxGacairHugh6NTitnyyz5Loijr5aF91g-QoRZ_W7zX7gi3xgJpYMTVqg\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000",
+      "signer_key": "agent_es256"
+    },
+    {
+      "name": "server-ed25519-post",
+      "alg": "Ed25519",
+      "scheme": "jwks_uri",
+      "method": "POST",
+      "url": "https://resource.example/revoke",
+      "authority": "resource.example",
+      "path": "/revoke",
+      "query": "",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:0mn4ClC4xOrlQgRoJ2vt71sEEy5Q5Li47gw2Y+FP07I=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:nbXzebyQEhy0tiBMIpfDxvSlpr7oPNd4XAgtkoQs9i/1r3lebopQP6ZoKhFUFzFzBBKqwyw60GpUGgVky5SrCA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+        ]
+      ],
+      "body_b64": "eyJqdGkiOiJ1bmlxdWUtdG9rZW4taWRlbnRpZmllciIsImV4cCI6MTc4ODcyNzgxM30=",
+      "base": "\"@method\": POST\n\"@authority\": resource.example\n\"@path\": /revoke\n\"content-type\": application/json\n\"content-digest\": sha-256=:0mn4ClC4xOrlQgRoJ2vt71sEEy5Q5Li47gw2Y+FP07I=:\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+      "signer_key": "ps_ed25519"
+    },
+    {
+      "name": "server-es256-get",
+      "alg": "ES256",
+      "scheme": "jwks_uri",
+      "method": "GET",
+      "url": "https://as.example/pending/xyz",
+      "authority": "as.example",
+      "path": "/pending/xyz",
+      "query": "",
+      "headers": [
+        [
+          "signature",
+          "sig=:FPLwmMesrzf2j16gZ47s1WUhsH6mJNddyc19XfIeu3KTTk1JRc5Uk8KeDGMnt5EJfT4UZfneS63DL6c7cM71sw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000"
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ec\""
+        ]
+      ],
+      "body_b64": "",
+      "base": "\"@method\": GET\n\"@authority\": as.example\n\"@path\": /pending/xyz\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ec\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000",
+      "signer_key": "ps_es256"
+    }
+  ],
+  "responses": [
+    {
+      "name": "decision-ed25519",
+      "alg": "Ed25519",
+      "request": {
+        "name": "decision-request",
+        "alg": "Ed25519",
+        "scheme": "jwks_uri",
+        "method": "POST",
+        "url": "https://ss.example/decision",
+        "authority": "ss.example",
+        "path": "/decision",
+        "query": "",
+        "headers": [
+          [
+            "accept-signature",
+            "sig=(\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req)"
+          ],
+          [
+            "content-digest",
+            "sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:"
+          ],
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "signature",
+            "sig=:XD686rk1jjK2rlck6Y2ZqD4kSpKIC5EV6iUOnrZzMqROBvJN19lybMoI1izlmyPUgwlGKd2m1K/ZCjFFONgKCg==:"
+          ],
+          [
+            "signature-input",
+            "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+          ],
+          [
+            "signature-key",
+            "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+          ]
+        ],
+        "body_b64": "eyJzZGkiOiJkLTRkMmE5MSIsImFjdCI6InBlcnNvbl90b2tlbiJ9",
+        "base": "\"@method\": POST\n\"@authority\": ss.example\n\"@path\": /decision\n\"content-type\": application/json\n\"content-digest\": sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+        "signer_key": "ps_ed25519"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:L5wIAKkiwhr6nQtxpId7T467RlPPDl+nDvXco8+LngCUnOmLQI1n732798WYHV3/3l1Yx+9H8AWQNLzSc25OCw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\""
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ss.example\";dwk=\"aauth-supervisor.json\";kid=\"ss-ed\""
+        ]
+      ],
+      "body_b64": "eyJzZGkiOiJkLTRkMmE5MSIsImRlY2lzaW9uIjoiYWxsb3ciLCJzY29wZSI6ImNhbGVuZGFyLnJlYWQifQ==",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"content-digest\";req: sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"@authority\";req: ss.example\n\"@path\";req: /decision\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\"",
+      "signer_key": "ss_ed25519",
+      "issuer": "https://ss.example",
+      "dwk": "aauth-supervisor.json"
+    },
+    {
+      "name": "decision-es256",
+      "alg": "ES256",
+      "request": {
+        "name": "decision-request",
+        "alg": "Ed25519",
+        "scheme": "jwks_uri",
+        "method": "POST",
+        "url": "https://ss.example/decision",
+        "authority": "ss.example",
+        "path": "/decision",
+        "query": "",
+        "headers": [
+          [
+            "accept-signature",
+            "sig=(\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req)"
+          ],
+          [
+            "content-digest",
+            "sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:"
+          ],
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "signature",
+            "sig=:XD686rk1jjK2rlck6Y2ZqD4kSpKIC5EV6iUOnrZzMqROBvJN19lybMoI1izlmyPUgwlGKd2m1K/ZCjFFONgKCg==:"
+          ],
+          [
+            "signature-input",
+            "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+          ],
+          [
+            "signature-key",
+            "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+          ]
+        ],
+        "body_b64": "eyJzZGkiOiJkLTRkMmE5MSIsImFjdCI6InBlcnNvbl90b2tlbiJ9",
+        "base": "\"@method\": POST\n\"@authority\": ss.example\n\"@path\": /decision\n\"content-type\": application/json\n\"content-digest\": sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+        "signer_key": "ps_ed25519"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:JNCMYv5aLxeuReRxfGhPB626Po/EVadDwrZM5K4LtF9x+aAbnRuVscTrwkypvVW/0ZVhE0qvQGDSIU+NU11nvw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ec\""
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ss.example\";dwk=\"aauth-supervisor.json\";kid=\"ss-ec\""
+        ]
+      ],
+      "body_b64": "eyJzZGkiOiJkLTRkMmE5MSIsImRlY2lzaW9uIjoiYWxsb3ciLCJzY29wZSI6ImNhbGVuZGFyLnJlYWQifQ==",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"content-digest\";req: sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"@authority\";req: ss.example\n\"@path\";req: /decision\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ec\"",
+      "signer_key": "ss_es256",
+      "issuer": "https://ss.example",
+      "dwk": "aauth-supervisor.json"
+    },
+    {
+      "name": "decision-on-poll",
+      "alg": "Ed25519",
+      "request": {
+        "name": "decision-poll",
+        "alg": "Ed25519",
+        "scheme": "jwks_uri",
+        "method": "GET",
+        "url": "https://ss.example/pending/q7x2",
+        "authority": "ss.example",
+        "path": "/pending/q7x2",
+        "query": "",
+        "headers": [
+          [
+            "signature",
+            "sig=:vtYYaaY7tefaM6TjiDrLsBsSUhCmpDfxQzDAn9eEGAeFLVTDuWQjtH3JykF324xfLEOGlXRTUMM6v6GAbEmbBw==:"
+          ],
+          [
+            "signature-input",
+            "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000"
+          ],
+          [
+            "signature-key",
+            "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+          ]
+        ],
+        "body_b64": "",
+        "base": "\"@method\": GET\n\"@authority\": ss.example\n\"@path\": /pending/q7x2\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1790600000",
+        "signer_key": "ps_ed25519"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:nrPJyLFJ1sbB3YSj3fspoTitnEpMjjCFIvdk7J0UIKtRl5fJCv4fw5+LgiUJZWLxINmqbLMjqtTdfbl4aIfGAA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\""
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ss.example\";dwk=\"aauth-supervisor.json\";kid=\"ss-ed\""
+        ]
+      ],
+      "body_b64": "eyJzZGkiOiJkLTRkMmE5MSIsImRlY2lzaW9uIjoiYWxsb3ciLCJzY29wZSI6ImNhbGVuZGFyLnJlYWQifQ==",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"@authority\";req: ss.example\n\"@path\";req: /pending/q7x2\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\"",
+      "signer_key": "ss_ed25519",
+      "issuer": "https://ss.example",
+      "dwk": "aauth-supervisor.json"
+    },
+    {
+      "name": "usage-response",
+      "alg": "Ed25519",
+      "request": {
+        "name": "usage-request",
+        "alg": "Ed25519",
+        "scheme": "jwks_uri",
+        "method": "POST",
+        "url": "https://resource.example/usage",
+        "authority": "resource.example",
+        "path": "/usage",
+        "query": "",
+        "headers": [
+          [
+            "content-digest",
+            "sha-256=:hYvHyixQoWeM9I7q5No74H6gPMVnXiNp5AErfF1UVQE=:"
+          ],
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "signature",
+            "sig=:CqgjsbnvtXRaNecgccT1YE1u9Tbi1q1Bp4IiAjuqnE7ILFqQbELmohLgMcnXqKa/aYR/lJxpRTsNfTpGaOfbDA==:"
+          ],
+          [
+            "signature-input",
+            "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000"
+          ],
+          [
+            "signature-key",
+            "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+          ]
+        ],
+        "body_b64": "eyJzdWIiOiI4ZjE0ZTQ1ZmNlZWExNjdhNWEzNmRlZGQ0YmVhMjU0MyJ9",
+        "base": "\"@method\": POST\n\"@authority\": resource.example\n\"@path\": /usage\n\"content-type\": application/json\n\"content-digest\": sha-256=:hYvHyixQoWeM9I7q5No74H6gPMVnXiNp5AErfF1UVQE=:\n\"signature-key\": sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\"\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1790600000",
+        "signer_key": "ps_ed25519"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:xYs2W13wlp3uDOHn2CZIVBBrHmFojjNC64ACGKJ1NKU=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:OcjojEp+rPVYPdRmadF/E2lRHpxTYhUBxtiqka5rssZB/61Bz/5hmxyVBe4bBYAH7EJVV/EAd4FPXaOkPE4UBQ==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"res-ed\""
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://resource.example\";dwk=\"aauth-resource.json\";kid=\"res-ed\""
+        ]
+      ],
+      "body_b64": "eyJhc19vZiI6MTc5MDYwMDAwMCwiYXVkIjoiaHR0cHM6Ly9wcy5leGFtcGxlIiwidW5pdCI6IlVTRCIsImRlY2ltYWxzIjo2fQ==",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:xYs2W13wlp3uDOHn2CZIVBBrHmFojjNC64ACGKJ1NKU=:\n\"@authority\";req: resource.example\n\"@path\";req: /usage\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"res-ed\"",
+      "signer_key": "res_ed25519",
+      "issuer": "https://resource.example",
+      "dwk": "aauth-resource.json"
+    }
+  ],
+  "headers": {
+    "accept_alg": "Ed25519, ES256",
+    "accept_scheme": "jwt",
+    "capabilities": "interaction, clarification, payment",
+    "requirement_approval": "requirement=approval",
+    "requirement_auth_token": "requirement=auth-token;resource-token=\"eyJhbGc.e30.sig\"",
+    "requirement_interaction": "requirement=interaction;url=\"https://example.com/interact\";code=\"A1B2-C3D4\"",
+    "requirement_person_token": "requirement=person-token",
+    "signature_error_input": "error=invalid_input, required_input=(\"@method\" \"@authority\" \"@path\" \"signature-key\" \"content-digest\" \"content-type\")",
+    "signature_error_plain": "error=revoked_jwt"
+  }
+}

@@ -1,20 +1,30 @@
 import {
   errorMessage,
-  groupSearchResults,
+  groupSearchResultsByFeature,
+  parseSearchOperators,
   pushRecentSearch,
-  SEARCH_MIN_QUERY_CHARS,
+  removeSearchOperator,
+  SEARCH_OPERATOR_HINTS,
+  searchHighlight,
+  searchOperatorLabel,
+  searchProviderLabel,
+  searchQueryReady,
   searchResultContext,
   searchSourceOptions,
+  skippedSearchProviders,
   sourceLabel,
   unansweredSearchProviders,
   useDebouncedValue,
+  useRemoveSavedSearch,
+  useSavedSearches,
+  useSaveSearch,
   useSearch,
   useSearchScope,
   type SearchResult,
 } from "@scaffoldapp/shared";
-import { Banner, Button, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Screen, SkeletonRow, SourceBadge, SourceFilter, Text, ToggleChip, usePressScale, useTheme } from "@scaffoldapp/ui-native";
+import { Banner, Button, Chip, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, Screen, SkeletonRow, SourceBadge, SourceFilter, Text, ToggleChip, toast, usePressScale, useTheme } from "@scaffoldapp/ui-native";
 import { router, type Href } from "expo-router";
-import { Clock, Search, SearchX, X } from "lucide-react-native";
+import { Bookmark, BookmarkPlus, Clock, Filter, Search, SearchX, X } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated from "react-native-reanimated";
@@ -34,8 +44,28 @@ function ago(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Text with the query's words marked. */
+function Marked({ text, query }: { text: string; query: string }) {
+  const theme = useTheme();
+  return (
+    <>
+      {searchHighlight(text, query).map((p, i) =>
+        p.match ? (
+          <Text key={i} style={{ backgroundColor: theme.colors.primarySoft, color: theme.colors.text }}>
+            {p.text}
+          </Text>
+        ) : (
+          p.text
+        ),
+      )}
+    </>
+  );
+}
+
 /**
- * Search (Home → Search): everything the person can see across features, grouped by kind.
+ * Search (Home → Search): everything the person can see across features, grouped by feature
+ * with "See all", operator chips (from:, in:, type:, dates, is:) and highlighted words; saved
+ * searches (every device) and the filters you can type when empty.
  * With an org scope registered, the current org by default and a chip for every org; rows
  * say where each hit lives. Recent searches live in per-user storage (wiped on sign-out).
  * A result opens its app path.
@@ -46,15 +76,25 @@ export function SearchScreen() {
   const [text, setText] = useState("");
   const [recent, setRecent] = useState<string[]>([]);
   const q = useDebouncedValue(text, 250).trim();
-  const searchable = q.length >= SEARCH_MIN_QUERY_CHARS;
+  const searchable = searchQueryReady(q);
+  const [kind, setKind] = useState("");
+  const saved = useSavedSearches();
+  const save = useSaveSearch();
+  const removeSaved = useRemoveSavedSearch();
+  const savedList = saved.data?.items ?? [];
+  const chips = parseSearchOperators(text).chips;
   const scope = useSearchScope();
   const [everywhere, setEverywhere] = useState(false);
   const orgId = scope && !everywhere ? scope.id : undefined;
   const [source, setSource] = useState("all");
-  const res = useSearch({ q, limit: 40, orgId, ...(source !== "all" ? { source } : {}) }, { enabled: searchable });
+  const res = useSearch({ q, limit: 40, orgId, ...(kind ? { kinds: [kind] } : {}), ...(source !== "all" ? { source } : {}) }, { enabled: searchable });
   const sourceOptions = searchSourceOptions(res.data?.sources, appName());
-  const groups = res.data && searchable ? groupSearchResults(res.data.items) : [];
+  const groups = res.data && searchable ? groupSearchResultsByFeature(res.data.items, res.data.providers) : [];
   const unanswered = res.data ? unansweredSearchProviders(res.data.providers) : [];
+  const skipped = res.data ? skippedSearchProviders(res.data.providers) : [];
+  const names: Record<string, string[]> = {};
+  for (const f of res.data?.filters?.from ?? []) names[f.value] = f.names;
+  const isSaved = savedList.some((x) => x.query === q && x.kinds === kind);
 
   useEffect(() => {
     void userStorage.get<string[]>(RECENT_KEY).then((v) => setRecent(Array.isArray(v) ? v : []));
@@ -93,34 +133,74 @@ export function SearchScreen() {
             </ToggleChip>
           </View>
         ) : null}
+        {chips.length ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[2] }} accessibilityLabel="Filters in your search">
+            {chips.map((c) => (
+              <Chip key={c.token} size="sm" icon={X} accessibilityLabel={`Remove ${searchOperatorLabel(c, names)}`} onPress={() => setText(removeSearchOperator(text, c))}>
+                {searchOperatorLabel(c, names)}
+              </Chip>
+            ))}
+          </View>
+        ) : null}
+        {kind ? (
+          <View style={{ flexDirection: "row", gap: s[2] }}>
+            <Chip size="sm" selected icon={X} accessibilityLabel={`Show every feature, not only ${searchProviderLabel(kind)}`} onPress={() => setKind("")}>
+              {searchProviderLabel(kind)}
+            </Chip>
+          </View>
+        ) : null}
         {searchable ? <SourceFilter options={sourceOptions} value={source} onChange={setSource} style={{ marginHorizontal: -s[4] }} /> : null}
       </View>
 
-      {text.trim().length < SEARCH_MIN_QUERY_CHARS ? (
-        recent.length ? (
-          <View style={{ gap: s[2] }}>
-            <ListGroup title="Recent">
-              {recent.map((r) => (
-                <ListRow
-                  key={r}
-                  title={r}
-                  leading={<Clock size={20} color={theme.colors.textMuted} />}
-                  chevron={false}
-                  onPress={() => setText(r)}
-                  trailing={<IconButton label={`Remove ${r}`} icon={X} variant="ghost" onPress={() => saveRecent(recent.filter((x) => x !== r))} />}
-                />
+      {!searchQueryReady(text.trim()) ? (
+        text.trim() ? (
+          <Text tone="muted">Type 2 or more characters, or a filter like from:@name.</Text>
+        ) : (
+          <View style={{ gap: s[6] }}>
+            {savedList.length ? (
+              <ListGroup title="Saved searches">
+                {savedList.map((x) => (
+                  <ListRow
+                    key={x.id}
+                    title={x.name}
+                    leading={<Bookmark size={20} color={theme.colors.textMuted} />}
+                    chevron={false}
+                    onPress={() => {
+                      setKind(x.kinds.split(",")[0] ?? "");
+                      setText(x.query);
+                    }}
+                    trailing={<IconButton label={`Remove saved search ${x.name}`} icon={X} variant="ghost" onPress={() => removeSaved.mutate(x.id, { onError: (e) => toast.error(errorMessage(e)) })} />}
+                  />
+                ))}
+              </ListGroup>
+            ) : null}
+            {recent.length ? (
+              <View style={{ gap: s[2] }}>
+                <ListGroup title="Recent">
+                  {recent.map((r) => (
+                    <ListRow
+                      key={r}
+                      title={r}
+                      leading={<Clock size={20} color={theme.colors.textMuted} />}
+                      chevron={false}
+                      onPress={() => setText(r)}
+                      trailing={<IconButton label={`Remove ${r}`} icon={X} variant="ghost" onPress={() => saveRecent(recent.filter((x) => x !== r))} />}
+                    />
+                  ))}
+                </ListGroup>
+                <View style={{ alignItems: "flex-start" }}>
+                  <Button variant="ghost" onPress={() => saveRecent([])}>
+                    Clear recent
+                  </Button>
+                </View>
+              </View>
+            ) : null}
+            <ListGroup title="Filters">
+              {SEARCH_OPERATOR_HINTS.map((h) => (
+                <ListRow key={h.example} title={`${h.example}  ${h.label}`} leading={<Filter size={20} color={theme.colors.textMuted} />} chevron={false} onPress={() => setText(h.example)} />
               ))}
             </ListGroup>
-            <View style={{ alignItems: "flex-start" }}>
-              <Button variant="ghost" onPress={() => saveRecent([])}>
-                Clear recent
-              </Button>
-            </View>
           </View>
-        ) : text.trim() ? (
-          <Text tone="muted">Type {SEARCH_MIN_QUERY_CHARS} or more characters.</Text>
-        ) : (
-          <EmptyState icon={Search} title="Type to search" />
         )
       ) : !searchable || res.isPending ? (
         <View accessibilityLabel="Searching" accessibilityRole="progressbar" style={{ gap: s[2] }}>
@@ -132,6 +212,24 @@ export function SearchScreen() {
         <ErrorState title="Couldn't search" info={errorMessage(res.error)} onRetry={() => void res.refetch()} retrying={res.isFetching} />
       ) : (
         <View style={{ gap: s[6] }}>
+          {!isSaved ? (
+            <View style={{ alignItems: "flex-start" }}>
+              <Button
+                variant="ghost"
+                leftIcon={BookmarkPlus}
+                loading={save.isPending}
+                onPress={() =>
+                  save.mutate(
+                    { name: q, query: q, ...(kind ? { kinds: kind } : {}) },
+                    { onSuccess: () => toast.success("Search saved."), onError: (e) => toast.error(errorMessage(e, "Couldn't save the search.")) },
+                  )
+                }
+              >
+                Save this search
+              </Button>
+            </View>
+          ) : null}
+          {skipped.length ? <Banner tone="info" title={`Not searched: ${skipped.join(", ")}.`} /> : null}
           {unanswered.length ? (
             <Banner tone="warning" title={`Some results may be missing: ${unanswered.join(", ")} didn't answer.`} action={{ label: "Retry", onPress: () => void res.refetch() }} />
           ) : null}
@@ -153,11 +251,20 @@ export function SearchScreen() {
             />
           ) : (
             groups.map((g) => (
-              <ListGroup key={g.kind} title={g.label}>
-                {g.items.map((item) => (
-                  <ResultRow key={`${item.kind}:${item.id}`} item={item} where={searchResultContext(item, orgId)} onPress={() => open(item)} />
-                ))}
-              </ListGroup>
+              <View key={g.feature} style={{ gap: s[2] }}>
+                <ListGroup title={g.label}>
+                  {(kind ? g.items : g.items.slice(0, 5)).map((item) => (
+                    <ResultRow key={`${item.kind}:${item.id}`} item={item} query={q} where={searchResultContext(item, orgId)} onPress={() => open(item)} />
+                  ))}
+                </ListGroup>
+                {!kind && g.total > 5 ? (
+                  <View style={{ alignItems: "flex-start" }}>
+                    <Button variant="ghost" onPress={() => setKind(g.feature)}>
+                      {`See all in ${g.label}`}
+                    </Button>
+                  </View>
+                ) : null}
+              </View>
             ))
           )}
         </View>
@@ -166,23 +273,25 @@ export function SearchScreen() {
   );
 }
 
-function ResultRow({ item, where, onPress }: { item: SearchResult; where: string; onPress: () => void }) {
+function ResultRow({ item, where, query, onPress }: { item: SearchResult; where: string; query: string; onPress: () => void }) {
   const theme = useTheme();
   const s = theme.space;
   const press = usePressScale(0.99);
   const Icon = searchIcon(item.icon, item.kind);
   const sub = [where, item.snippet].filter(Boolean).join(" · ");
+  const lead = where && item.snippet ? `${where} · ` : where;
   return (
     <Pressable onPress={onPress} onPressIn={press.onPressIn} onPressOut={press.onPressOut} accessibilityRole="link" accessibilityLabel={[item.title, where, item.snippet, item.source?.type === "connected" ? sourceLabel(item.source, "") : ""].filter(Boolean).join(". ")}>
       <Animated.View style={[{ flexDirection: "row", alignItems: "center", gap: s[3], minHeight: theme.tap.lg, paddingVertical: s[2], paddingHorizontal: s[4] }, press.style]}>
         <Icon size={20} color={theme.colors.textMuted} />
         <View style={{ flex: 1, gap: s[1] }}>
           <Text weight={600} numberOfLines={2}>
-            {item.title}
+            <Marked text={item.title} query={query} />
           </Text>
           {sub ? (
             <Text role="caption" tone="muted" numberOfLines={2}>
-              {sub}
+              {lead}
+              {item.snippet ? <Marked text={item.snippet} query={query} /> : null}
             </Text>
           ) : null}
           <SourceBadge source={item.source} />

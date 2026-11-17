@@ -51,6 +51,7 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`DELETE FROM docs_favorites WHERE user_id = $1`,
 		`DELETE FROM docs_visits WHERE user_id = $1`,
 		`DELETE FROM docs_presence WHERE user_id = $1`,
+		`DELETE FROM docs_reminders WHERE user_id = $1`,
 		`DELETE FROM docs_files WHERE uploaded_by = $1`,
 		`UPDATE docs_pages SET created_by = NULL WHERE created_by = $1`,
 		`UPDATE docs_pages SET updated_by = NULL WHERE updated_by = $1`,
@@ -65,7 +66,10 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 			return err
 		}
 	}
-	return nil
+	if err := s.deleteAccountDatabases(ctx, tx, userID); err != nil { // account_databases.go
+		return err
+	}
+	return s.deleteAccountPages(ctx, tx, userID) // account_pages.go
 }
 
 type exportPage struct {
@@ -109,6 +113,8 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		Pages     []exportPage    `json:"pages"`
 		Comments  []exportComment `json:"comments"`
 		Favorites []uuid.UUID     `json:"favorites"`
+		Workspace any             `json:"workspace"` // follows, views, reactions, imports (account_pages.go)
+		Databases any             `json:"databases"` // automations, form responses (account_databases.go)
 	}{Pages: []exportPage{}, Comments: []exportComment{}, Favorites: []uuid.UUID{}}
 	for _, p := range pages {
 		blocks, err := loadBlocks(ctx, s.d.Pool, p.ID)
@@ -155,6 +161,12 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	}
 	if out.Favorites == nil {
 		out.Favorites = []uuid.UUID{}
+	}
+	if out.Workspace, err = s.exportAccountPages(ctx, userID); err != nil {
+		return nil, err
+	}
+	if out.Databases, err = s.exportAccountDatabases(ctx, userID); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

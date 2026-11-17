@@ -27,12 +27,14 @@ import (
 	"github.com/go-chi/httprate"
 	"github.com/google/uuid"
 
+	"scaffoldapp/backend/internal/access"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/config"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/jobs"
 	"scaffoldapp/backend/internal/notifications"
+	"scaffoldapp/backend/internal/orgs"
 	"scaffoldapp/backend/internal/realtime"
 )
 
@@ -119,6 +121,15 @@ func New(d *app.Deps) *Service {
 	notifications.RegisterKind(notifications.Kind{ID: NotifyResponse, Label: "Replies to your invitations", Push: false, AgentTarget: eventTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyReminder, Label: "Calendar reminders", Push: true, AgentTarget: eventTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyBooking, Label: "Bookings", Push: true})
+	registerAccessKinds()
+	// Sharing changed: people's calendar lists (and what they see) refresh.
+	access.OnChange(func(ctx context.Context, ref access.Ref, users []uuid.UUID) {
+		if ref.Kind == KindCalendar && len(users) > 0 {
+			s.changed(ctx, "calendars", users...)
+			s.changed(ctx, "events", users...)
+		}
+	})
+	orgs.OnMemberRemoved(s.rehomeOnLeave)
 	calendarService.Store(s)
 	return s
 }
@@ -168,6 +179,23 @@ func (s *Service) MountUser(r chi.Router) {
 	write.With(auth.RateLimit(300, time.Hour)).Patch("/calendar/events/{id}", httpx.Handler(s.updateHandler))
 	write.With(auth.RateLimit(300, time.Hour)).Delete("/calendar/events/{id}", httpx.Handler(s.deleteHandler))
 	write.With(auth.RateLimit(60, time.Minute)).Put("/calendar/events/{id}/rsvp", httpx.Handler(s.rsvpHandler))
+	write.With(auth.RateLimit(30, time.Hour)).Post("/calendar/events/{id}/propose", httpx.Handler(s.proposeHandler))
+	write.Delete("/calendar/events/{id}/propose", httpx.Handler(s.withdrawProposalHandler))
+	write.With(auth.RateLimit(120, time.Hour)).Post("/calendar/events/{id}/proposals/{attendee}", httpx.Handler(s.answerProposalHandler))
+	r.With(auth.RateLimit(120, time.Minute)).Get("/calendar/search", httpx.Handler(s.searchHandler))
+
+	// Calendars (yours, your teams', shared with you) and their sharing.
+	r.Get("/calendar/calendars", httpx.Handler(s.listCalendarsHandler))
+	write.With(auth.RateLimit(30, time.Hour)).Post("/calendar/calendars", httpx.Handler(s.createCalendarHandler))
+	write.With(auth.RateLimit(120, time.Hour)).Patch("/calendar/calendars/{id}", httpx.Handler(s.updateCalendarHandler))
+	write.With(auth.RateLimit(300, time.Hour)).Put("/calendar/calendars/{id}/prefs", httpx.Handler(s.calendarPrefsHandler))
+	write.With(auth.RateLimit(30, time.Hour)).Delete("/calendar/calendars/{id}", httpx.Handler(s.deleteCalendarHandler))
+
+	// Rooms and resources.
+	r.With(auth.RateLimit(120, time.Minute)).Get("/calendar/rooms", httpx.Handler(s.listRoomsHandler))
+	write.With(auth.RateLimit(60, time.Hour)).Post("/calendar/rooms", httpx.Handler(s.createRoomHandler))
+	write.With(auth.RateLimit(120, time.Hour)).Patch("/calendar/rooms/{id}", httpx.Handler(s.updateRoomHandler))
+	write.With(auth.RateLimit(60, time.Hour)).Delete("/calendar/rooms/{id}", httpx.Handler(s.deleteRoomHandler))
 
 	r.With(auth.RateLimit(120, time.Minute)).Get("/calendar/people", httpx.Handler(s.peopleHandler))
 	r.With(auth.RateLimit(120, time.Minute)).Get("/calendar/freebusy", httpx.Handler(s.freeBusyHandler))
@@ -203,6 +231,7 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/calendar/bookings", httpx.Handler(s.listBookings))
 	r.Get("/calendar/bookings/{id}", httpx.Handler(s.getBooking))
 	write.With(auth.RateLimit(60, time.Hour)).Post("/calendar/bookings/{id}/cancel", httpx.Handler(s.hostCancelBooking))
+	write.With(auth.RateLimit(60, time.Hour)).Post("/calendar/bookings/{id}/reassign", httpx.Handler(s.reassignHandler))
 }
 
 // Start runs reminders, subscription refreshes and the outbox.
@@ -212,6 +241,9 @@ func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "calendar.outbox", 15*time.Second, s.drainOutbox)
 	go s.outboxLoop(ctx)
 	go jobs.Every(ctx, s.d.Pool, "calendar.prune", time.Hour, s.prune)
+	go jobs.Every(ctx, s.d.Pool, "calendar.booker_reminders", time.Minute, s.sendBookerReminders)
+	go jobs.Every(ctx, s.d.Pool, "calendar.focus", time.Minute, s.signalFocus)
+	go jobs.Every(ctx, s.d.Pool, "calendar.agenda", 5*time.Minute, s.sendAgendas)
 }
 
 // errAgentCredential answers a public calendar route called with an AI

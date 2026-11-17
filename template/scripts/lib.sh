@@ -103,7 +103,7 @@ stack_load() {
   while IFS='=' read -r k v; do
     case "$k" in
       PORT_BASE|API_PORT|WEB_PORT|PG_PORT|METRO_PORT|MINIO_PORT|REDIS_PORT|API_URL|WEB_URL|PUBLIC_URL|LAN_IP|\
-      PG_MODE|PG_BIN|DATABASE_URL|RUN_BACKEND|RUN_WEB|RUN_MOBILE|WEB_MODE|EXPO_HOST|STARTED_AT)
+      PG_MODE|PG_BIN|DATABASE_URL|RUN_BACKEND|RUN_WEB|RUN_MOBILE|WEB_MODE|WEB_PROD|EXPO_HOST|STARTED_AT)
         printf -v "$k" '%s' "$v" ;;
     esac
   done <"$f"
@@ -115,7 +115,7 @@ stack_load() {
 stack_discover() {
   API_PORT="" WEB_PORT="" PG_PORT="" METRO_PORT="" MINIO_PORT="" REDIS_PORT="" PORT_BASE=""
   API_URL="" WEB_URL="" PUBLIC_URL="" LAN_IP="" PG_MODE="" PG_BIN="" DATABASE_URL=""
-  RUN_BACKEND="" RUN_WEB="" RUN_MOBILE="" WEB_MODE="" EXPO_HOST="" STARTED_AT=""
+  RUN_BACKEND="" RUN_WEB="" RUN_MOBILE="" WEB_MODE="" WEB_PROD="" EXPO_HOST="" STARTED_AT=""
   stack_load || true
   local be="$ROOT/backend/.env" v
   if [[ -f "$be" ]]; then

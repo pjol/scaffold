@@ -1,8 +1,18 @@
 "use client";
 
-import { errorMessage, formatCalendarRange, useCalendarBookings, useCancelCalendarBooking, type CalendarBooking, type CalendarBookingWhen } from "@scaffoldapp/shared";
-import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, SegmentedControl, Skeleton, SkeletonGroup, Tab, Tabs, TabsList, TextArea, toast } from "@scaffoldapp/ui-web";
-import { CalendarClock, ChevronLeft, ListChecks, Mail, MapPin, Video } from "lucide-react";
+import {
+  errorMessage,
+  formatCalendarRange,
+  useCalendarBookings,
+  useCalendarLink,
+  useCancelCalendarBooking,
+  useReassignCalendarBooking,
+  type CalendarBooking,
+  type CalendarBookingWhen,
+} from "@scaffoldapp/shared";
+import { Badge, Button, Card, ConfirmDialog, Dialog, EmptyState, ErrorState, SegmentedControl, Skeleton, SkeletonGroup, Tab, Tabs, TabsList, TextArea, toast } from "@scaffoldapp/ui-web";
+import { CalendarClock, ChevronLeft, ListChecks, Mail, MapPin, Shuffle, Users, Video } from "lucide-react";
+import { AppAvatar } from "@/components/shell/AppAvatar";
 import Link from "next/link";
 import { useState } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
@@ -10,16 +20,63 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { useUrlState } from "@/lib/url-state";
 import { useCalendarZone } from "./parts";
 
+const ASSIGNMENT_LABEL = { round_robin: "Round robin", collective: "Collective", reassigned: "Handed over" } as const;
+
+/** Hand a round-robin booking to another host of its link (free then; the server checks). */
+function ReassignDialog({ b, onClose }: { b: CalendarBooking; onClose: () => void }) {
+  const link = useCalendarLink(b.link_id ?? undefined);
+  const reassign = useReassignCalendarBooking();
+  const hosts = (link.data?.hosts ?? []).filter((h) => h.active && h.user.id !== b.host.id);
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()} title="Hand to another host" info="They must be free then. The booker gets an updated invitation; both hosts are told." size="sm">
+      {link.isPending ? (
+        <Skeleton className="h-24" />
+      ) : link.isError ? (
+        <ErrorState compact title="Couldn't load the hosts" info={errorMessage(link.error)} onRetry={() => void link.refetch()} />
+      ) : hosts.length === 0 ? (
+        <EmptyState compact title="No other hosts" info="Add hosts to the link first." />
+      ) : (
+        <ul className="flex flex-col divide-y divide-border">
+          {hosts.map((h) => (
+            <li key={h.user.id} className="flex min-h-12 items-center gap-3 py-2">
+              <AppAvatar name={h.user.display_name} src={h.user.avatar_url} size="sm" />
+              <span className="min-w-0 flex-1 truncate type-body text-fg">{h.user.display_name}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={reassign.isPending && reassign.variables?.userId === h.user.id}
+                onClick={() =>
+                  reassign.mutate(
+                    { id: b.id, userId: h.user.id },
+                    { onSuccess: () => { toast.success(`Handed to ${h.user.display_name}`); onClose(); }, onError: (e) => toast.error(errorMessage(e, "Couldn't hand it over.")) },
+                  )
+                }
+              >
+                Hand over
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+}
+
 function BookingCard({ b, zone, onCancel }: { b: CalendarBooking; zone: string; onCancel: (b: CalendarBooking) => void }) {
   const [open, setOpen] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
   const range = formatCalendarRange({ starts_at: b.starts_at, ends_at: b.ends_at, all_day: false, start_date: null, end_date: null }, zone);
   return (
     <Card padding="compact" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="truncate type-title-sm text-fg">{b.role === "host" ? b.booker_name : `With ${b.host.display_name}`}</span>
-          <span className="type-label text-fg-muted">{b.title}</span>
+          <span className="type-label text-fg-muted">
+            {b.title}
+            {b.role === "host" && b.assignment ? ` · hosted by ${b.host.display_name}` : ""}
+          </span>
         </div>
+        {b.assignment && b.status === "confirmed" ? <Badge tone="info">{ASSIGNMENT_LABEL[b.assignment]}</Badge> : null}
         {b.status === "cancelled" ? <Badge tone="danger">{b.cancelled_by === "host" ? "You cancelled" : b.cancelled_by === "booker" ? (b.role === "host" ? "They cancelled" : "You cancelled") : "Cancelled"}</Badge> : null}
       </div>
       <div className="flex flex-col gap-1 type-label text-fg">
@@ -49,6 +106,12 @@ function BookingCard({ b, zone, onCancel }: { b: CalendarBooking; zone: string; 
           </span>
         ) : null}
       </div>
+      {b.guests.length > 0 ? (
+        <span className="flex items-center gap-2 type-label text-fg">
+          <Users className="size-4 shrink-0 text-fg-muted" aria-hidden />
+          <span className="min-w-0 break-words">Guests: {b.guests.join(", ")}</span>
+        </span>
+      ) : null}
       {b.status === "cancelled" && b.cancel_reason ? <p className="type-label text-fg-muted">“{b.cancel_reason}”</p> : null}
       {open && b.answers.length > 0 ? (
         <dl className="flex flex-col gap-2 rounded-md bg-sunken p-3">
@@ -71,12 +134,18 @@ function BookingCard({ b, zone, onCancel }: { b: CalendarBooking; zone: string; 
             <Link href={`/calendar/event/${b.event_id}`}>Open event</Link>
           </Button>
         ) : null}
+        {b.role === "host" && b.link_kind === "round_robin" && b.status === "confirmed" && new Date(b.starts_at).getTime() > Date.now() ? (
+          <Button variant="ghost" size="sm" leftIcon={<Shuffle />} onClick={() => setReassigning(true)}>
+            Hand over
+          </Button>
+        ) : null}
         {b.status === "confirmed" && new Date(b.ends_at).getTime() > Date.now() ? (
           <Button variant="danger-ghost" size="sm" onClick={() => onCancel(b)}>
             Cancel booking
           </Button>
         ) : null}
       </div>
+      {reassigning ? <ReassignDialog b={b} onClose={() => setReassigning(false)} /> : null}
     </Card>
   );
 }

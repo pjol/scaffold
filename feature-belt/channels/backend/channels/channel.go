@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -22,12 +23,15 @@ import (
 
 // ChannelPermissions are what the caller may do in one channel.
 type ChannelPermissions struct {
-	Post          bool `json:"post"` // member, channel not archived
-	Edit          bool `json:"edit"`
-	Archive       bool `json:"archive"`
-	RemoveMembers bool `json:"remove_members"`
-	MentionAll    bool `json:"mention_all"`
-	SetDefault    bool `json:"set_default"`
+	Post               bool `json:"post"`  // member, not archived, and posting allows it
+	Reply              bool `json:"reply"` // thread replies (open to members where posting is admins-only with replies_open)
+	ManageIntegrations bool `json:"manage_integrations"`
+	ManageRetention    bool `json:"manage_retention"`
+	Edit               bool `json:"edit"`
+	Archive            bool `json:"archive"`
+	RemoveMembers      bool `json:"remove_members"`
+	MentionAll         bool `json:"mention_all"`
+	SetDefault         bool `json:"set_default"`
 }
 
 // ChannelDetail is GET /channels/channels/{id}.
@@ -40,6 +44,10 @@ type ChannelDetail struct {
 	Member        bool               `json:"member"` // false: previewing a public channel
 	Role          string             `json:"role"`   // admin | member | ""
 	PinnedCount   int                `json:"pinned_count"`
+	Posting       string             `json:"posting"`        // everyone | admins
+	RepliesOpen   bool               `json:"replies_open"`   // posting = admins: members may reply in threads
+	RetentionDays *int               `json:"retention_days"` // this channel's override; null = the workspace's
+	BookmarkCount int                `json:"bookmark_count"`
 	Permissions   ChannelPermissions `json:"permissions"`
 	HiddenUserIDs []uuid.UUID        `json:"hidden_user_ids"` // a block either way: drop their live events
 }
@@ -97,9 +105,11 @@ func (s *Service) detail(ctx context.Context, me, id uuid.UUID) (*ChannelDetail,
 		}
 	}
 	if err := s.d.Pool.QueryRow(ctx, `
-		SELECT description, created_by, created_at,
-		       (SELECT count(*) FROM channel_messages m WHERE m.channel_id = c.id AND m.pinned_at IS NOT NULL AND m.deleted_at IS NULL)::int
-		FROM channels c WHERE c.id = $1`, id).Scan(&d.Description, &createdBy, &d.CreatedAt, &d.PinnedCount); err != nil {
+		SELECT description, created_by, created_at, posting, replies_open, retention_days,
+		       (SELECT count(*) FROM channel_messages m WHERE m.channel_id = c.id AND m.pinned_at IS NOT NULL AND m.deleted_at IS NULL)::int,
+		       (SELECT count(*) FROM channel_bookmarks b WHERE b.channel_id = c.id)::int
+		FROM channels c WHERE c.id = $1`, id).Scan(&d.Description, &createdBy, &d.CreatedAt, &d.Posting, &d.RepliesOpen, &d.RetentionDays,
+		&d.PinnedCount, &d.BookmarkCount); err != nil {
 		return nil, err
 	}
 	if createdBy != nil {
@@ -111,12 +121,19 @@ func (s *Service) detail(ctx context.Context, me, id uuid.UUID) (*ChannelDetail,
 			d.CreatedBy = &u
 		}
 	}
-	d.Permissions.Post = a.Member && !a.Archived
+	var announce bool
 	for act, dst := range map[Action]*bool{ActEdit: &d.Permissions.Edit, ActArchive: &d.Permissions.Archive,
-		ActRemoveMember: &d.Permissions.RemoveMembers, ActMentionAll: &d.Permissions.MentionAll} {
+		ActRemoveMember: &d.Permissions.RemoveMembers, ActMentionAll: &d.Permissions.MentionAll, ActPostAnnouncement: &announce,
+		ActManageIntegrations: &d.Permissions.ManageIntegrations, ActManageWorkspace: &d.Permissions.ManageRetention} {
 		if *dst, err = s.can(ctx, s.d.Pool, a, act); err != nil {
 			return nil, err
 		}
+	}
+	writable := a.Member && !a.Archived
+	d.Permissions.Post = writable && (a.Posting != "admins" || announce)
+	d.Permissions.Reply = writable && (a.Posting != "admins" || a.RepliesOpen || announce)
+	if a.direct() {
+		d.Permissions.ManageIntegrations, d.Permissions.ManageRetention = false, false
 	}
 	if a.Kind == kindPublic {
 		if d.Permissions.SetDefault, err = allowed(ctx, s.d.Pool, PermissionRequest{Action: ActSetDefault, OrgID: a.OrgID, UserID: me, OrgRole: a.OrgRole}); err != nil {
@@ -151,6 +168,11 @@ type updateReq struct {
 	ForumTags   *[]string `json:"forum_tags"`
 	Kind        *string   `json:"kind"`       // "private" converts a public channel (one way)
 	IsDefault   *bool     `json:"is_default"` // public channels: everyone joins it once
+	Posting     *string   `json:"posting"`    // everyone | admins (ActEdit)
+	RepliesOpen *bool     `json:"replies_open"`
+	// RetentionDays overrides the workspace's retention (ActManageWorkspace,
+	// audited); 0 = use the workspace's.
+	RetentionDays *int `json:"retention_days"`
 }
 
 // PATCH /channels/channels/{id}. Any member sets the topic; the rest needs
@@ -173,10 +195,11 @@ func (s *Service) updateChannel(w http.ResponseWriter, r *http.Request) error {
 	if err := a.requireWritable(); err != nil {
 		return err
 	}
-	if a.direct() && (req.Name != nil || req.Description != nil || req.ForumTags != nil || req.Kind != nil || req.IsDefault != nil) {
+	if a.direct() && (req.Name != nil || req.Description != nil || req.ForumTags != nil || req.Kind != nil || req.IsDefault != nil ||
+		req.Posting != nil || req.RepliesOpen != nil || req.RetentionDays != nil) {
 		return httpx.BadRequest("Direct messages only have a topic.")
 	}
-	if req.Name != nil || req.Description != nil || req.ForumTags != nil || req.Kind != nil {
+	if req.Name != nil || req.Description != nil || req.ForumTags != nil || req.Kind != nil || req.Posting != nil || req.RepliesOpen != nil {
 		if err := s.require(ctx, s.d.Pool, a, ActEdit, "Only the channel's admins and the "+orgs.Noun()+"'s admins can change that."); err != nil {
 			return err
 		}
@@ -251,8 +274,35 @@ func (s *Service) updateChannel(w http.ResponseWriter, r *http.Request) error {
 		}
 		add("is_default", *req.IsDefault)
 	}
+	if req.Posting != nil {
+		if *req.Posting != "everyone" && *req.Posting != "admins" {
+			return httpx.BadRequest("posting must be everyone or admins.")
+		}
+		add("posting", *req.Posting)
+	}
+	if req.RepliesOpen != nil {
+		add("replies_open", *req.RepliesOpen)
+	}
+	var retention *int
+	if req.RetentionDays != nil {
+		if *req.RetentionDays < 0 || *req.RetentionDays > 36500 {
+			return httpx.BadRequest("Keep messages for 1 to 36500 days, or 0 to follow the workspace.")
+		}
+		if err := s.require(ctx, s.d.Pool, a, ActManageWorkspace, "Only the "+orgs.Noun()+"'s owners and admins set message retention."); err != nil {
+			return err
+		}
+		if *req.RetentionDays > 0 {
+			retention = req.RetentionDays
+		}
+		add("retention_days", retention)
+	}
 	if len(sets) > 0 {
 		err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+			if req.RetentionDays != nil {
+				if err := auditLog(ctx, tx, me, "channels.channel.retention", "channels.channel", id.String(), map[string]any{"retention_days": retention}); err != nil {
+					return err
+				}
+			}
 			_, err := tx.Exec(ctx, `UPDATE channels SET `+strings.Join(sets, ", ")+`, updated_at = now() WHERE id = $1`, args...)
 			if db.IsUniqueViolation(err, "channels_name_uidx") {
 				return httpx.Conflict("That name is taken. Choose another.")
@@ -289,6 +339,26 @@ func (s *Service) updateChannel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.OK(w, d)
+	return nil
+}
+
+// optUUID is a JSON field that may be absent, null or a uuid.
+type optUUID struct {
+	Set bool
+	V   *uuid.UUID
+}
+
+func (o *optUUID) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if string(b) == "null" {
+		o.V = nil
+		return nil
+	}
+	var id uuid.UUID
+	if err := json.Unmarshal(b, &id); err != nil {
+		return httpx.BadRequest("Invalid id.")
+	}
+	o.V = &id
 	return nil
 }
 
@@ -653,9 +723,10 @@ func (s *Service) listMembers(w http.ResponseWriter, r *http.Request) error {
 // ---- the reader's own state ----------------------------------------------------------------
 
 type prefsReq struct {
-	Notify  *string `json:"notify"` // default | all | mentions | nothing
-	Muted   *bool   `json:"muted"`
-	Starred *bool   `json:"starred"`
+	Notify    *string `json:"notify"` // default | all | mentions | nothing
+	Muted     *bool   `json:"muted"`
+	Starred   *bool   `json:"starred"`
+	SectionID optUUID `json:"section_id"` // a sidebar section of yours; null moves it back
 }
 
 // PUT /channels/channels/{id}/prefs
@@ -684,11 +755,22 @@ func (s *Service) setPrefs(w http.ResponseWriter, r *http.Request) error {
 	if err := a.requireMember(); err != nil {
 		return err
 	}
+	if req.SectionID.V != nil {
+		var ok bool
+		if err := s.d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM channel_sidebar_sections WHERE id = $1 AND user_id = $2 AND org_id = $3)`,
+			*req.SectionID.V, me, a.OrgID).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return httpx.NotFound("Section not found.")
+		}
+	}
 	if _, err := s.d.Pool.Exec(ctx, `
 		UPDATE channel_members SET notify = COALESCE($3, notify), muted = COALESCE($4, muted),
 		  starred_at = CASE WHEN $5::boolean IS NULL THEN starred_at WHEN $5 THEN COALESCE(starred_at, now()) ELSE NULL END,
+		  section_id = CASE WHEN $6 THEN $7 ELSE section_id END,
 		  updated_at = now()
-		WHERE channel_id = $1 AND user_id = $2`, id, me, req.Notify, req.Muted, req.Starred); err != nil {
+		WHERE channel_id = $1 AND user_id = $2`, id, me, req.Notify, req.Muted, req.Starred, req.SectionID.Set, req.SectionID.V); err != nil {
 		return err
 	}
 	s.sidebarEvent(ctx, me, a.OrgID, id, "updated", nil, false)

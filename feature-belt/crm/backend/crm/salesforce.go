@@ -1521,7 +1521,7 @@ func (sf *salesforce) Search(ctx context.Context, q string, types []objectType, 
 		limit = 20
 	}
 	if len(types) == 0 {
-		types = objectTypes
+		types = platformTypes
 	}
 	fieldsOf := map[objectType]string{objCompany: "Id,Name,Website,LastModifiedDate", objContact: "Id,Name,Email,LastModifiedDate", objDeal: "Id,Name,StageName,LastModifiedDate"}
 	typeOf := map[string]objectType{"Account": objCompany, "Contact": objContact, "Opportunity": objDeal}

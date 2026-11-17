@@ -1,4 +1,20 @@
-import { docsTitle, errorMessage, orgsNoun, orgsNounA, useActiveOrg, useDocsChildren, useDocsCreatePage, useDocsRecent, useDocsSidebar, useDocsSources, type DocsPageSummary } from "@scaffoldapp/shared";
+import {
+  docsTitle,
+  errorMessage,
+  orgsNoun,
+  orgsNounA,
+  useActiveOrg,
+  useDocsChildren,
+  useDocsCreatePage,
+  useDocsImportRun,
+  useDocsRecent,
+  useDocsSidebar,
+  useDocsSources,
+  useDocsStartImport,
+  useDocsTemplates,
+  useDocsUseTemplate,
+  type DocsPageSummary,
+} from "@scaffoldapp/shared";
 import {
   Button,
   ConnectPrompt,
@@ -8,6 +24,7 @@ import {
   Field,
   IconButton,
   Input,
+  ListRow,
   Screen,
   SegmentedControl,
   Sheet,
@@ -18,9 +35,11 @@ import {
   useTheme,
 } from "@scaffoldapp/ui-native";
 import { Stack, router } from "expo-router";
-import { Building2, ChevronDown, ChevronRight, FileText, Plus, Table2 } from "lucide-react-native";
+import { Building2, ChevronDown, ChevronRight, FileText, FileUp, Plus, Users } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, RefreshControl, View } from "react-native";
+import { docsPickImportFile } from "./pageActions";
+import { PageIcon } from "./PageIcon";
 
 function TreeRow({ page, depth }: { page: DocsPageSummary; depth: number }) {
   const theme = useTheme();
@@ -46,7 +65,7 @@ function TreeRow({ page, depth }: { page: DocsPageSummary; depth: number }) {
           onPress={() => router.push(`/docs/${page.id}` as never)}
           style={({ pressed }) => ({ flex: 1, flexDirection: "row", alignItems: "center", gap: theme.space[2], minHeight: theme.tap.base, backgroundColor: pressed ? c.sunken : "transparent", borderRadius: theme.radius.sm })}
         >
-          {page.icon ? <Text role="body">{page.icon}</Text> : page.kind === "database" ? <Table2 size={18} color={c.textMuted} /> : <FileText size={18} color={c.textMuted} />}
+          <PageIcon icon={page.icon} custom={page.custom_icon} kind={page.kind} size="xs" />
           <Text role="body" numberOfLines={1} style={{ flex: 1 }}>
             {docsTitle(page.title)}
           </Text>
@@ -87,17 +106,51 @@ function Connected({ orgId }: { orgId: string }) {
   );
 }
 
-function Group({ title, pages }: { title: string; pages: DocsPageSummary[] }) {
+function Group({ title, pages, icon }: { title: string; pages: DocsPageSummary[]; icon?: boolean }) {
   const theme = useTheme();
   if (!pages.length) return null;
   return (
     <View style={{ gap: theme.space[1] }}>
-      <Text role="label" tone="muted" weight={600}>
-        {title}
-      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: theme.space[1] }}>
+        {icon ? <Users size={14} color={theme.colors.textMuted} /> : null}
+        <Text role="label" tone="muted" weight={600}>
+          {title}
+        </Text>
+      </View>
       {pages.map((p) => (
         <TreeRow key={p.id} page={p} depth={0} />
       ))}
+    </View>
+  );
+}
+
+/** An import's progress; opens the page when it's done. */
+function ImportStatus({ runId, orgId, onOpen }: { runId: string; orgId: string; onOpen: (id: string) => void }) {
+  const theme = useTheme();
+  const run = useDocsImportRun(runId, orgId);
+  if (run.isPending) return <SkeletonRow />;
+  if (run.isError) return <ErrorState title="Couldn't check the import." onRetry={() => void run.refetch()} />;
+  const r = run.data;
+  const pct = r.pages_total ? r.pages_done / r.pages_total : r.status === "done" ? 1 : 0.05;
+  return (
+    <View style={{ gap: theme.space[2] }} accessibilityLiveRegion="polite">
+      <Text role="body">{r.name}</Text>
+      <View style={{ height: 8, borderRadius: theme.radius.pill, backgroundColor: theme.colors.sunken, overflow: "hidden" }} accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round(pct * 100) }}>
+        <View style={{ width: `${Math.round(pct * 100)}%`, height: "100%", backgroundColor: r.status === "failed" ? theme.colors.danger : theme.colors.primary }} />
+      </View>
+      <Text role="caption" tone="muted">
+        {r.status === "running" ? `${r.pages_done} of ${r.pages_total || "…"} pages` : r.status === "done" ? `${r.pages_done} pages, ${r.files_done} files` : (r.message ?? "Stopped")}
+      </Text>
+      {r.errors.length ? (
+        <Text role="caption" tone="muted">
+          {r.errors.length} {r.errors.length === 1 ? "thing" : "things"} couldn&apos;t be imported: {r.errors.slice(0, 3).map((e) => `${e.path} (${e.message})`).join("; ")}
+        </Text>
+      ) : null}
+      {r.root_page_id && r.status !== "running" ? (
+        <Button size="md" onPress={() => onOpen(r.root_page_id!)}>
+          Open
+        </Button>
+      ) : null}
     </View>
   );
 }
@@ -112,6 +165,11 @@ export function DocsHomeScreen() {
   const [sheet, setSheet] = useState(false);
   const [title, setTitle] = useState("");
   const [shared, setShared] = useState<"private" | "shared">("private");
+  const [mode, setMode] = useState<"empty" | "template" | "import">("empty");
+  const [runId, setRunId] = useState<string | null>(null);
+  const templates = useDocsTemplates(org?.id, sheet && mode === "template");
+  const useTpl = useDocsUseTemplate(org?.id ?? "");
+  const starter = useDocsStartImport(org?.id ?? "");
   if (isPending) {
     return (
       <Screen edges={["bottom"]}>
@@ -160,6 +218,9 @@ export function DocsHomeScreen() {
         <View style={{ gap: theme.space[6] }}>
           {recent.data?.length ? <Group title="Recent" pages={recent.data.slice(0, 5)} /> : null}
           <Group title="Favorites" pages={sidebar.data.favorites} />
+          {(sidebar.data.teamspaces ?? []).map((t) => (
+            <Group key={t.team.id} title={t.team.name} pages={t.pages} icon />
+          ))}
           <Group title="Shared" pages={sidebar.data.shared} />
           <Group title="Private" pages={sidebar.data.private} />
           <Connected orgId={org.id} />
@@ -178,20 +239,33 @@ export function DocsHomeScreen() {
       )}
       <Sheet
         open={sheet}
-        onClose={() => setSheet(false)}
+        onClose={() => {
+          setSheet(false);
+          setRunId(null);
+        }}
         title="New page"
-        snapPoints={[360]}
-        footer={
-          <Button fullWidth loading={create.isPending} onPress={submit}>
-            Create
-          </Button>
-        }
+        snapPoints={mode === "empty" ? [400] : ["80%"]}
+        {...(mode === "empty"
+          ? {
+              footer: (
+                <Button fullWidth loading={create.isPending} onPress={submit}>
+                  Create
+                </Button>
+              ),
+            }
+          : {})}
       >
         <View style={{ gap: theme.space[4] }}>
-          <Field label="Title">
-            <Input value={title} onChangeText={setTitle} placeholder="Untitled" autoFocus maxLength={300} returnKeyType="done" onSubmitEditing={submit} />
-          </Field>
-          {sidebar.data?.can_create_shared ? (
+          <SegmentedControl<"empty" | "template" | "import">
+            value={mode}
+            onValueChange={setMode}
+            options={[
+              { value: "empty", label: "Empty" },
+              { value: "template", label: "Template" },
+              { value: "import", label: "Import" },
+            ]}
+          />
+          {sidebar.data?.can_create_shared && mode !== "import" ? (
             <Field label="Who can see it" info={`A private page is only yours until you share it. Everyone means every member of the ${orgsNoun()} can edit it.`}>
               <SegmentedControl<"private" | "shared">
                 value={shared}
@@ -203,6 +277,72 @@ export function DocsHomeScreen() {
               />
             </Field>
           ) : null}
+          {mode === "empty" ? (
+            <Field label="Title">
+              <Input value={title} onChangeText={setTitle} placeholder="Untitled" autoFocus maxLength={300} returnKeyType="done" onSubmitEditing={submit} />
+            </Field>
+          ) : mode === "template" ? (
+            templates.isPending ? (
+              <SkeletonRow />
+            ) : templates.isError ? (
+              <ErrorState title="Couldn't load templates." onRetry={() => void templates.refetch()} />
+            ) : (
+              <View>
+                {[...templates.data.workspace, ...templates.data.builtin].map((t) => (
+                  <ListRow
+                    key={t.id}
+                    title={t.name}
+                    {...(t.info ? { info: t.info } : {})}
+                    leading={<PageIcon icon={t.icon} custom={t.custom_icon} kind={t.kind} size="sm" />}
+                    disabled={useTpl.isPending}
+                    onPress={() =>
+                      useTpl.mutate(
+                        { templateId: t.id, ...(shared === "shared" ? { shared: true } : {}) },
+                        {
+                          onSuccess: (p) => {
+                            setSheet(false);
+                            router.push(`/docs/${p.id}` as never);
+                          },
+                          onError: (e) => toast.error(errorMessage(e, "Couldn't make a page from that template.")),
+                        },
+                      )
+                    }
+                  />
+                ))}
+              </View>
+            )
+          ) : runId ? (
+            <ImportStatus
+              runId={runId}
+              orgId={org.id}
+              onOpen={(id) => {
+                setSheet(false);
+                setRunId(null);
+                router.push(`/docs/${id}` as never);
+              }}
+            />
+          ) : (
+            <View style={{ gap: theme.space[2] }}>
+              <Text role="body" tone="muted">
+                Markdown, text, HTML, Word (.docx), CSV, or a .zip of them: a Notion, Confluence or Markdown export.
+              </Text>
+              <Button
+                size="md"
+                leftIcon={FileUp}
+                loading={starter.isPending}
+                onPress={async () => {
+                  const f = await docsPickImportFile();
+                  if (!f) return;
+                  starter.mutate(
+                    { file: { uri: f.uri, name: f.name, mimeType: f.mimeType }, name: f.name },
+                    { onSuccess: (r) => setRunId(r.id), onError: (e) => toast.error(errorMessage(e, "Couldn't import that file.")) },
+                  );
+                }}
+              >
+                Choose a file
+              </Button>
+            </View>
+          )}
         </View>
       </Sheet>
     </Screen>

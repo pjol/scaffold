@@ -364,6 +364,12 @@ func (s *Service) saveLater(w http.ResponseWriter, r *http.Request) error {
 		  updated_at = now()`, me, id, req.Done); err != nil {
 		return err
 	}
+	if req.Done { // done with it: its reminder is done too
+		if _, err := s.d.Pool.Exec(ctx, `UPDATE channel_reminders SET completed_at = now(), updated_at = now()
+			WHERE user_id = $1 AND message_id = $2 AND completed_at IS NULL`, me, id); err != nil {
+			return err
+		}
+	}
 	s.sidebarEvent(ctx, me, m.OrgID, m.ChannelID, "later", nil, false)
 	httpx.NoContent(w)
 	return nil
@@ -385,6 +391,9 @@ func (s *Service) unsaveLater(w http.ResponseWriter, r *http.Request) error {
 	if err != nil && !db.IsNoRows(err) {
 		return err
 	}
+	if _, derr := s.d.Pool.Exec(ctx, `DELETE FROM channel_reminders WHERE user_id = $1 AND message_id = $2 AND completed_at IS NULL`, me, id); derr != nil {
+		return derr
+	}
 	if err == nil {
 		s.sidebarEvent(ctx, me, orgID, channelID, "later", nil, false)
 	}
@@ -392,12 +401,20 @@ func (s *Service) unsaveLater(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// LaterItem is a saved message.
+// LaterItem is a saved message, with its open reminder if it has one.
 type LaterItem struct {
-	Message     *Message   `json:"message"`
-	Channel     BriefChan  `json:"channel"`
-	SavedAt     time.Time  `json:"saved_at"`
-	CompletedAt *time.Time `json:"completed_at"`
+	Message     *Message     `json:"message"`
+	Channel     BriefChan    `json:"channel"`
+	SavedAt     time.Time    `json:"saved_at"`
+	CompletedAt *time.Time   `json:"completed_at"`
+	Reminder    *ReminderRef `json:"reminder"`
+}
+
+// ReminderRef is a Later item's reminder.
+type ReminderRef struct {
+	ID       uuid.UUID  `json:"id"`
+	RemindAt time.Time  `json:"remind_at"`
+	FiredAt  *time.Time `json:"fired_at"`
 }
 
 // GET /channels/orgs/{orgID}/later?state=open|done&cursor= — newest saved first.
@@ -412,8 +429,13 @@ func (s *Service) later(w http.ResponseWriter, r *http.Request) error {
 	}
 	done := r.URL.Query().Get("state") == "done"
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT sv.message_id, m.channel_id, sv.created_at, sv.completed_at
+		SELECT sv.message_id, m.channel_id, sv.created_at, sv.completed_at, rm.id, rm.remind_at, rm.fired_at
 		FROM channel_saved sv JOIN channel_messages m ON m.id = sv.message_id JOIN channels c ON c.id = m.channel_id
+		LEFT JOIN LATERAL (
+		    SELECT r.id, r.remind_at, r.fired_at FROM channel_reminders r
+		    WHERE r.user_id = sv.user_id AND r.message_id = sv.message_id AND r.completed_at IS NULL
+		    ORDER BY r.remind_at LIMIT 1
+		) rm ON true
 		WHERE sv.user_id = $1 AND c.org_id = $2 AND (sv.completed_at IS NOT NULL) = $3 AND `+readableSQL+`
 		  AND ($4::timestamptz IS NULL OR (sv.created_at, sv.message_id) < ($4, $5))
 		ORDER BY sv.created_at DESC, sv.message_id DESC LIMIT $6`, me, m.OrgID, done, nullTime(c.T), c.ID, p.Limit+1)
@@ -424,10 +446,13 @@ func (s *Service) later(w http.ResponseWriter, r *http.Request) error {
 		msg, channel uuid.UUID
 		saved        time.Time
 		completed    *time.Time
+		remID        *uuid.UUID
+		remAt        *time.Time
+		remFired     *time.Time
 	}
 	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var x row
-		err := r.Scan(&x.msg, &x.channel, &x.saved, &x.completed)
+		err := r.Scan(&x.msg, &x.channel, &x.saved, &x.completed, &x.remID, &x.remAt, &x.remFired)
 		return x, err
 	})
 	if err != nil {
@@ -448,7 +473,11 @@ func (s *Service) later(w http.ResponseWriter, r *http.Request) error {
 	items := make([]LaterItem, 0, len(list))
 	for _, x := range list {
 		if msg, ok := msgs[x.msg]; ok {
-			items = append(items, LaterItem{Message: msg, Channel: refs[x.channel], SavedAt: x.saved, CompletedAt: x.completed})
+			item := LaterItem{Message: msg, Channel: refs[x.channel], SavedAt: x.saved, CompletedAt: x.completed}
+			if x.remID != nil {
+				item.Reminder = &ReminderRef{ID: *x.remID, RemindAt: *x.remAt, FiredAt: x.remFired}
+			}
+			items = append(items, item)
 		}
 	}
 	httpx.OK(w, httpx.NewPage(items, p.Limit, func(i LaterItem) any { return cursor{i.SavedAt, i.Message.ID} }))

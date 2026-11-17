@@ -6,6 +6,7 @@ import { useMemo } from "react";
 import { View } from "react-native";
 import { BlockList } from "./Blocks";
 import { DatabaseView, ValueView } from "./DatabaseView";
+import { CoverArt, PageIcon } from "./PageIcon";
 
 /** p/[token]?page=<id>: a published page, read-only, without an account. */
 export function PublicPageScreen() {
@@ -35,7 +36,12 @@ export function PublicPageScreen() {
   return (
     <Screen edges={["bottom"]} scroll>
       <Stack.Screen options={{ title: docsTitle(d.page.title) }} />
-      {d.page.icon ? <Text role="hero">{d.page.icon}</Text> : null}
+      {d.page.cover ? (
+        <View style={{ marginHorizontal: -theme.space[4], marginTop: -theme.space[4] }}>
+          <CoverArt cover={d.page.cover} token={token} height={120} />
+        </View>
+      ) : null}
+      <PageIcon icon={d.page.icon} custom={d.page.custom_icon} kind={d.page.kind} size="lg" token={token} fallback={false} />
       <Text role="display">{docsTitle(d.page.title)}</Text>
       {d.page.is_row && d.database ? (
         <View style={{ gap: theme.space[1] }}>
@@ -57,7 +63,7 @@ export function PublicPageScreen() {
       {d.children.length ? (
         <View>
           {d.children.map((c) => (
-            <ListRow key={c.id} title={`${c.icon ? `${c.icon} ` : ""}${docsTitle(c.title)}`} onPress={() => router.push(`/p/${token}?page=${c.id}` as never)} />
+            <ListRow key={c.id} title={docsTitle(c.title)} leading={<PageIcon icon={c.icon} custom={c.custom_icon} kind={c.kind} size="sm" token={token} />} onPress={() => router.push(`/p/${token}?page=${c.id}` as never)} />
           ))}
         </View>
       ) : null}

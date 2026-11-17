@@ -1,5 +1,5 @@
-import { callsPeopleNames, formatCallsDuration, formatCallsWhen, useCallsCall, useCallsTimeZone, useMe } from "@scaffoldapp/shared";
-import { Avatar, Badge, Button, Card, EmptyState, ErrorState, ListGroup, ListRow, Screen, Skeleton, SkeletonRow, Text, Title, useTheme } from "@scaffoldapp/ui-native";
+import { CALLS_RECORDING_STATUS_LABELS, callsPeopleNames, formatCallsDuration, formatCallsTime, formatCallsWhen, useCallsCall, useCallsRecording, useCallsTimeZone, useCallsTranscript, useMe, type CallsRecording } from "@scaffoldapp/shared";
+import { Avatar, Badge, Button, Card, EmptyState, ErrorState, FilePreview, ListGroup, ListRow, Screen, Skeleton, SkeletonRow, Spinner, Text, Title, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { Video } from "lucide-react-native";
 import { Share, View } from "react-native";
@@ -68,6 +68,14 @@ export function CallDetailScreen() {
           <Fact label="Host" value={c.host.display_name} />
         </View>
       </Card>
+      {c.records && c.records.recordings.length > 0 ? (
+        <ListGroup title="Recordings">
+          {c.records.recordings.map((r) => (
+            <RecordingRow key={r.id} r={r} />
+          ))}
+        </ListGroup>
+      ) : null}
+      {c.records && c.records.transcript_lines > 0 ? <Transcript sessionId={c.id} /> : null}
       <ListGroup title={`People (${c.participants.length})`}>
         {c.participants.map((p) => (
           <ListRow
@@ -96,5 +104,35 @@ function Fact({ label, value }: { label: string; value: string }) {
       <Text tone="muted">{label}</Text>
       <Text>{value}</Text>
     </View>
+  );
+}
+
+/** A recording: ready ones open in the player (the in-app browser). */
+function RecordingRow({ r }: { r: CallsRecording }) {
+  const zone = useCallsTimeZone();
+  const one = useCallsRecording(r.status === "ready" ? r.id : null);
+  const label = `${formatCallsTime(r.started_at, zone)}${r.duration_seconds ? ` · ${formatCallsDuration(r.duration_seconds)}` : ""}`;
+  if (r.status !== "ready") return <ListRow title={label} trailing={<Badge>{CALLS_RECORDING_STATUS_LABELS[r.status]}</Badge>} />;
+  if (!one.data?.url) return <ListRow title={label} trailing={one.isError ? <Text tone="muted">Unavailable</Text> : <Spinner />} />;
+  return <FilePreview compact url={one.data.url} name={`${r.meeting_title || "Recording"} ${label}.mp4`} mime="video/mp4" size={r.size_bytes} downloadUrl={one.data.download_url} />;
+}
+
+function Transcript({ sessionId }: { sessionId: string }) {
+  const theme = useTheme();
+  const t = useCallsTranscript(sessionId);
+  const zone = useCallsTimeZone();
+  if (t.isPending) return <SkeletonRow />;
+  if (t.isError) return <ErrorState title="Couldn't load the transcript" info={t.error.message} onRetry={() => void t.refetch()} retrying={t.isFetching} />;
+  return (
+    <ListGroup title="Transcript">
+      <View style={{ gap: theme.space[3], paddingVertical: theme.space[4] }}>
+        {t.data.lines.map((l, i) => (
+          <View key={i} style={{ gap: theme.space[0.5] }}>
+            <Text role="label" weight={600}>{`${l.name || "Guest"} · ${formatCallsTime(l.spoken_at, zone)}`}</Text>
+            <Text>{l.text}</Text>
+          </View>
+        ))}
+      </View>
+    </ListGroup>
   );
 }

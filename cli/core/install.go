@@ -52,6 +52,7 @@ func (p *Project) copyTree(src, root, dstRel string, dryRun bool, overwrite bool
 		if !p.wants(rel) {
 			return nil, nil
 		}
+		rel = p.physical(rel)
 		if err := p.copyFile(src, filepath.Join(root, rel), r, dryRun, overwrite); err != nil {
 			return nil, err
 		}
@@ -82,6 +83,7 @@ func (p *Project) copyTree(src, root, dstRel string, dryRun bool, overwrite bool
 		if d.IsDir() {
 			return nil
 		}
+		rel = p.physical(rel)
 		if err := p.copyFile(path, filepath.Join(root, rel), r, dryRun, overwrite); err != nil {
 			return err
 		}
@@ -134,6 +136,7 @@ func (p *Project) applyWire(root string, w Wire, dryRun bool) (bool, error) {
 	if !p.wants(rel) {
 		return false, nil
 	}
+	rel = p.physical(rel)
 	path := filepath.Join(root, rel)
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -1,7 +1,10 @@
 import {
   CRM_ACTIVITY_LABEL,
   CRM_KIND,
+  CRM_LEAD_STATUS_LABEL,
   CRM_LIFECYCLE_LABEL,
+  CRM_TICKET_CHANNEL_LABEL,
+  CRM_TICKET_PRIORITY_LABEL,
   CRM_TYPE_LABEL,
   crmBodySegments,
   crmDuration,
@@ -12,7 +15,9 @@ import {
   crmUpcoming,
   errorMessage,
   topic,
+  useCrmMailAccounts,
   useCrmMoveStage,
+  useCrmMoveTicket,
   useCrmPipelines,
   useCrmRecord,
   useCrmTimeline,
@@ -24,6 +29,7 @@ import {
   type CrmObjectType,
   type CrmRecord,
   type CrmRecordRef,
+  type CrmTicket,
 } from "@scaffoldapp/shared";
 import {
   Badge,
@@ -51,7 +57,9 @@ import { Linking, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { LogSheet } from "./LogSheet";
 import { TaskRow } from "./TasksScreen";
-import { CrmGate, FactRow, StageBadge, TYPE_ICON, dayLabel, recordPath } from "./parts";
+import { ComposeSheet } from "./ComposeSheet";
+import { DealCommerce } from "./DealCommerce";
+import { CrmGate, FactRow, PriorityBadge, StageBadge, TYPE_ICON, dayLabel, recordPath } from "./parts";
 
 type Pane = "activity" | "about" | "related";
 
@@ -76,6 +84,9 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
   const [pane, setPane] = useState<Pane>("activity");
   const [logging, setLogging] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const accounts = useCrmMailAccounts(orgId);
+  const canSend = (accounts.data?.accounts ?? []).some((a) => a.can_send);
 
   if (rec.isPending) {
     return (
@@ -150,6 +161,12 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
               {record.domain ? <Text tone="muted">{record.domain}</Text> : null}
               {record.industry ? <Text tone="muted">{record.industry}</Text> : null}
             </>
+          ) : record.type === "ticket" ? (
+            <>
+              <StageBadge name={record.stage.name} outcome={record.stage.outcome} />
+              <PriorityBadge priority={record.priority} />
+              <Text tone="muted">Opened {dayLabel(record.created_at)}</Text>
+            </>
           ) : (
             <>
               <Text weight={600} tabular>
@@ -171,7 +188,11 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
             Call
           </Button>
         ) : null}
-        {email ? (
+        {email && record.type === "contact" && !external && canSend && canComment ? (
+          <Button variant="secondary" size="md" leftIcon={Mail} onPress={() => setComposing(true)}>
+            Email
+          </Button>
+        ) : email ? (
           <Button variant="secondary" size="md" leftIcon={Mail} onPress={() => void Linking.openURL(`mailto:${email}`)}>
             Email
           </Button>
@@ -181,9 +202,9 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
             Log
           </Button>
         ) : null}
-        {record.type === "deal" && canEdit ? (
+        {(record.type === "deal" || record.type === "ticket") && canEdit ? (
           <Button variant="secondary" size="md" leftIcon={ArrowRightLeft} onPress={() => setMoving(true)}>
-            Stage
+            {record.type === "ticket" ? "Status" : "Stage"}
           </Button>
         ) : null}
         {external?.url ? (
@@ -231,12 +252,17 @@ function RecordView({ type, id, orgId }: { type: CrmObjectType; id: string; orgI
       ) : pane === "about" ? (
         <About record={record} />
       ) : (
-        <Related associations={associations} type={type} />
+        <View style={{ gap: s[4] }}>
+          {record.type === "deal" && !external ? <DealCommerce deal={record} /> : null}
+          <Related associations={associations} type={type} />
+        </View>
       )}
       {canComment ? (
         <LogSheet type={type} id={id} alsoOn={external ? [] : suggestions(record, associations)} open={logging} onClose={() => setLogging(false)} platform={external ? sourcePlatformName(external.provider) : null} />
       ) : null}
       {record.type === "deal" ? <StageSheet deal={record} orgId={orgId} open={moving} onClose={() => setMoving(false)} /> : null}
+      {record.type === "ticket" ? <TicketStatusSheet ticket={record} orgId={orgId} open={moving} onClose={() => setMoving(false)} /> : null}
+      {record.type === "contact" && composing ? <ComposeSheet orgId={orgId} contact={record} open={composing} onClose={() => setComposing(false)} /> : null}
     </Screen>
   );
 }
@@ -334,6 +360,8 @@ function About({ record }: { record: CrmRecord }) {
     add("Phone", record.phones.join(", "));
     add("Job title", record.job_title);
     add("Lifecycle stage", CRM_LIFECYCLE_LABEL[record.lifecycle_stage]);
+    add("Lead status", record.lead_status ? CRM_LEAD_STATUS_LABEL[record.lead_status] : null);
+    add("Lead score", record.source ? null : String(record.score));
     add("City", record.city);
     add("Country", record.country);
   } else if (record.type === "company") {
@@ -343,6 +371,16 @@ function About({ record }: { record: CrmRecord }) {
     add("Phone", record.phone);
     add("City", record.city);
     add("Country", record.country);
+  } else if (record.type === "ticket") {
+    add("Status", record.stage.name);
+    add("Priority", CRM_TICKET_PRIORITY_LABEL[record.priority]);
+    add("Category", record.category);
+    add("Source", CRM_TICKET_CHANNEL_LABEL[record.channel]);
+    add("First response", record.first_response_seconds != null ? crmDuration(record.first_response_seconds) : "Waiting");
+    add("Resolution", record.resolution_seconds != null ? crmDuration(record.resolution_seconds) : null);
+    add("Company", record.company?.name);
+    add("Deal", record.deal?.name);
+    add("Description", record.description);
   } else {
     add("Amount", record.amount !== null ? crmMoney(record.amount, record.currency) : null);
     add("Weighted", record.weighted_amount !== null ? crmMoney(record.weighted_amount, record.currency) : null);
@@ -376,7 +414,8 @@ function Related({ associations: a, type }: { associations: CrmAssociations; typ
   const groups: { t: CrmObjectType; title: string; rows: { id: string; name: string; detail: string }[] }[] = [];
   if (type !== "company") groups.push({ t: "company", title: "Companies", rows: a.companies.map((c) => ({ id: c.id, name: c.name, detail: c.is_primary ? "Primary" : (c.domain ?? "") })) });
   if (type !== "contact") groups.push({ t: "contact", title: "Contacts", rows: a.contacts.map((c) => ({ id: c.id, name: c.name, detail: c.job_title })) });
-  if (type !== "deal") groups.push({ t: "deal", title: "Deals", rows: a.deals.map((d) => ({ id: d.id, name: d.name, detail: d.amount !== null ? crmMoney(d.amount, d.currency) : d.stage_name })) });
+  if (type !== "deal") groups.push({ t: "deal", title: type === "ticket" ? "Deal" : "Deals", rows: a.deals.map((d) => ({ id: d.id, name: d.name, detail: d.amount !== null ? crmMoney(d.amount, d.currency) : d.stage_name })) });
+  if (type !== "ticket" && a.tickets) groups.push({ t: "ticket", title: "Tickets", rows: a.tickets.map((t) => ({ id: t.id, name: t.name, detail: t.stage_name })) });
   return (
     <View style={{ gap: theme.space[4] }}>
       {groups.map((g) => {
@@ -434,6 +473,41 @@ export function StageSheet({ deal, orgId, open, onClose }: { deal: CrmDeal; orgI
                     onClose();
                   },
                   onError: (e) => toast.error(errorMessage(e, "Couldn't move the deal.")),
+                },
+              );
+            }}
+          />
+        ))}
+      </ListGroup>
+    </Sheet>
+  );
+}
+
+/** Move a ticket to another status of its pipeline (edit needed). */
+export function TicketStatusSheet({ ticket, orgId, open, onClose }: { ticket: CrmTicket; orgId: string; open: boolean; onClose: () => void }) {
+  const theme = useTheme();
+  const pipelines = useCrmPipelines(orgId);
+  const move = useCrmMoveTicket(orgId);
+  const pl = pipelines.data?.find((p) => p.id === ticket.pipeline_id);
+  return (
+    <Sheet open={open} onClose={onClose} title={`Status of ${ticket.name}`} snapPoints={["60%"]}>
+      <ListGroup>
+        {(pl?.stages ?? []).map((st) => (
+          <ListRow
+            key={st.id}
+            title={st.outcome === "closed" ? `${st.name} · closed` : st.name}
+            trailing={st.id === ticket.stage.id ? <Check size={20} color={theme.colors.primaryStrong} /> : undefined}
+            disabled={move.isPending}
+            onPress={() => {
+              if (st.id === ticket.stage.id) return onClose();
+              move.mutate(
+                { ticketId: ticket.id, stageId: st.id },
+                {
+                  onSuccess: () => {
+                    toast.success(`Moved to ${st.name}`);
+                    onClose();
+                  },
+                  onError: (e) => toast.error(errorMessage(e, "Couldn't move the ticket.")),
                 },
               );
             }}

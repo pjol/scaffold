@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,30 +33,38 @@ type attendeeInput struct {
 // change; any time field means the full set is sent (all_day, timezone and
 // starts_at/ends_at or start_date/end_date).
 type eventInput struct {
-	Title           *string          `json:"title"`
-	Description     *string          `json:"description"`
-	Location        *string          `json:"location"`
-	StartsAt        *time.Time       `json:"starts_at"`
-	EndsAt          *time.Time       `json:"ends_at"`
-	StartDate       *string          `json:"start_date"`
-	EndDate         *string          `json:"end_date"`
-	Timezone        *string          `json:"timezone"`
-	AllDay          *bool            `json:"all_day"`
-	Recurrence      json.RawMessage  `json:"recurrence"`
-	Visibility      *string          `json:"visibility"`
-	ShowAs          *string          `json:"show_as"`
-	Color           *string          `json:"color"`
-	Reminders       *[]int           `json:"reminders"`
-	Attendees       *[]attendeeInput `json:"attendees"`
-	Conference      *string          `json:"conference"`
+	Title       *string          `json:"title"`
+	Description *string          `json:"description"`
+	Location    *string          `json:"location"`
+	StartsAt    *time.Time       `json:"starts_at"`
+	EndsAt      *time.Time       `json:"ends_at"`
+	StartDate   *string          `json:"start_date"`
+	EndDate     *string          `json:"end_date"`
+	Timezone    *string          `json:"timezone"`
+	AllDay      *bool            `json:"all_day"`
+	Recurrence  json.RawMessage  `json:"recurrence"`
+	Visibility  *string          `json:"visibility"`
+	ShowAs      *string          `json:"show_as"`
+	Color       *string          `json:"color"`
+	Reminders   *[]int           `json:"reminders"`
+	Attendees   *[]attendeeInput `json:"attendees"`
+	Conference  *string          `json:"conference"`
 	// ConferenceProvider picks the meeting provider for "add" (a
 	// ConferenceOption id; "" = the app's own), ConferenceConnectionID its
 	// account.
-	ConferenceProvider     string     `json:"conference_provider"`
-	ConferenceConnectionID string     `json:"conference_connection_id"`
-	SendUpdates     *bool            `json:"send_updates"`
-	Scope           string           `json:"scope"`
-	OccurrenceStart *time.Time       `json:"occurrence_start"`
+	ConferenceProvider     string `json:"conference_provider"`
+	ConferenceConnectionID string `json:"conference_connection_id"`
+	SendUpdates            *bool  `json:"send_updates"`
+	// CalendarID puts the event on one of the caller's calendars, or one
+	// they may make changes to (default: their primary).
+	CalendarID *uuid.UUID `json:"calendar_id"`
+	// EventType (create only): default, out_of_office or focus.
+	EventType       *string      `json:"event_type"`
+	AutoDecline     *string      `json:"auto_decline"`
+	DeclineMessage  *string      `json:"decline_message"`
+	RoomIDs         *[]uuid.UUID `json:"room_ids"`
+	Scope           string       `json:"scope"`
+	OccurrenceStart *time.Time   `json:"occurrence_start"`
 }
 
 type resolvedAttendee struct {
@@ -86,6 +95,10 @@ type patch struct {
 	conference                   string
 	confProvider, confConn       string
 	sendUpdates                  bool
+	calendarID                   *uuid.UUID
+	eventType                    string
+	autoDecline, declineMessage  *string
+	roomIDs                      *[]uuid.UUID
 }
 
 func (s *Service) parsePatch(ctx context.Context, callerID uuid.UUID, in eventInput, create bool, defaultTZ string, allowExternal bool) (patch, error) {
@@ -164,6 +177,37 @@ func (s *Service) parsePatch(ctx context.Context, callerID uuid.UUID, in eventIn
 			return p, err
 		}
 		p.attendees = &list
+	}
+	p.calendarID, p.roomIDs = in.CalendarID, in.RoomIDs
+	if in.RoomIDs != nil && len(*in.RoomIDs) > 10 {
+		return p, httpx.BadRequest("Up to 10 rooms and resources per event.")
+	}
+	p.eventType = TypeDefault
+	if in.EventType != nil {
+		if !create {
+			return p, httpx.BadRequest("An event's type can't change; make a new one.")
+		}
+		switch *in.EventType {
+		case TypeDefault, TypeOutOfOffice, TypeFocus:
+			p.eventType = *in.EventType
+		default:
+			return p, httpx.BadRequest("event_type must be default, out_of_office or focus.")
+		}
+	}
+	if in.AutoDecline != nil {
+		switch *in.AutoDecline {
+		case DeclineNone, DeclineNew, DeclineAll:
+			p.autoDecline = in.AutoDecline
+		default:
+			return p, httpx.BadRequest("auto_decline must be none, new or all.")
+		}
+	}
+	if in.DeclineMessage != nil {
+		m, ok := cleanText(*in.DeclineMessage, maxDeclineMessage)
+		if !ok {
+			return p, httpx.BadRequest("The decline message is up to 500 characters.")
+		}
+		p.declineMessage = &m
 	}
 	if in.Conference != nil {
 		switch *in.Conference {
@@ -333,9 +377,20 @@ type ExternalBusy struct {
 }
 
 func (s *Service) listRange(ctx context.Context, userID uuid.UUID, from, to time.Time) (RangeResponse, error) {
+	if _, err := s.ensurePrimary(ctx, userID, uuid.Nil); err != nil {
+		return RangeResponse{}, err
+	}
 	items, err := s.occurrences(ctx, s.d.Pool, userID, from, to, maxOccurrences+1)
 	if err != nil {
 		return RangeResponse{}, err
+	}
+	shared, err := s.sharedOccurrences(ctx, userID, from, to, maxOccurrences+1)
+	if err != nil {
+		return RangeResponse{}, err
+	}
+	if len(shared) > 0 {
+		items = append(items, shared...)
+		sortOccurrences(items)
 	}
 	out := RangeResponse{Items: items, Busy: []ExternalBusy{}}
 	if len(items) > maxOccurrences {
@@ -423,10 +478,30 @@ func (s *Service) createHandler(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// createEvent puts a new event on the caller's calendar and invites its
-// guests. allowExternal=false (agent tools) refuses email guests.
+// createEvent puts a new event on the caller's calendar (or one they may
+// make changes to) and invites its guests. allowExternal=false (agent
+// tools) refuses email guests.
 func (s *Service) createEvent(ctx context.Context, caller *auth.Identity, in eventInput, allowExternal bool) (EventDetail, error) {
-	st, err := s.loadSettings(ctx, s.d.Pool, caller.UserID)
+	block := in.EventType != nil && (*in.EventType == TypeOutOfOffice || *in.EventType == TypeFocus)
+	if block && (in.Title == nil || strings.TrimSpace(*in.Title) == "") {
+		t := "Out of office"
+		if *in.EventType == TypeFocus {
+			t = "Focus time"
+		}
+		in.Title = &t
+	}
+	organizer := caller.UserID
+	var calID uuid.UUID
+	var err error
+	if in.CalendarID != nil {
+		calID = *in.CalendarID
+		if organizer, err = s.targetCalendar(ctx, caller.UserID, calID); err != nil {
+			return EventDetail{}, err
+		}
+	} else if calID, err = s.ensurePrimary(ctx, caller.UserID, uuid.Nil); err != nil {
+		return EventDetail{}, err
+	}
+	st, err := s.loadSettings(ctx, s.d.Pool, organizer)
 	if err != nil {
 		return EventDetail{}, err
 	}
@@ -436,15 +511,32 @@ func (s *Service) createEvent(ctx context.Context, caller *auth.Identity, in eve
 	}
 	loc := zoneOr(p.tz, time.UTC)
 	e := eventRow{
-		ID: uuid.New(), OwnerID: caller.UserID, Title: *p.title, StartsAt: p.start, EndsAt: p.end, Timezone: p.tz,
+		ID: uuid.New(), OwnerID: organizer, Title: *p.title, StartsAt: p.start, EndsAt: p.end, Timezone: p.tz,
 		AllDay: p.allDay, Status: "confirmed", Visibility: "busy", ShowAs: "busy", Color: "primary",
+		CalendarID: &calID, EventType: p.eventType, AutoDecline: DeclineNone,
 	}
 	if p.allDay {
 		e.ShowAs = "free"
 	} else {
 		e.Reminders = toInt32(st.DefaultReminders)
 	}
+	if block {
+		// Colleagues see that someone is away or focusing (the title), and
+		// it blocks their availability even all day.
+		e.ShowAs, e.Visibility, e.AutoDecline, e.Reminders = "busy", "details", DeclineNew, nil
+		if p.eventType == TypeOutOfOffice {
+			e.Color = "neutral"
+		} else {
+			e.Color = "info"
+		}
+		if (p.attendees != nil && len(*p.attendees) > 0) || p.conference == "add" || (p.roomIDs != nil && len(*p.roomIDs) > 0) {
+			return EventDetail{}, httpx.BadRequest("Out of office and focus time are just for you: no guests, rooms or video call.")
+		}
+	}
 	applyContent(&e, p)
+	if !block {
+		e.AutoDecline, e.DeclineMessage = DeclineNone, ""
+	}
 	if p.rec != nil {
 		rule, err := p.rec.toRule(e.StartsAt, loc)
 		if err != nil {
@@ -473,6 +565,9 @@ func (s *Service) createEvent(ctx context.Context, caller *auth.Identity, in eve
 		if err != nil {
 			return err
 		}
+		if err := s.syncEventRooms(ctx, tx, caller.UserID, e.ID, p.roomIDs); err != nil {
+			return err
+		}
 		notifyUsers = platformIDs(added)
 		return s.notifyAttendees(ctx, tx, e, nil, added, inviteNew)
 	})
@@ -483,7 +578,10 @@ func (s *Service) createEvent(ctx context.Context, caller *auth.Identity, in eve
 		return EventDetail{}, err
 	}
 	kickOutbox()
-	s.changed(ctx, "events", append(notifyUsers, caller.UserID)...)
+	if block {
+		s.afterBlockSaved(ctx, organizer, e.ID)
+	}
+	s.changed(ctx, "events", append(append(notifyUsers, caller.UserID, organizer), s.calendarWatchers(ctx, &calID)...)...)
 	res, err := s.resolve(ctx, s.d.Pool, caller.UserID, e.ID, nil)
 	if err != nil {
 		return EventDetail{}, err
@@ -521,6 +619,18 @@ func applyContent(e *eventRow, p patch) {
 	if p.reminders != nil {
 		e.Reminders = toInt32(*p.reminders)
 	}
+	if p.calendarID != nil {
+		id := *p.calendarID
+		e.CalendarID = &id
+	}
+	if e.EventType != "" && e.EventType != TypeDefault {
+		if p.autoDecline != nil {
+			e.AutoDecline = *p.autoDecline
+		}
+		if p.declineMessage != nil {
+			e.DeclineMessage = *p.declineMessage
+		}
+	}
 }
 
 // meaningful reports whether attendees should hear about a change.
@@ -541,14 +651,26 @@ func insertEvent(ctx context.Context, q db.Querier, e eventRow) error {
 	if e.Reminders == nil {
 		e.Reminders = []int32{}
 	}
+	if e.EventType == "" {
+		e.EventType = "default"
+	}
+	if e.AutoDecline == "" {
+		e.AutoDecline = "none"
+	}
+	// No calendar given: an exception goes with its series, anything else
+	// on the owner's primary calendar (NULL until they have one; it is
+	// filed when the primary is made).
 	_, err := q.Exec(ctx, `
 		INSERT INTO calendar_events (id, owner_id, recurring_event_id, original_start, title, description, location,
 		  conference_url, conference_id, starts_at, ends_at, timezone, all_day, rrule, series_until, status,
-		  visibility, show_as, color, reminders, sequence)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+		  visibility, show_as, color, reminders, sequence, calendar_id, event_type, auto_decline, decline_message)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+		  COALESCE($22::uuid, (SELECT m.calendar_id FROM calendar_events m WHERE m.id = $3::uuid),
+		    (SELECT c.id FROM calendar_calendars c WHERE c.owner_id = $2 AND c.is_primary)),
+		  $23, $24, $25)`,
 		e.ID, e.OwnerID, e.RecurringEventID, e.OriginalStart, e.Title, e.Description, e.Location,
 		e.ConferenceURL, e.ConferenceID, e.StartsAt, e.EndsAt, e.Timezone, e.AllDay, e.RRule, e.SeriesUntil, e.Status,
-		e.Visibility, e.ShowAs, e.Color, e.Reminders, e.Sequence)
+		e.Visibility, e.ShowAs, e.Color, e.Reminders, e.Sequence, e.CalendarID, e.EventType, e.AutoDecline, e.DeclineMessage)
 	return err
 }
 
@@ -561,11 +683,12 @@ func saveEvent(ctx context.Context, q db.Querier, e eventRow) error {
 		UPDATE calendar_events SET title = $2, description = $3, location = $4, conference_url = $5, conference_id = $6,
 		  starts_at = $7, ends_at = $8, timezone = $9, all_day = $10, rrule = $11, series_until = $12, status = $13,
 		  visibility = $14, show_as = $15, color = $16, reminders = $17, original_start = $18,
-		  recurring_event_id = $19, sequence = sequence + 1, updated_at = now()
+		  recurring_event_id = $19, calendar_id = COALESCE($20, calendar_id), auto_decline = COALESCE(NULLIF($21, ''), auto_decline),
+		  decline_message = $22, sequence = sequence + 1, updated_at = now()
 		WHERE id = $1`,
 		e.ID, e.Title, e.Description, e.Location, e.ConferenceURL, e.ConferenceID, e.StartsAt, e.EndsAt, e.Timezone,
 		e.AllDay, e.RRule, e.SeriesUntil, e.Status, e.Visibility, e.ShowAs, e.Color, e.Reminders, e.OriginalStart,
-		e.RecurringEventID)
+		e.RecurringEventID, e.CalendarID, e.AutoDecline, e.DeclineMessage)
 	return err
 }
 
@@ -604,6 +727,11 @@ func (s *Service) insertAttendees(ctx context.Context, q db.Querier, eventID uui
 			return nil, err
 		}
 		out = append(out, fa)
+	}
+	if response == ResponseNeedsAction && len(out) > 0 {
+		if err := s.autoDeclineNew(ctx, q, eventID, out); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -683,7 +811,7 @@ func (s *Service) updateEvent(ctx context.Context, caller *auth.Identity, id uui
 	if err != nil {
 		return EventDetail{}, err
 	}
-	if !r.acc.isOwner {
+	if !r.acc.canEdit() {
 		return EventDetail{}, errNotOrganizer
 	}
 	recurring := r.base.RRule != nil
@@ -697,9 +825,25 @@ func (s *Service) updateEvent(ctx context.Context, caller *auth.Identity, id uui
 	if err != nil {
 		return EventDetail{}, err
 	}
-	if scope == ScopeThis && (p.recSet || p.attendees != nil) {
-		return EventDetail{}, httpx.BadRequest("Repeat and guests apply to the whole series: choose all events, or this and following.")
+	if scope == ScopeThis && (p.recSet || p.attendees != nil || p.roomIDs != nil || p.calendarID != nil) {
+		return EventDetail{}, httpx.BadRequest("Repeat, guests, rooms and calendar apply to the whole series: choose all events, or this and following.")
 	}
+	if p.calendarID != nil && r.base.CalendarID != nil && *p.calendarID == *r.base.CalendarID {
+		p.calendarID = nil
+	}
+	if p.calendarID != nil {
+		org, err := s.targetCalendar(ctx, caller.UserID, *p.calendarID)
+		if err != nil {
+			return EventDetail{}, err
+		}
+		if org != r.base.OwnerID {
+			return EventDetail{}, httpx.BadRequest("Events move only between calendars with the same organizer.")
+		}
+	}
+	if r.base.EventType != TypeDefault && (p.attendees != nil && len(*p.attendees) > 0 || p.conference == "add" || p.roomIDs != nil && len(*p.roomIDs) > 0) {
+		return EventDetail{}, httpx.BadRequest("Out of office and focus time are just for you: no guests, rooms or video call.")
+	}
+	oldCalendar := r.base.CalendarID
 	if scope == ScopeThis && p.timeSet && (p.allDay != r.base.AllDay || p.tz != r.base.Timezone) {
 		return EventDetail{}, httpx.BadRequest("One occurrence can't change between all-day and timed, or change time zone.")
 	}
@@ -761,6 +905,17 @@ func (s *Service) updateEvent(ctx context.Context, caller *auth.Identity, id uui
 		if err != nil {
 			return err
 		}
+		roomsOn := rr.base.ID
+		if recurring && scope == ScopeFollowing && ch.id != rr.base.ID {
+			roomsOn = ch.id
+			if _, err := tx.Exec(ctx, `INSERT INTO calendar_event_rooms (event_id, room_id, added_by)
+				SELECT $1, room_id, added_by FROM calendar_event_rooms WHERE event_id = $2 ON CONFLICT DO NOTHING`, ch.id, rr.base.ID); err != nil {
+				return err
+			}
+		}
+		if err := s.syncEventRooms(ctx, tx, caller.UserID, roomsOn, p.roomIDs); err != nil {
+			return err
+		}
 		result.id, result.occ, result.users, result.confSync = ch.id, ch.occ, ch.users, ch.confSync
 		return nil
 	})
@@ -777,7 +932,11 @@ func (s *Service) updateEvent(ctx context.Context, caller *auth.Identity, id uui
 	for _, row := range result.confSync {
 		s.syncConference(ctx, row)
 	}
-	s.changed(ctx, "events", append(result.users, caller.UserID)...)
+	if p.autoDecline != nil {
+		s.afterBlockSaved(ctx, r.base.OwnerID, result.id)
+	}
+	watchers := append(s.calendarWatchers(ctx, oldCalendar), s.calendarWatchers(ctx, p.calendarID)...)
+	s.changed(ctx, "events", append(append(result.users, caller.UserID, r.base.OwnerID), watchers...)...)
 	if bookingID != nil {
 		s.changed(ctx, "bookings", caller.UserID)
 	}
@@ -1252,7 +1411,7 @@ func (s *Service) deleteEvent(ctx context.Context, caller *auth.Identity, id uui
 	if err != nil {
 		return err
 	}
-	if !r.acc.isOwner {
+	if !r.acc.canEdit() {
 		return httpx.Forbidden("Only the organizer can delete this event. Decline it instead.")
 	}
 	var bookingID uuid.UUID
@@ -1358,7 +1517,7 @@ func (s *Service) deleteEvent(ctx context.Context, caller *auth.Identity, id uui
 		return err
 	}
 	kickOutbox()
-	s.changed(ctx, "events", append(users, caller.UserID)...)
+	s.changed(ctx, "events", append(append(users, caller.UserID, r.base.OwnerID), s.calendarWatchers(ctx, r.base.CalendarID)...)...)
 	return nil
 }
 
@@ -1371,13 +1530,22 @@ func (s *Service) rsvpHandler(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var in struct {
-		Response string `json:"response"`
+		Response string  `json:"response"`
+		Note     *string `json:"note"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
 	}
 	if in.Response != ResponseAccepted && in.Response != ResponseTentative && in.Response != ResponseDeclined {
 		return httpx.BadRequest("response must be accepted, tentative or declined.")
+	}
+	var note *string
+	if in.Note != nil {
+		n, ok := cleanText(*in.Note, 500)
+		if !ok {
+			return httpx.BadRequest("Notes are up to 500 characters.")
+		}
+		note = &n
 	}
 	res, err := s.resolve(r.Context(), s.d.Pool, id.UserID, eid, nil)
 	if err != nil {
@@ -1386,7 +1554,7 @@ func (s *Service) rsvpHandler(w http.ResponseWriter, r *http.Request) error {
 	if res.acc.attendee == nil {
 		return httpx.BadRequest("You're the organizer of this event.")
 	}
-	if err := s.setResponse(r.Context(), res.base, res.acc.attendee.ID, res.acc.attendee.Response, in.Response, id.DisplayName); err != nil {
+	if err := s.setResponse(r.Context(), res.base, res.acc.attendee.ID, res.acc.attendee.Response, in.Response, id.DisplayName, note); err != nil {
 		return err
 	}
 	s.changed(r.Context(), "events", id.UserID, res.base.OwnerID)
@@ -1406,21 +1574,30 @@ var responseVerb = map[string]string{ResponseAccepted: "accepted", ResponseTenta
 
 // setResponse records an attendee's reply (series-wide) and tells the
 // organizer when it changed.
-func (s *Service) setResponse(ctx context.Context, base eventRow, attendeeID uuid.UUID, prev, next, who string) error {
+// note (nil: unchanged) is the guest's message to the organizer.
+func (s *Service) setResponse(ctx context.Context, base eventRow, attendeeID uuid.UUID, prev, next, who string, note *string) error {
 	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE calendar_attendees SET response = $2, responded_at = now() WHERE id = $1`, attendeeID, next); err != nil {
+		var prevNote string
+		if err := tx.QueryRow(ctx, `SELECT note FROM calendar_attendees WHERE id = $1 FOR UPDATE`, attendeeID).Scan(&prevNote); err != nil {
 			return err
 		}
-		if prev == next {
+		if _, err := tx.Exec(ctx, `UPDATE calendar_attendees SET response = $2, responded_at = now(), note = COALESCE($3, note), auto_declined = false
+			WHERE id = $1`, attendeeID, next, note); err != nil {
+			return err
+		}
+		if prev == next && (note == nil || *note == prevNote) {
 			return nil
 		}
 		if who == "" {
 			who = "A guest"
 		}
+		body := s.whenFor(ctx, tx, base.OwnerID, base.StartsAt, base.EndsAt, base.AllDay, base.loc())
+		if note != nil && *note != "" {
+			body += " · “" + *note + "”"
+		}
 		return enqueueNotify(ctx, tx, notify.Notification{
 			UserID: base.OwnerID, Kind: NotifyResponse, Title: who + " " + responseVerb[next] + " " + base.Title,
-			Body: s.whenFor(ctx, tx, base.OwnerID, base.StartsAt, base.EndsAt, base.AllDay, base.loc()),
-			Link: eventLink(base.ID), Data: map[string]any{"event_id": base.ID},
+			Body: body, Link: eventLink(base.ID), Data: map[string]any{"event_id": base.ID},
 		})
 	})
 }

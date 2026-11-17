@@ -29,6 +29,9 @@ type mdOptions struct {
 	// pageLink is the app path of a linked page (default /docs/<id>;
 	// connected pages link to /docs/c/<connection>/<id>).
 	pageLink func(id string) string
+	// synced returns a synced copy's original content (document order) when
+	// the reader can open it; ok false renders a note instead.
+	synced func(sourceID string) (blocks []Block, ok bool)
 }
 
 // blocksToMarkdown renders blocks (document order, as loadBlocks returns
@@ -64,11 +67,27 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 			line := func(prefix, body string) {
 				out.WriteString(indent + prefix + strings.ReplaceAll(body, "\n", "\n"+indent+strings.Repeat(" ", utf8.RuneCountInString(prefix))) + "\n")
 			}
+			fileSrc := func() string {
+				if u := propString(b.Props, "url"); u != "" && propString(b.Props, "file_id") == "" {
+					return u
+				}
+				return "/docs/files/" + propString(b.Props, "file_id")
+			}
 			childIndent := indent + "  "
+			nested := true // render children after the block's own line
 			switch b.Type {
-			case "heading_1", "heading_2", "heading_3":
+			case "heading_1", "heading_2", "heading_3", "heading_4":
 				n, _ := strconv.Atoi(b.Type[len(b.Type)-1:])
-				line(strings.Repeat("#", n)+" ", text)
+				if propBool(b.Props, "toggleable") {
+					out.WriteString(indent + "<details>\n" + indent + "<summary>" + strings.Repeat("#", n) + " " + strings.ReplaceAll(text, "\n", " ") + "</summary>\n\n")
+					if depth < 32 {
+						render(kids[b.ID], indent, depth+1)
+					}
+					out.WriteString(indent + "</details>\n")
+					nested = false
+				} else {
+					line(strings.Repeat("#", n)+" ", text)
+				}
 			case "bulleted_list":
 				line("- ", text)
 			case "numbered_list":
@@ -86,7 +105,7 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 					render(kids[b.ID], indent, depth+1)
 				}
 				out.WriteString(indent + "</details>\n")
-				childIndent = ""
+				nested = false
 			case "quote":
 				line("> ", strings.ReplaceAll(text, "\n", "\n> "))
 			case "callout":
@@ -102,31 +121,48 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 					fence += "`"
 				}
 				out.WriteString(indent + fence + lang + "\n" + code + "\n" + indent + fence + "\n")
+				if c := plainOf(spansOf(b.Props, "caption")); c != "" && opt.withIDs {
+					out.WriteString(indent + "(Caption: " + mdEscaper.Replace(c) + ")\n")
+				}
+			case "equation":
+				out.WriteString(indent + "$$\n" + indent + strings.ReplaceAll(propString(b.Props, "expression"), "\n", "\n"+indent) + "\n" + indent + "$$\n")
 			case "divider":
 				out.WriteString(indent + "---\n")
+			case "table_of_contents":
+				out.WriteString(indent + "[TOC]\n")
+			case "breadcrumb":
+				out.WriteString(indent + "<!-- breadcrumb -->\n")
 			case "image":
-				alt := plainOf(spansOf(b.Props, "caption"))
+				alt := propString(b.Props, "alt")
+				if alt == "" {
+					alt = plainOf(spansOf(b.Props, "caption"))
+				}
 				if alt == "" {
 					alt = propString(b.Props, "name")
 				}
-				src := "/docs/files/" + propString(b.Props, "file_id")
-				if u := propString(b.Props, "url"); u != "" && propString(b.Props, "file_id") == "" {
-					src = u
+				out.WriteString(indent + "![" + mdEscaper.Replace(alt) + "](" + fileSrc() + ")\n")
+			case "file", "video", "audio", "pdf":
+				label := propString(b.Props, "name")
+				if label == "" {
+					label = DisplayBlockType(b.Type)
 				}
-				out.WriteString(indent + "![" + mdEscaper.Replace(alt) + "](" + src + ")\n")
-			case "file":
-				src := "/docs/files/" + propString(b.Props, "file_id")
-				if u := propString(b.Props, "url"); u != "" && propString(b.Props, "file_id") == "" {
-					src = u
+				prefix := ""
+				if opt.withIDs && b.Type != "file" {
+					prefix = DisplayBlockType(b.Type) + ": "
 				}
-				out.WriteString(indent + "[" + mdEscaper.Replace(propString(b.Props, "name")) + "](" + src + ")\n")
+				out.WriteString(indent + prefix + "[" + mdEscaper.Replace(label) + "](" + fileSrc() + ")\n")
 			case "bookmark":
 				title := propString(b.Props, "title")
 				if title == "" {
 					title = propString(b.Props, "url")
 				}
 				out.WriteString(indent + "[" + mdEscaper.Replace(title) + "](" + propString(b.Props, "url") + ")\n")
-			case "page", "database":
+				if d := propString(b.Props, "description"); d != "" && opt.withIDs {
+					out.WriteString(indent + "(" + mdEscaper.Replace(d) + ")\n")
+				}
+			case "embed":
+				out.WriteString(indent + propString(b.Props, "url") + "\n")
+			case "page", "database", "link_to_page":
 				key := "page_id"
 				if b.Type == "database" {
 					key = "database_id"
@@ -175,10 +211,52 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 						out.WriteString(indent + "| " + strings.Join(seps, " | ") + " |\n")
 					}
 				}
+			case "button":
+				out.WriteString(indent + "[" + mdEscaper.Replace(propString(b.Props, "label")) + "] (button)\n")
+			case "column_list":
+				out.WriteString(indent + "<columns>\n")
+				for _, col := range kids[b.ID] {
+					attr := ""
+					if w, ok := col.Props["width"].(float64); ok && w > 0 {
+						attr = ` width="` + strconv.FormatFloat(w, 'f', -1, 64) + `"`
+					}
+					if opt.withIDs {
+						out.WriteString(indent + "<!-- block:" + col.ID.String() + " -->\n")
+					}
+					out.WriteString(indent + "<column" + attr + ">\n\n")
+					if depth < 32 {
+						render(kids[col.ID], indent, depth+2)
+					}
+					out.WriteString("\n" + indent + "</column>\n")
+				}
+				out.WriteString(indent + "</columns>\n")
+				nested = false
+			case "column":
+				nested = true // a stray column renders its content
+				childIndent = indent
+			case "synced_block":
+				childIndent, nested = indent, true
+				if src := propString(b.Props, "source_id"); src != "" {
+					nested = false
+					var content []Block
+					ok := false
+					if opt.synced != nil {
+						content, ok = opt.synced(src)
+					}
+					if !ok {
+						out.WriteString(indent + "(Synced content you can't open.)\n")
+					} else if len(content) > 0 && depth < 32 {
+						inner := opt
+						inner.synced = nil // a copy shows its original's blocks, never another copy
+						for _, l := range strings.Split(strings.TrimRight(blocksToMarkdown(content, inner), "\n"), "\n") {
+							out.WriteString(indent + l + "\n")
+						}
+					}
+				}
 			default:
 				line("", text)
 			}
-			if b.Type != "toggle" && depth < 32 {
+			if nested && depth < 32 {
 				render(kids[b.ID], childIndent, depth+1)
 			}
 			// Blank line between blocks, except inside runs of list items.
@@ -189,6 +267,20 @@ func blocksToMarkdown(blocks []Block, opt mdOptions) string {
 	}
 	render(roots, "", 0)
 	return strings.TrimRight(out.String(), "\n") + "\n"
+}
+
+// DisplayBlockType names a block type in copy ("heading_2" → "Heading 2").
+func DisplayBlockType(t string) string {
+	switch t {
+	case "pdf":
+		return "PDF"
+	case "to_do":
+		return "To-do"
+	case "table_of_contents":
+		return "Table of contents"
+	}
+	s := strings.ReplaceAll(t, "_", " ")
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func isListType(t string) bool {
@@ -269,7 +361,7 @@ func (s *Service) pageAsMarkdown(ctx context.Context, me uuid.UUID, p *Page, wit
 		out.WriteString("\n")
 	}
 	if len(detail.Blocks) > 0 {
-		out.WriteString(blocksToMarkdown(detail.Blocks, mdOptions{names: namesFor(detail.Refs), withIDs: withIDs}))
+		out.WriteString(blocksToMarkdown(detail.Blocks, mdOptions{names: namesFor(detail.Refs), withIDs: withIDs, synced: s.syncedResolver(ctx, me, p.ID)}))
 	}
 	if p.Kind == "database" {
 		rows, err := s.queryRows(ctx, rowQuery{db: p, limit: 200, me: me, agent: access.ViaAgent(ctx)})
@@ -309,53 +401,7 @@ func rowsTable(schema []Property, rows *RowPage) string {
 
 // formatValue renders a row value as text (option names, people's names).
 func formatValue(p Property, v any, refs Refs) string {
-	if v == nil {
-		return ""
-	}
-	optName := func(id string) string {
-		for _, o := range p.Options {
-			if o.ID == id {
-				return o.Name
-			}
-		}
-		return ""
-	}
-	switch p.Type {
-	case "select", "status":
-		s, _ := v.(string)
-		return optName(s)
-	case "multi_select", "person":
-		list, _ := v.([]any)
-		var names []string
-		for _, x := range list {
-			s, _ := x.(string)
-			if p.Type == "person" {
-				if u, ok := refs.Users[s]; ok {
-					names = append(names, u.Name)
-				}
-			} else if n := optName(s); n != "" {
-				names = append(names, n)
-			}
-		}
-		return strings.Join(names, ", ")
-	case "checkbox":
-		if b, _ := v.(bool); b {
-			return "Yes"
-		}
-		return "No"
-	case "number":
-		f, _ := v.(float64)
-		return strconv.FormatFloat(f, 'f', -1, 64)
-	case "date":
-		m, _ := v.(map[string]any)
-		start, _ := m["start"].(string)
-		if end, _ := m["end"].(string); end != "" {
-			return start + " → " + end
-		}
-		return start
-	}
-	s, _ := v.(string)
-	return s
+	return valueText(p, v, refs) // every property type (csv.go)
 }
 
 // ---- import ----------------------------------------------------------------------
@@ -400,18 +446,56 @@ func startsWithEmoji(s string) (string, string, bool) {
 	return icon, strings.TrimLeft(rest, " "), true
 }
 
-// markdownToBlocks parses Markdown into blocks: headings, lists (nested by
-// indentation), to-dos, quotes and callouts (a quote opening with an emoji),
-// fenced code, dividers, tables, <details> toggles, images and lone links as
-// bookmarks, and paragraphs (consecutive lines keep their line breaks).
+// markdownToBlocks parses Markdown into blocks: headings 1–4, lists (nested
+// by indentation), to-dos, quotes and callouts (a quote opening with an
+// emoji), fenced code, $$ equations, dividers, tables, <details> toggles
+// (a "# …" summary makes a toggle heading), <columns>/<column> layouts,
+// [TOC], <!-- breadcrumb -->, images as bookmarks, a lone link to an
+// allowlisted provider as an embed, and paragraphs (consecutive lines keep
+// their line breaks).
 func markdownToBlocks(md string, limit int) []*mdBlock {
 	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
-	out, _ := parseLines(lines, 0, limit, 0)
+	var out []*mdBlock
+	for i := 0; i < len(lines) && countBlocks(out) < limit; {
+		part, next, _ := parseLines(lines, i, limit-countBlocks(out), 0)
+		out = append(out, part...)
+		if next <= i {
+			next = i + 1
+		}
+		i = next
+		if i < len(lines) && closerOf(lines[i]) != "" {
+			i++ // a stray closing tag at the top level
+		}
+	}
 	return out
 }
 
-func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
-	var out []*mdBlock
+var (
+	summaryRE     = regexp.MustCompile(`^\s*<summary>(.*)</summary>\s*$`)
+	summaryHeadRE = regexp.MustCompile(`^(#{1,4})\s+(.*)$`)
+	columnRE      = regexp.MustCompile(`^\s*<column(?:\s+width="([0-9.]{1,6})")?\s*>\s*$`)
+	tocRE         = regexp.MustCompile(`(?i)^(\[toc\]|\[\[_toc_\]\]|<!--\s*toc\s*-->)$`)
+	breadcrumbRE  = regexp.MustCompile(`(?i)^<!--\s*breadcrumb\s*-->$`)
+	bareURLRE     = regexp.MustCompile(`^<?(https?://[^\s<>]+)>?$`)
+)
+
+// closerOf names the closing tag a line is ("" for none): nested parses stop
+// at it and the opener consumes it.
+func closerOf(line string) string {
+	switch strings.TrimSpace(line) {
+	case "</details>":
+		return "details"
+	case "</column>":
+		return "column"
+	case "</columns>":
+		return "columns"
+	}
+	return ""
+}
+
+// parseLines parses blocks from start until a closing tag (left unconsumed:
+// next points at it) or the end.
+func parseLines(lines []string, start, limit, depth int) (out []*mdBlock, next int, closer string) {
 	type stackItem struct {
 		indent int
 		block  *mdBlock
@@ -419,7 +503,7 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 	var stack []stackItem
 	count := 0
 	add := func(b *mdBlock, indent int, listy bool) {
-		count++
+		count += 1 + countBlocks(b.children)
 		if !listy {
 			stack = nil
 			out = append(out, b)
@@ -436,6 +520,17 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 		}
 		stack = append(stack, stackItem{indent, b})
 	}
+	// nestedUntil parses children until the closer and consumes it.
+	nestedUntil := func(i int, want string) ([]*mdBlock, int) {
+		if depth >= maxBlockDepth-1 {
+			return nil, i
+		}
+		kids, j, c := parseLines(lines, i, limit-count, depth+1)
+		if c == want {
+			j++
+		}
+		return kids, j
+	}
 	i := start
 	for i < len(lines) && count < limit {
 		raw := lines[i]
@@ -444,23 +539,59 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 		switch {
 		case trimmed == "":
 			i++
-		case trimmed == "</details>":
-			return out, i + 1
+		case closerOf(trimmed) != "":
+			return out, i, closerOf(trimmed)
 		case strings.HasPrefix(trimmed, "<details"):
 			summary := ""
 			i++
 			if i < len(lines) {
-				if m := regexp.MustCompile(`^\s*<summary>(.*)</summary>\s*$`).FindStringSubmatch(lines[i]); m != nil {
+				if m := summaryRE.FindStringSubmatch(lines[i]); m != nil {
 					summary = m[1]
 					i++
 				}
 			}
-			b := textBlock("toggle", summary)
-			if depth < maxBlockDepth-1 {
-				b.children, i = parseLines(lines, i, limit-count, depth+1)
-				count += countBlocks(b.children)
+			var b *mdBlock
+			if h := summaryHeadRE.FindStringSubmatch(strings.TrimSpace(summary)); h != nil {
+				b = textBlock("heading_"+strconv.Itoa(len(h[1])), h[2])
+				b.props["toggleable"] = true
+			} else {
+				b = textBlock("toggle", summary)
 			}
+			b.children, i = nestedUntil(i, "details")
 			add(b, 0, false)
+		case trimmed == "<columns>":
+			list := &mdBlock{typ: "column_list", props: map[string]any{}}
+			i++
+			for i < len(lines) && count < limit {
+				t := strings.TrimSpace(lines[i])
+				if t == "" {
+					i++
+					continue
+				}
+				if t == "</columns>" {
+					i++
+					break
+				}
+				m := columnRE.FindStringSubmatch(t)
+				if m == nil || len(list.children) >= maxColumns {
+					break // not a column: the list ends here
+				}
+				col := &mdBlock{typ: "column", props: map[string]any{}}
+				if w, err := strconv.ParseFloat(m[1], 64); err == nil && w > 0 && w <= 1 {
+					col.props["width"] = w
+				}
+				col.children, i = nestedUntil(i+1, "column")
+				list.children = append(list.children, col)
+			}
+			switch len(list.children) {
+			case 0:
+			case 1: // one column is just its content
+				for _, k := range list.children[0].children {
+					add(k, 0, false)
+				}
+			default:
+				add(list, 0, false)
+			}
 		case fenceRE.MatchString(line):
 			m := fenceRE.FindStringSubmatch(line)
 			fence := m[2]
@@ -476,12 +607,30 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 				lang = "plain"
 			}
 			add(&mdBlock{typ: "code", props: map[string]any{"code": strings.Join(code, "\n"), "language": lang}}, 0, false)
+		case trimmed == "$$":
+			var expr []string
+			i++
+			for i < len(lines) && strings.TrimSpace(lines[i]) != "$$" {
+				expr = append(expr, strings.TrimSpace(lines[i]))
+				i++
+			}
+			i++
+			add(&mdBlock{typ: "equation", props: map[string]any{"expression": strings.Join(expr, "\n")}}, 0, false)
+		case len(trimmed) > 4 && strings.HasPrefix(trimmed, "$$") && strings.HasSuffix(trimmed, "$$"):
+			add(&mdBlock{typ: "equation", props: map[string]any{"expression": strings.TrimSpace(trimmed[2 : len(trimmed)-2])}}, 0, false)
+			i++
+		case tocRE.MatchString(trimmed):
+			add(&mdBlock{typ: "table_of_contents", props: map[string]any{}}, 0, false)
+			i++
+		case breadcrumbRE.MatchString(trimmed):
+			add(&mdBlock{typ: "breadcrumb", props: map[string]any{}}, 0, false)
+			i++
 		case dividerRE.MatchString(line) && !listRE.MatchString(line+" x"):
 			add(&mdBlock{typ: "divider", props: map[string]any{}}, 0, false)
 			i++
 		case headingRE.MatchString(trimmed):
 			m := headingRE.FindStringSubmatch(trimmed)
-			level := min(len(m[1]), 3)
+			level := min(len(m[1]), 4)
 			add(textBlock("heading_"+strconv.Itoa(level), strings.TrimRight(m[2], "# ")), 0, false)
 			i++
 		case listRE.MatchString(line):
@@ -532,6 +681,9 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 				add(textBlock("paragraph", m[1]), 0, false)
 			}
 			i++
+		case bareURLRE.MatchString(trimmed) && embedLine(trimmed) != nil:
+			add(embedLine(trimmed), 0, false)
+			i++
 		default:
 			var para []string
 			for i < len(lines) {
@@ -546,13 +698,28 @@ func parseLines(lines []string, start, limit, depth int) ([]*mdBlock, int) {
 			add(textBlock("paragraph", strings.Join(para, "\n")), 0, false)
 		}
 	}
-	return out, i
+	return out, i, ""
+}
+
+// embedLine is an embed block for a line that is only a link to an
+// allowlisted provider.
+func embedLine(t string) *mdBlock {
+	m := bareURLRE.FindStringSubmatch(t)
+	if m == nil {
+		return nil
+	}
+	e, ok := embedFor(m[1])
+	if !ok {
+		return nil
+	}
+	return &mdBlock{typ: "embed", props: map[string]any{"url": e.URL}}
 }
 
 func startsBlock(l string, lines []string, i int) bool {
 	t := strings.TrimSpace(l)
 	return headingRE.MatchString(t) || listRE.MatchString(l) || fenceRE.MatchString(l) || strings.HasPrefix(t, ">") ||
-		strings.HasPrefix(t, "<details") || t == "</details>" || (dividerRE.MatchString(l) && !listRE.MatchString(l+" x")) ||
+		strings.HasPrefix(t, "<details") || closerOf(t) != "" || t == "<columns>" || t == "$$" || tocRE.MatchString(t) ||
+		(dividerRE.MatchString(l) && !listRE.MatchString(l+" x")) ||
 		(strings.HasPrefix(t, "|") && i+1 < len(lines) && tableSep.MatchString(lines[i+1]))
 }
 
@@ -602,7 +769,7 @@ func blockOps(list []*mdBlock, parent *uuid.UUID, after, before string) []Op {
 		}
 		ops = append(ops, Op{Op: "create", ID: id, Type: b.typ, ParentID: parent, Position: keys[i], Props: raw})
 		if len(b.children) > 0 {
-			if !isNestable(b.typ) {
+			if !holdsChildren(b.typ, b.props) {
 				continue
 			}
 			pid := id

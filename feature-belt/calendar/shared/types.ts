@@ -10,6 +10,12 @@ export type CalendarResponse = "needs_action" | "accepted" | "tentative" | "decl
 export type CalendarScope = "this" | "following" | "all";
 export type CalendarVisibility = "busy" | "details";
 export type CalendarShowAs = "busy" | "free";
+/** Out of office and focus time decline invitations (auto_decline). */
+export type CalendarEventType = "default" | "out_of_office" | "focus";
+/** none, new invitations that arrive during it, or also ones already received. */
+export type CalendarAutoDecline = "none" | "new" | "all";
+/** A calendar shared with someone: view = free/busy only, comment = all details, edit = make changes, manage = also sharing. */
+export type CalendarShareLevel = "view" | "comment" | "edit" | "manage";
 
 /** Another user as people see them: name and picture, never an email. */
 export interface CalendarPerson {
@@ -27,6 +33,11 @@ export interface CalendarAttendee {
   avatar_url: string | null;
   response: CalendarResponse;
   responded_at: string | null;
+  /** The guest's message with their reply or proposal (organizers and that guest see it). */
+  note: string;
+  /** A new time the guest proposed; the organizer accepts it or keeps the time. */
+  proposed_start: string | null;
+  proposed_end: string | null;
 }
 
 /** One instance of an event in a calendar window. */
@@ -52,7 +63,8 @@ export interface CalendarOccurrence {
   color: CalendarColor;
   show_as: CalendarShowAs;
   visibility: CalendarVisibility;
-  role: "owner" | "attendee";
+  /** calendar: seen through a calendar shared with the viewer. */
+  role: "owner" | "attendee" | "calendar";
   my_response: CalendarResponse | null;
   owner: CalendarPerson;
   attendee_count: number;
@@ -61,6 +73,12 @@ export interface CalendarOccurrence {
   source?: SourceRef | null;
   /** Connected events: the meeting link's provider (google_meet, teams, zoom, app). */
   conference_provider?: string;
+  /** The calendar it shows on for the viewer (invitations: their primary). Absent on connected events. */
+  calendar_id?: string | null;
+  event_type?: CalendarEventType;
+  /** From a calendar shared at free/busy only: "Busy" unless the owner shows the title, no place or link. */
+  redacted?: boolean;
+  room_count?: number;
 }
 
 export interface CalendarRecurrence {
@@ -84,6 +102,28 @@ export interface CalendarEventDetail extends CalendarOccurrence {
   can_edit: boolean;
   created_at: string;
   updated_at: string;
+  auto_decline: CalendarAutoDecline;
+  decline_message: string;
+  rooms: CalendarEventRoom[];
+  calendar: CalendarRefInfo | null;
+}
+
+/** The calendar an event is on (event detail). */
+export interface CalendarRefInfo {
+  id: string;
+  name: string;
+  color: CalendarColor;
+  is_primary: boolean;
+  owner: CalendarPerson | null;
+}
+
+/** A room booked by an event. */
+export interface CalendarEventRoom {
+  id: string;
+  name: string;
+  kind: "room" | "resource";
+  building: string;
+  capacity: number | null;
 }
 
 /** A guest: a colleague by user_id, or anyone by email. */
@@ -122,6 +162,14 @@ export interface CalendarEventInput {
   send_updates?: boolean;
   scope?: CalendarScope;
   occurrence_start?: string | null;
+  /** One of your calendars, or one you may make changes to (default: your primary). */
+  calendar_id?: string;
+  /** Create only. */
+  event_type?: CalendarEventType;
+  auto_decline?: CalendarAutoDecline;
+  decline_message?: string;
+  /** Rooms and resources to book (whole series); replaces the list. */
+  room_ids?: string[];
 }
 
 export interface CalendarExternalBusy {
@@ -165,6 +213,19 @@ export interface CalendarSettings {
   default_reminders: number[];
   video_available: boolean;
   subscriptions_available: boolean;
+  work_locations: CalendarWorkLocation[];
+  /** A second clock in the day and week views. */
+  secondary_timezone: string | null;
+  world_clocks: string[];
+  /** The day's events by email each morning (6 AM their time). */
+  agenda_email: boolean;
+}
+
+/** Where someone works on a weekday (0 = Sunday). */
+export interface CalendarWorkLocation {
+  day: number;
+  type: "office" | "home" | "other";
+  label: string;
 }
 
 export interface CalendarSettingsInput {
@@ -172,6 +233,11 @@ export interface CalendarSettingsInput {
   week_start?: number;
   working_hours?: CalendarHoursInterval[];
   default_reminders?: number[];
+  work_locations?: CalendarWorkLocation[];
+  /** "" clears it. */
+  secondary_timezone?: string;
+  world_clocks?: string[];
+  agenda_email?: boolean;
 }
 
 export interface CalendarBusyBlock {
@@ -179,11 +245,16 @@ export interface CalendarBusyBlock {
   ends_at: string;
   /** Only when the owner shares details for that event. */
   title: string | null;
+  kind: "busy" | "out_of_office" | "focus";
 }
 
 export interface CalendarFreeBusy {
   user: CalendarPerson;
   busy: CalendarBusyBlock[];
+  /** Their zone (null until chosen), working hours and work locations. */
+  timezone: string | null;
+  working_hours: CalendarHoursInterval[];
+  work_locations: CalendarWorkLocation[];
 }
 
 export interface CalendarSlot {
@@ -231,7 +302,32 @@ export interface CalendarFeedSecret {
 
 export type CalendarLocationType = "video" | "phone" | "in_person" | "custom";
 export type CalendarLinkAudience = "internal" | "external";
-export type CalendarQuestionType = "short_text" | "long_text" | "phone" | "choice";
+/** choice = pick one (a select); multi_choice answers are options joined by "\n"; checkbox answers "yes". */
+export type CalendarQuestionType = "short_text" | "long_text" | "phone" | "email" | "choice" | "multi_choice" | "checkbox";
+/** personal; round_robin: the next free host takes each booking; collective: every host, on every calendar. */
+export type CalendarLinkKind = "personal" | "round_robin" | "collective";
+
+/** A team link's host: priority 0–4 (4 highest) and weight decide round robin; own hours replace the link's. */
+export interface CalendarLinkHost {
+  user: CalendarPerson;
+  priority: number;
+  weight: number;
+  weekly_hours: CalendarHoursInterval[] | null;
+  timezone: string | null;
+  active: boolean;
+  last_booked_at: string | null;
+  /** Bookings on this link in the last 30 days. */
+  recent_count: number;
+}
+
+export interface CalendarLinkHostInput {
+  user_id: string;
+  priority?: number;
+  weight?: number;
+  weekly_hours?: CalendarHoursInterval[] | null;
+  timezone?: string | null;
+  active?: boolean;
+}
 
 export interface CalendarQuestion {
   id: string;
@@ -280,11 +376,30 @@ export interface CalendarBookingLink {
   /** Meeting provider for video bookings ("app" default, google_meet, teams, zoom). */
   conference_provider: string;
   conference_connection_id: string | null;
+  kind: CalendarLinkKind;
+  team_id: string | null;
+  team_name: string | null;
+  hosts: CalendarLinkHost[];
+  /** Takes one booking (used_at once taken). */
+  single_use: boolean;
+  used_at: string | null;
+  /** Where the booking page sends bookers after they book. */
+  redirect_url: string;
+  /** Minutes before the start the booker is emailed. */
+  booker_reminders: number[];
+  /** Bookers may add up to 10 guests by email. */
+  allow_guests: boolean;
+  owner: CalendarPerson;
+  /** You made it or lead its team. */
+  can_edit: boolean;
 }
 
 export type CalendarBookingLinkInput = Partial<
-  Omit<CalendarBookingLink, "id" | "org_name" | "url" | "upcoming_count" | "created_at" | "updated_at">
->;
+  Omit<
+    CalendarBookingLink,
+    "id" | "org_name" | "url" | "upcoming_count" | "created_at" | "updated_at" | "hosts" | "team_name" | "used_at" | "owner" | "can_edit"
+  >
+> & { hosts?: CalendarLinkHostInput[] };
 
 /** What a booking page shows: the link and host, never events. */
 export interface CalendarPublicLink {
@@ -307,6 +422,11 @@ export interface CalendarPublicLink {
   color: CalendarColor;
   /** The signed-in visitor, prefilled. */
   booker: { name: string; email: string } | null;
+  kind: CalendarLinkKind;
+  team_name: string | null;
+  /** Team links: the hosts who may take the booking. */
+  hosts: CalendarPerson[];
+  allow_guests: boolean;
 }
 
 export interface CalendarSlots {
@@ -323,6 +443,8 @@ export interface CalendarBookingRequest {
   phone?: string;
   timezone: string;
   answers: { question_id: string; value: string }[];
+  /** With allow_guests: up to 10 addresses invited too. */
+  guests?: string[];
 }
 
 export interface CalendarAnswer {
@@ -361,6 +483,8 @@ export interface CalendarBookingConfirmation {
   /** The booker's secret link to reschedule or cancel (also emailed). */
   manage_url: string;
   confirmation_message: string;
+  /** Send the booker on to this page. */
+  redirect_url: string;
 }
 
 /** A booking in the signed-in lists. */
@@ -386,6 +510,10 @@ export interface CalendarBooking {
   cancelled_by: "host" | "booker" | "system" | null;
   cancel_reason: string;
   created_at: string;
+  guests: string[];
+  /** Team links: how the host was chosen. */
+  assignment: "round_robin" | "collective" | "reassigned" | null;
+  link_kind: CalendarLinkKind | "";
 }
 
 export type CalendarBookingWhen = "upcoming" | "past" | "cancelled";
@@ -419,7 +547,7 @@ export interface CalendarMembersOnly {
 
 /** `calendar.changed` on `user:<id>`: refetch that part of the calendar. */
 export interface CalendarChangedEvent {
-  scope: "events" | "bookings" | "links" | "subscriptions" | "connected";
+  scope: "events" | "bookings" | "links" | "subscriptions" | "connected" | "calendars";
 }
 
 declare module "../types" {
@@ -563,4 +691,107 @@ export interface CalendarConnectedRef {
   connection_id: string;
   calendar_id: string;
   event_id: string;
+}
+
+// ─────────────────────────────────────────────────────────── calendars ──
+
+/** A calendar as the viewer sees it. */
+export interface CalendarCalendar {
+  id: string;
+  name: string;
+  description: string;
+  /** The viewer's colour for it (their choice, else own_color). */
+  color: CalendarColor;
+  own_color: CalendarColor;
+  is_primary: boolean;
+  owner: CalendarPerson | null;
+  org_id: string | null;
+  org_name: string | null;
+  team_id: string | null;
+  team_name: string | null;
+  /** The owner's events here count as busy time. */
+  counts_busy: boolean;
+  level: CalendarShareLevel;
+  mine: boolean;
+  hidden: boolean;
+  /** In the viewer's list. */
+  added: boolean;
+}
+
+export interface CalendarCalendars {
+  /** Your calendars, your teams' and the ones you added. */
+  items: CalendarCalendar[];
+  /** Shared with you, not added. */
+  shared: CalendarCalendar[];
+}
+
+export interface CalendarCalendarInput {
+  name?: string;
+  description?: string;
+  color?: CalendarColor;
+  /** Create only. */
+  org_id?: string;
+  /** Create only: a team calendar its members may change. */
+  team_id?: string;
+  counts_busy?: boolean;
+}
+
+export interface CalendarCalendarPrefs {
+  /** null: the calendar's own colour. */
+  color?: CalendarColor | null;
+  hidden?: boolean;
+  added?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────── rooms ──
+
+export interface CalendarRoom {
+  id: string;
+  org_id: string;
+  kind: "room" | "resource";
+  name: string;
+  building: string;
+  floor: string;
+  capacity: number | null;
+  features: string[];
+  description: string;
+  active: boolean;
+  can_book: boolean;
+  can_manage: boolean;
+  /** With a window: its busy times (never who). */
+  busy: CalendarSlot[];
+  free: boolean | null;
+}
+
+export interface CalendarRooms {
+  items: CalendarRoom[];
+  /** You may add rooms (calendar.manage_rooms). */
+  can_create: boolean;
+}
+
+export interface CalendarRoomInput {
+  org_id?: string;
+  kind?: "room" | "resource";
+  name?: string;
+  building?: string;
+  floor?: string;
+  /** 0 clears it. */
+  capacity?: number;
+  features?: string[];
+  description?: string;
+  active?: boolean;
+}
+
+/** A calendar search hit: the event's next occurrence (or its last). */
+export interface CalendarSearchHit {
+  event_id: string;
+  title: string;
+  location: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  timezone: string;
+  recurring: boolean;
+  calendar_id: string | null;
+  occurrence_start: string | null;
 }

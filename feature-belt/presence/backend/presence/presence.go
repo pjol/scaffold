@@ -104,6 +104,11 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RateLimit(30, time.Minute)).Put("/presence/me/dnd", h(s.setDND))
 	r.With(auth.RateLimit(30, time.Minute)).Delete("/presence/me/dnd", h(s.clearDND))
 	r.With(auth.RateLimit(30, time.Minute)).Delete("/presence/me/status", h(s.clearStatus))
+	r.With(auth.RateLimit(30, time.Minute)).Put("/presence/me/schedule", h(s.setSchedule))
+	r.With(auth.RateLimit(30, time.Minute)).Delete("/presence/me/schedule", h(s.clearSchedule))
+	r.Get("/presence/me/presets", h(s.listPresets))
+	r.With(auth.RateLimit(30, time.Minute)).Delete("/presence/me/presets/{id}", h(s.deletePreset))
+	r.With(auth.RequireActive, auth.RateLimit(30, time.Minute)).Post("/presence/me/presets", h(s.createPreset))
 	// A custom status is something other people read: active accounts only.
 	r.With(auth.RequireActive, auth.RateLimit(30, time.Minute)).Put("/presence/me/status", h(s.setStatus))
 }
@@ -252,22 +257,38 @@ func checkText(ctx context.Context, text string) error {
 
 // ---- for other features --------------------------------------------------------
 
-// IsDND reports whether userID has Do Not Disturb on right now. Features that
-// notify people (channels, calendars) skip or hold pushes while it is on.
+// IsDND reports whether userID has Do Not Disturb on right now: set by
+// hand, by a feature (SetDNDUntil) or by their schedule's quiet hours.
+// Features that notify people (channels, calendars) skip or hold pushes
+// while it is on.
 func IsDND(ctx context.Context, q db.Querier, userID uuid.UUID) (bool, error) {
-	var on bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM presence_status WHERE user_id = $1 AND dnd_until > now())`, userID).Scan(&on)
-	return on, err
+	until, err := DNDUntil(ctx, q, userID)
+	return until != nil, err
 }
 
 // DNDUntil returns when userID's Do Not Disturb ends, or nil when it is off.
 func DNDUntil(ctx context.Context, q db.Querier, userID uuid.UUID) (*time.Time, error) {
-	var until *time.Time
-	err := q.QueryRow(ctx, `SELECT dnd_until FROM presence_status WHERE user_id = $1 AND dnd_until > now()`, userID).Scan(&until)
-	if db.IsNoRows(err) {
-		return nil, nil
+	var (
+		manual, skip *time.Time
+		zone         *string
+		days         []byte
+	)
+	err := q.QueryRow(ctx, `
+		SELECT ps.dnd_until, sch.time_zone, sch.days, sch.skip_until
+		FROM (SELECT $1::uuid AS id) x
+		LEFT JOIN presence_status ps ON ps.user_id = x.id
+		LEFT JOIN presence_dnd_schedules sch ON sch.user_id = x.id AND sch.enabled`, userID).Scan(&manual, &zone, &days, &skip)
+	if err != nil {
+		return nil, err
 	}
-	return until, err
+	return effectiveDND(manual, parseStored(deref(zone), days), skip, time.Now()), nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // Lookup returns the presence of the ids viewer may see (others are left
@@ -307,14 +328,16 @@ const statusSQL = `
 	         ELSE 'online'
 	       END,
 	       COALESCE(ps.emoji, ''), COALESCE(ps.text, ''), COALESCE(ps.clear_after, 'never'), ps.expires_at,
-	       ps.dnd_until, COALESCE(ps.away, false)
+	       ps.dnd_until, COALESCE(ps.away, false), sch.time_zone, sch.days, sch.skip_until
 	FROM unnest($1::uuid[]) AS x(id)
 	JOIN users u ON u.id = x.id AND u.status IN ('active', 'suspended')
-	LEFT JOIN presence_status ps ON ps.user_id = u.id`
+	LEFT JOIN presence_status ps ON ps.user_id = u.id
+	LEFT JOIN presence_dnd_schedules sch ON sch.user_id = u.id AND sch.enabled`
 
 type row struct {
 	Presence
-	away bool
+	away   bool
+	manual *time.Time // Do Not Disturb set by hand or by a feature
 }
 
 // compute reads presence for ids (no visibility check).
@@ -333,17 +356,20 @@ func (s *Service) compute(ctx context.Context, q db.Querier, ids []uuid.UUID) ([
 		var (
 			r                       row
 			emoji, text, clearAfter string
-			expires, dnd            *time.Time
+			expires, dnd, skip      *time.Time
+			zone                    *string
+			days                    []byte
 		)
-		if err := rows.Scan(&r.UserID, &r.Status, &emoji, &text, &clearAfter, &expires, &dnd, &r.away); err != nil {
+		if err := rows.Scan(&r.UserID, &r.Status, &emoji, &text, &clearAfter, &expires, &dnd, &r.away, &zone, &days, &skip); err != nil {
 			return nil, err
 		}
 		if (emoji != "" || text != "") && (expires == nil || expires.After(now)) {
 			r.Custom = &CustomStatus{Emoji: emoji, Text: text, ClearAfter: clearAfter, ExpiresAt: expires}
 		}
 		if dnd != nil && dnd.After(now) {
-			r.DNDUntil = dnd
+			r.manual = dnd
 		}
+		r.DNDUntil = effectiveDND(dnd, parseStored(deref(zone), days), skip, now)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -431,7 +457,11 @@ func (s *Service) sweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.reconcile(ctx, dedupe(append(expired, dndOver...)), true)
+	quietChanged, err := s.sweepSchedules(ctx)
+	if err != nil {
+		return err
+	}
+	s.reconcile(ctx, dedupe(append(append(expired, dndOver...), quietChanged...)), true)
 
 	live, err := collect(`SELECT user_id FROM presence_status WHERE announced <> 'offline'`)
 	if err != nil {

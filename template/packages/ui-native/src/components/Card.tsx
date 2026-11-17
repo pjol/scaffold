@@ -17,7 +17,11 @@ export interface CardProps extends Omit<PressableProps, "children" | "style"> {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Surface container. With `onPress` it becomes pressable (spring + haptic). No outer margin. */
+/**
+ * Surface container for one object the design sets apart (a post, a plan), not the default
+ * wrapper for a section or group: those sit on the canvas in `ListGroup` (design.md, house
+ * rule 8). With `onPress` it becomes pressable (spring + haptic). No outer margin.
+ */
 export function Card({ variant = "surface", padding = "card", selected, children, style, onPress, ...rest }: CardProps) {
   const theme = useTheme();
   const layout = useLayout();

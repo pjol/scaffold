@@ -38,26 +38,36 @@ type SidebarChannel struct {
 	Muted         bool       `json:"muted"`
 	Notify        string     `json:"notify"` // default | all | mentions | nothing
 	Starred       bool       `json:"starred"`
+	SectionID     *uuid.UUID `json:"section_id"` // your custom sidebar section
 	LastReadAt    *time.Time `json:"last_read_at"`
 	LastMessageAt time.Time  `json:"last_message_at"`
 }
 
 // WorkspacePermissions are the workspace-wide actions the caller may take.
 type WorkspacePermissions struct {
-	CreatePublic  bool `json:"create_public"`
-	CreatePrivate bool `json:"create_private"`
-	SetDefault    bool `json:"set_default"`
+	CreatePublic       bool `json:"create_public"`
+	CreatePrivate      bool `json:"create_private"`
+	SetDefault         bool `json:"set_default"`
+	AddEmoji           bool `json:"add_emoji"`
+	ManageWorkspace    bool `json:"manage_workspace"`    // link previews, retention
+	ManageIntegrations bool `json:"manage_integrations"` // incoming webhooks
 }
 
 // Workspace is GET /channels/orgs/{orgID}/workspace: everything the sidebar shows.
 type Workspace struct {
-	OrgID         uuid.UUID            `json:"org_id"`
-	Role          string               `json:"role"` // the caller's org role
-	Channels      []SidebarChannel     `json:"channels"`
-	Permissions   WorkspacePermissions `json:"permissions"`
-	ThreadsUnread int                  `json:"threads_unread"` // followed threads with unread replies
-	LaterCount    int                  `json:"later_count"`    // open saved items
-	Config        Config               `json:"config"`
+	OrgID          uuid.UUID            `json:"org_id"`
+	Role           string               `json:"role"` // the caller's org role
+	Channels       []SidebarChannel     `json:"channels"`
+	Permissions    WorkspacePermissions `json:"permissions"`
+	ThreadsUnread  int                  `json:"threads_unread"`  // followed threads with unread replies
+	LaterCount     int                  `json:"later_count"`     // open saved items
+	ActivityUnread int                  `json:"activity_unread"` // since you last opened Activity (capped at 100)
+	DraftCount     int                  `json:"draft_count"`
+	ScheduledCount int                  `json:"scheduled_count"`
+	Prefs          UserPrefs            `json:"prefs"`
+	Sections       []SidebarSection     `json:"sections"`
+	Settings       WorkspaceSettings    `json:"settings"`
+	Config         Config               `json:"config"`
 }
 
 // GET /channels/orgs/{orgID}/workspace. The first load in an org creates its
@@ -75,7 +85,9 @@ func (s *Service) workspace(w http.ResponseWriter, r *http.Request) error {
 	if ws.Channels, err = s.sidebar(ctx, me, m.OrgID, nil); err != nil {
 		return err
 	}
-	for act, dst := range map[Action]*bool{ActCreatePublic: &ws.Permissions.CreatePublic, ActCreatePrivate: &ws.Permissions.CreatePrivate, ActSetDefault: &ws.Permissions.SetDefault} {
+	for act, dst := range map[Action]*bool{ActCreatePublic: &ws.Permissions.CreatePublic, ActCreatePrivate: &ws.Permissions.CreatePrivate,
+		ActSetDefault: &ws.Permissions.SetDefault, ActAddEmoji: &ws.Permissions.AddEmoji, ActManageWorkspace: &ws.Permissions.ManageWorkspace,
+		ActManageIntegrations: &ws.Permissions.ManageIntegrations} {
 		if *dst, err = allowed(ctx, s.d.Pool, PermissionRequest{Action: act, OrgID: m.OrgID, UserID: me, OrgRole: m.Role}); err != nil {
 			return err
 		}
@@ -87,6 +99,24 @@ func (s *Service) workspace(w http.ResponseWriter, r *http.Request) error {
 		SELECT count(*) FROM channel_saved sv
 		JOIN channel_messages x ON x.id = sv.message_id JOIN channels c ON c.id = x.channel_id
 		WHERE sv.user_id = $1 AND c.org_id = $2 AND sv.completed_at IS NULL`, me, m.OrgID).Scan(&ws.LaterCount); err != nil {
+		return err
+	}
+	if ws.Prefs, err = prefsOf(ctx, s.d.Pool, me, m.OrgID); err != nil {
+		return err
+	}
+	if ws.Sections, err = sectionsOf(ctx, s.d.Pool, me, m.OrgID); err != nil {
+		return err
+	}
+	if ws.Settings, err = settingsOf(ctx, s.d.Pool, m.OrgID); err != nil {
+		return err
+	}
+	if ws.ActivityUnread, err = s.activityUnread(ctx, me, m.OrgID, ws.Prefs.ActivityReadAt); err != nil {
+		return err
+	}
+	if err := s.d.Pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM channel_drafts d JOIN channels c ON c.id = d.channel_id WHERE d.user_id = $1 AND c.org_id = $2 AND `+readableSQL+`)::int,
+		       (SELECT count(*) FROM channel_scheduled x JOIN channels c ON c.id = x.channel_id WHERE x.user_id = $1 AND c.org_id = $2 AND `+readableSQL+`)::int`,
+		me, m.OrgID).Scan(&ws.DraftCount, &ws.ScheduledCount); err != nil {
 		return err
 	}
 	httpx.OK(w, ws)
@@ -176,7 +206,7 @@ func (s *Service) sidebar(ctx context.Context, me, orgID uuid.UUID, only []uuid.
 	}
 	rows, err := s.d.Pool.Query(ctx, `
 		SELECT c.id, c.org_id, c.kind, c.layout, COALESCE(c.name, ''), c.topic, c.is_default, c.archived_at IS NOT NULL, c.last_message_at,
-		       cm.notify, cm.muted, cm.starred_at IS NOT NULL, cm.last_read_at,
+		       cm.notify, cm.muted, cm.starred_at IS NOT NULL, cm.section_id, cm.last_read_at,
 		       (SELECT count(*) FROM channel_members x WHERE x.channel_id = c.id)::int,
 		       u.unread::int, u.mentions::int
 		FROM channel_members cm JOIN channels c ON c.id = cm.channel_id
@@ -209,7 +239,7 @@ func (s *Service) sidebar(ctx context.Context, me, orgID uuid.UUID, only []uuid.
 	for rows.Next() {
 		var c SidebarChannel
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.Kind, &c.Layout, &c.Name, &c.Topic, &c.IsDefault, &c.Archived, &c.LastMessageAt,
-			&c.Notify, &c.Muted, &c.Starred, &c.LastReadAt, &c.MemberCount, &c.Unread, &c.Mentions); err != nil {
+			&c.Notify, &c.Muted, &c.Starred, &c.SectionID, &c.LastReadAt, &c.MemberCount, &c.Unread, &c.Mentions); err != nil {
 			rows.Close()
 			return nil, err
 		}

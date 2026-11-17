@@ -13,6 +13,32 @@ import (
 // clears them as record owner.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	stmts := []string{
+		// Mail they sent or logged stays on timelines; their address and mailbox come off it.
+		`UPDATE crm_activities SET email = (email - 'connection_id') || jsonb_build_object('from', '') WHERE created_by = $1 AND email IS NOT NULL`,
+		`DELETE FROM crm_email_drafts WHERE user_id = $1`,
+		`DELETE FROM crm_email_templates WHERE owner_id = $1 AND NOT shared`,
+		`UPDATE crm_email_templates SET owner_id = NULL WHERE owner_id = $1`,
+		`DELETE FROM crm_goals WHERE user_id = $1`,
+		`UPDATE crm_goals SET created_by = NULL WHERE created_by = $1`,
+		// Workflows they ran as stop; forms they owned stop taking submissions.
+		`UPDATE crm_workflows SET owner_id = NULL, enabled = false WHERE owner_id = $1`,
+		`UPDATE crm_workflows SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_forms SET owner_id = NULL WHERE owner_id = $1`,
+		`UPDATE crm_forms SET notify_ids = array_remove(notify_ids, $1) WHERE $1 = ANY (notify_ids)`,
+		`UPDATE crm_forms SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_tickets SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_ticket_contacts SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_products SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_line_items SET created_by = NULL WHERE created_by = $1`,
+		// Drafts lose their sender; a quote already given to a buyer keeps the
+		// name and email it was sent with (the buyer's copy of the document).
+		`UPDATE crm_quotes SET sender_id = NULL, sender_name = '', sender_email = '' WHERE sender_id = $1 AND status = 'draft'`,
+		`UPDATE crm_quotes SET sender_id = NULL WHERE sender_id = $1`,
+		`UPDATE crm_quotes SET published_by = NULL WHERE published_by = $1`,
+		`UPDATE crm_quotes SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_dashboards SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_reports SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE crm_score_rules SET created_by = NULL WHERE created_by = $1`,
 		`DELETE FROM crm_views WHERE owner_id = $1 AND NOT shared`,
 		`UPDATE crm_views SET owner_id = NULL WHERE owner_id = $1`,
 		`UPDATE crm_activities SET assignee_id = NULL, reminder_at = NULL WHERE assignee_id = $1`,
@@ -163,6 +189,51 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		links = append(links, l)
 	}
 	rows.Close()
-	// Records in connected CRMs live on those platforms; nothing of theirs is stored here.
-	return map[string]any{"activities": acts, "owned_records": ownedList, "views": views, "linked_records": links}, nil
+	type named struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+		At   string `json:"at"`
+	}
+	extra := []named{}
+	rows, err = s.d.Pool.Query(ctx, `
+		SELECT 'email_draft', subject, to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') FROM crm_email_drafts WHERE user_id = $1
+		UNION ALL SELECT 'email_template', name, to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') FROM crm_email_templates WHERE owner_id = $1
+		UNION ALL SELECT 'quote_sent', number || ' ' || title, to_char(COALESCE(published_at, created_at), 'YYYY-MM-DD"T"HH24:MI:SSOF') FROM crm_quotes WHERE sender_id = $1
+		UNION ALL SELECT 'workflow_run_as', name, to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') FROM crm_workflows WHERE owner_id = $1
+		UNION ALL SELECT 'form_owned', name, to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') FROM crm_forms WHERE owner_id = $1
+		LIMIT 5000`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var n named
+		if err := rows.Scan(&n.Kind, &n.Name, &n.At); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		extra = append(extra, n)
+	}
+	rows.Close()
+	drafts, err := s.d.Pool.Query(ctx, `SELECT subject, body, to_emails FROM crm_email_drafts WHERE user_id = $1 ORDER BY updated_at LIMIT 500`, userID)
+	if err != nil {
+		return nil, err
+	}
+	type draft struct {
+		Subject string   `json:"subject"`
+		Body    string   `json:"body"`
+		To      []string `json:"to"`
+	}
+	draftList := []draft{}
+	for drafts.Next() {
+		var d draft
+		if err := drafts.Scan(&d.Subject, &d.Body, &d.To); err != nil {
+			drafts.Close()
+			return nil, err
+		}
+		draftList = append(draftList, d)
+	}
+	drafts.Close()
+	// Records in connected CRMs and mail in connected mailboxes live on those
+	// platforms; only what the person sent or logged is stored here.
+	return map[string]any{"activities": acts, "owned_records": ownedList, "views": views, "linked_records": links, "items": extra, "email_drafts": draftList}, nil
 }

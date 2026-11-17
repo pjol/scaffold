@@ -1,6 +1,8 @@
 import {
+  assistantContextChipText,
   assistantConversationTitle,
   assistantLimitReached,
+  parseAssistantContextQuery,
   errorMessage,
   hasErrorCode,
   useAssistantChat,
@@ -9,12 +11,13 @@ import {
   useAssistantStatus,
   useCreateAssistantConversation,
   useDeleteAssistantConversation,
+  type AssistantContextRequest,
   type AssistantMessage,
 } from "@scaffoldapp/shared";
-import { Banner, ConfirmDialog, EmptyState, ErrorState, IconButton, Screen, Skeleton, Spinner, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Banner, ConfirmDialog, EmptyState, ErrorState, IconButton, Screen, Skeleton, Spinner, Text, toast, useTheme } from "@scaffoldapp/ui-native";
 import { fetch as expoFetch } from "expo/fetch";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import { Sparkles, Trash2 } from "lucide-react-native";
+import { Paperclip, Sparkles, Trash2, X } from "lucide-react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, View } from "react-native";
 import { Composer } from "./Composer";
@@ -26,13 +29,18 @@ const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digi
 /**
  * One conversation (route /assistant/[id]; "new" starts one on the first message). Replies
  * stream over `expo/fetch`; leaving the screen stops reading, not the reply, which resumes
- * when the conversation opens again.
+ * when the conversation opens again. `new?ctx_kind=…&ctx_id=…&mode=summarise` (a ⋮ menu)
+ * attaches a resource and sends the summary at once; `mode=ask` attaches it for the question.
  */
 export function ThreadScreen() {
   const theme = useTheme();
   const s = theme.space;
-  const params = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<Record<string, string>>();
   const conversationId = params.id && params.id !== "new" ? params.id : undefined;
+  const fromUrl = useMemo(() => (params.id === "new" ? parseAssistantContextQuery((k) => params[k]) : { launch: null, question: null }), []);
+  const launch = fromUrl.launch;
+  const [attached, setAttached] = useState<(AssistantContextRequest & { label?: string | undefined }) | null>(launch ? { ...launch.context, label: launch.label } : null);
+  const pendingContext = useRef<AssistantContextRequest | null>(null);
   const status = useAssistantStatus();
   const conversation = useAssistantConversation(conversationId);
   const messages = useAssistantMessages(conversationId);
@@ -53,13 +61,20 @@ export function ThreadScreen() {
     }
   }, [chat, status]);
 
-  const lastUserText = items.find((m) => m.role === "user")?.parts.map((p) => p.text).join("") ?? null;
+  const lastUserText =
+    items
+      .find((m) => m.role === "user")
+      ?.parts.filter((p) => p.type !== "context")
+      .map((p) => p.text)
+      .join("") ?? null;
 
   // `consented` skips the check right after the dialog (this render's status is stale).
   const send = async (text: string, consented = false): Promise<boolean> => {
     if (!status.data?.available) return false;
+    const ctx = pendingContext.current ?? (attached ? { kind: attached.kind, id: attached.id, ...(attached.scope ? { scope: attached.scope } : {}), ...(attached.title ? { title: attached.title } : {}) } : null);
     if (status.data.consent.required && !consented) {
       pending.current = text;
+      pendingContext.current = ctx;
       setConsentOpen(true);
       return false;
     }
@@ -76,11 +91,24 @@ export function ThreadScreen() {
     pending.current = text;
     // The message is posted as soon as the stream opens; clear the box then, not at the end.
     setDraft("");
-    const ok = await chat.send(text, id);
-    if (ok) pending.current = null;
-    else if (pending.current === text) setDraft((d) => d || text);
+    const ok = await chat.send(text, id, ctx ?? undefined);
+    if (ok) {
+      pending.current = null;
+      pendingContext.current = null;
+      setAttached(null);
+    } else if (pending.current === text) setDraft((d) => d || text);
     return ok;
   };
+
+  // Summarise from a ⋮ menu (or a question handed over) sends once the assistant is ready.
+  const autoSent = useRef(false);
+  const autoText = launch?.mode === "summarise" ? (launch.prompt ?? null) : fromUrl.question;
+  useEffect(() => {
+    if (autoSent.current || !autoText || !status.data?.available || conversationId) return;
+    autoSent.current = true;
+    void send(autoText);
+    // Runs once when the status first allows it.
+  }, [status.data?.available, autoText, conversationId]);
 
   const header = (
     <Stack.Screen
@@ -149,6 +177,15 @@ export function ThreadScreen() {
             />
           ) : null}
           {otherError ? <Banner tone="danger" title={otherError.message} onClose={chat.clearError} /> : null}
+          {attached ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: s[2], alignSelf: "flex-start", borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.pill, paddingLeft: s[3] }}>
+              <Paperclip size={16} color={theme.colors.textMuted} />
+              <Text role="label" numberOfLines={1} style={{ maxWidth: 240 }}>
+                {assistantContextChipText({ label: attached.label ?? "", title: attached.title ?? "", scope_label: "" })}
+              </Text>
+              <IconButton label="Don't attach it" icon={X} variant="ghost" onPress={() => setAttached(null)} />
+            </View>
+          ) : null}
           <Composer
             value={draft}
             onChange={setDraft}
@@ -184,7 +221,7 @@ export function ThreadScreen() {
         }
         ListEmptyComponent={
           <View style={{ flex: 1, justifyContent: "center", transform: [{ scaleY: -1 }] }}>
-            <EmptyState icon={Sparkles} title="Ask the assistant" />
+            {autoText ? <Spinner label="Starting" /> : <EmptyState icon={Sparkles} title={attached ? "Ask about it" : "Ask the assistant"} />}
           </View>
         }
       />

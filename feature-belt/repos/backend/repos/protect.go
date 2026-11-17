@@ -32,9 +32,14 @@ type Protection struct {
 	AllowForcePush        bool      `json:"allow_force_push"`
 	AllowDeletion         bool      `json:"allow_deletion"`
 	CreatedAt             time.Time `json:"created_at"`
+	// Approval from a code owner (CODEOWNERS on the base) of every changed file.
+	RequireCodeOwnerReview bool `json:"require_code_owner_review"`
+	// Status contexts that must succeed on the head before merging.
+	RequiredChecks []string `json:"required_checks"`
 }
 
-const protectionCols = `id, pattern, require_pull_request, required_approvals, dismiss_stale_approvals, allow_force_push, allow_deletion, created_at`
+const protectionCols = `id, pattern, require_pull_request, required_approvals, dismiss_stale_approvals, allow_force_push, allow_deletion, created_at,
+	require_code_owner_review, required_checks`
 
 func (s *Service) protections(ctx context.Context, q db.Querier, repoID uuid.UUID) ([]Protection, error) {
 	rows, err := q.Query(ctx, `SELECT `+protectionCols+` FROM repos_protections WHERE repo_id = $1 ORDER BY created_at, id`, repoID)
@@ -63,6 +68,12 @@ func protectionFor(rules []Protection, branch string) *Protection {
 			out.DismissStaleApprovals = out.DismissStaleApprovals || r.DismissStaleApprovals
 			out.AllowForcePush = out.AllowForcePush && r.AllowForcePush
 			out.AllowDeletion = out.AllowDeletion && r.AllowDeletion
+			out.RequireCodeOwnerReview = out.RequireCodeOwnerReview || r.RequireCodeOwnerReview
+			for _, c := range r.RequiredChecks {
+				if !slicesContains(out.RequiredChecks, c) {
+					out.RequiredChecks = append(out.RequiredChecks, c)
+				}
+			}
 		}
 	}
 	return out
@@ -155,6 +166,9 @@ type protectionReq struct {
 	DismissStaleApprovals *bool   `json:"dismiss_stale_approvals"`
 	AllowForcePush        *bool   `json:"allow_force_push"`
 	AllowDeletion         *bool   `json:"allow_deletion"`
+	// code owners and required status contexts
+	RequireCodeOwnerReview *bool    `json:"require_code_owner_review"`
+	RequiredChecks         []string `json:"required_checks"`
 }
 
 func (s *Service) listProtections(w http.ResponseWriter, r *http.Request) error {
@@ -188,10 +202,9 @@ func (s *Service) createProtection(w http.ResponseWriter, r *http.Request) error
 	if err != nil {
 		return err
 	}
-	p := Protection{Pattern: pattern, RequirePullRequest: true, DismissStaleApprovals: true}
-	applyProtection(&p, req)
-	if p.RequiredApprovals < 0 || p.RequiredApprovals > 10 {
-		return httpx.BadRequest("Required approvals must be 0 to 10.")
+	p := Protection{Pattern: pattern, RequirePullRequest: true, DismissStaleApprovals: true, RequiredChecks: []string{}}
+	if err := applyProtection(&p, req); err != nil {
+		return err
 	}
 	var out Protection
 	err = db.WithTx(r.Context(), s.d.Pool, func(tx pgx.Tx) error {
@@ -203,9 +216,11 @@ func (s *Service) createProtection(w http.ResponseWriter, r *http.Request) error
 			return httpx.Conflict("This repository has 50 protection rules. Remove one first.")
 		}
 		rows, err := tx.Query(r.Context(), `
-			INSERT INTO repos_protections (repo_id, pattern, require_pull_request, required_approvals, dismiss_stale_approvals, allow_force_push, allow_deletion)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+protectionCols,
-			repo.ID, p.Pattern, p.RequirePullRequest, p.RequiredApprovals, p.DismissStaleApprovals, p.AllowForcePush, p.AllowDeletion)
+			INSERT INTO repos_protections (repo_id, pattern, require_pull_request, required_approvals, dismiss_stale_approvals, allow_force_push, allow_deletion,
+			                               require_code_owner_review, required_checks)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+protectionCols,
+			repo.ID, p.Pattern, p.RequirePullRequest, p.RequiredApprovals, p.DismissStaleApprovals, p.AllowForcePush, p.AllowDeletion,
+			p.RequireCodeOwnerReview, p.RequiredChecks)
 		if err != nil {
 			return err
 		}
@@ -254,15 +269,16 @@ func (s *Service) updateProtection(w http.ResponseWriter, r *http.Request) error
 				return err
 			}
 		}
-		applyProtection(&p, req)
-		if p.RequiredApprovals < 0 || p.RequiredApprovals > 10 {
-			return httpx.BadRequest("Required approvals must be 0 to 10.")
+		if err := applyProtection(&p, req); err != nil {
+			return err
 		}
 		rows, err = tx.Query(r.Context(), `
 			UPDATE repos_protections SET pattern = $2, require_pull_request = $3, required_approvals = $4,
-			       dismiss_stale_approvals = $5, allow_force_push = $6, allow_deletion = $7, updated_at = now()
+			       dismiss_stale_approvals = $5, allow_force_push = $6, allow_deletion = $7,
+			       require_code_owner_review = $8, required_checks = $9, updated_at = now()
 			WHERE id = $1 RETURNING `+protectionCols,
-			pid, p.Pattern, p.RequirePullRequest, p.RequiredApprovals, p.DismissStaleApprovals, p.AllowForcePush, p.AllowDeletion)
+			pid, p.Pattern, p.RequirePullRequest, p.RequiredApprovals, p.DismissStaleApprovals, p.AllowForcePush, p.AllowDeletion,
+			p.RequireCodeOwnerReview, p.RequiredChecks)
 		if err != nil {
 			return err
 		}
@@ -301,7 +317,7 @@ func (s *Service) deleteProtection(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
-func applyProtection(p *Protection, req protectionReq) {
+func applyProtection(p *Protection, req protectionReq) error {
 	if req.RequirePullRequest != nil {
 		p.RequirePullRequest = *req.RequirePullRequest
 	}
@@ -317,6 +333,28 @@ func applyProtection(p *Protection, req protectionReq) {
 	if req.AllowDeletion != nil {
 		p.AllowDeletion = *req.AllowDeletion
 	}
+	if req.RequireCodeOwnerReview != nil {
+		p.RequireCodeOwnerReview = *req.RequireCodeOwnerReview
+	}
+	if req.RequiredChecks != nil {
+		p.RequiredChecks = []string{}
+		for _, c := range req.RequiredChecks {
+			c = strings.TrimSpace(c)
+			if c == "" || len([]rune(c)) > 100 {
+				return httpx.BadRequest("Name each required check (its status context, up to 100 characters).")
+			}
+			if !slicesContains(p.RequiredChecks, c) {
+				p.RequiredChecks = append(p.RequiredChecks, c)
+			}
+		}
+		if len(p.RequiredChecks) > 20 {
+			return httpx.BadRequest("Require up to 20 checks.")
+		}
+	}
+	if p.RequiredApprovals < 0 || p.RequiredApprovals > 10 {
+		return httpx.BadRequest("Required approvals must be 0 to 10.")
+	}
+	return nil
 }
 
 // cleanPattern accepts a branch name or a glob over branch names.

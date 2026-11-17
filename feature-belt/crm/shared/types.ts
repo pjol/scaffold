@@ -1,23 +1,41 @@
 import type { AccessLevel } from "../access/types";
 import type { ConnectionOffer, FeatureSource, SourceRef } from "../sources";
 
-/** The three record types. */
-export type CrmObjectType = "company" | "contact" | "deal";
+/** The four record types (tickets are the app's own only: connected CRMs serve the other three). */
+export type CrmObjectType = "company" | "contact" | "deal" | "ticket";
 
-export const CRM_OBJECT_TYPES: readonly CrmObjectType[] = ["company", "contact", "deal"];
+export const CRM_OBJECT_TYPES: readonly CrmObjectType[] = ["company", "contact", "deal", "ticket"];
+
+/** Types a connected CRM (HubSpot, Salesforce) serves. */
+export const CRM_PLATFORM_TYPES: readonly CrmObjectType[] = ["company", "contact", "deal"];
+
+/** Record types that move through a pipeline's stages. */
+export function crmIsPipelined(type: CrmObjectType): type is "deal" | "ticket" {
+  return type === "deal" || type === "ticket";
+}
 
 /** Access kind of each record type (for ShareDialog / ResourceMenu). */
-export const CRM_KIND: Record<CrmObjectType, string> = { company: "crm.company", contact: "crm.contact", deal: "crm.deal" };
+export const CRM_KIND: Record<CrmObjectType, string> = { company: "crm.company", contact: "crm.contact", deal: "crm.deal", ticket: "crm.ticket" };
 
 /** URL segment of each type: /crm/companies/<id>. */
-export const CRM_PATH: Record<CrmObjectType, "companies" | "contacts" | "deals"> = { company: "companies", contact: "contacts", deal: "deals" };
+export const CRM_PATH: Record<CrmObjectType, "companies" | "contacts" | "deals" | "tickets"> = {
+  company: "companies",
+  contact: "contacts",
+  deal: "deals",
+  ticket: "tickets",
+};
 
 export type CrmLevel = AccessLevel | "none";
 
-export type CrmStageOutcome = "open" | "won" | "lost";
+/** Deal stages: open, won or lost; ticket statuses: open or closed. */
+export type CrmStageOutcome = "open" | "won" | "lost" | "closed";
 export type CrmTagTone = "neutral" | "primary" | "accent" | "success" | "warning" | "danger" | "info";
 export type CrmLifecycleStage = "subscriber" | "lead" | "mql" | "sql" | "opportunity" | "customer" | "evangelist" | "other";
 export type CrmRecordAccess = "everyone_edits" | "everyone_views" | "owners_teams";
+export type CrmLeadStatus = "new" | "open" | "in_progress" | "open_deal" | "unqualified" | "attempted_to_contact" | "connected" | "bad_timing";
+export type CrmTicketPriority = "low" | "medium" | "high" | "urgent";
+export type CrmTicketChannel = "email" | "phone" | "chat" | "form" | "other";
+export type CrmForecastCategory = "pipeline" | "best_case" | "commit" | "closed" | "omitted";
 
 export interface CrmUserRef {
   id: string;
@@ -103,6 +121,9 @@ export interface CrmContact extends CrmRecordBase {
   phones: string[];
   job_title: string;
   lifecycle_stage: CrmLifecycleStage;
+  lead_status: CrmLeadStatus | null;
+  /** Lead score: the points of every scoring rule the contact matches. */
+  score: number;
   city: string;
   country: string;
   /** Primary company, when you can see it. */
@@ -125,14 +146,43 @@ export interface CrmDeal extends CrmRecordBase {
   company: CrmRecordRef | null;
   stage_entered_at: string;
   closed_at: string | null;
+  /** Set on the deal, else what its stage implies (won → closed, lost → omitted). App deals only. */
+  forecast_category?: CrmForecastCategory;
+  forecast_category_set?: boolean;
+  /** The amount follows the line items' contract value. App deals only. */
+  amount_from_items?: boolean;
 }
 
-export type CrmRecord = CrmCompany | CrmContact | CrmDeal;
+export interface CrmTicket extends CrmRecordBase {
+  type: "ticket";
+  /** The subject. */
+  name: string;
+  description: string;
+  priority: CrmTicketPriority;
+  category: string;
+  channel: CrmTicketChannel;
+  pipeline_id: string;
+  pipeline_name: string;
+  /** The status (a stage of a ticket pipeline: open or closed). */
+  stage: CrmStageRef;
+  company: CrmRecordRef | null;
+  deal: CrmRecordRef | null;
+  stage_entered_at: string;
+  first_response_at: string | null;
+  closed_at: string | null;
+  /** Seconds from opening to the first email, call or meeting logged on it. */
+  first_response_seconds: number | null;
+  /** Seconds from opening to closing. */
+  resolution_seconds: number | null;
+}
+
+export type CrmRecord = CrmCompany | CrmContact | CrmDeal | CrmTicket;
 
 export interface CrmRecordOf {
   company: CrmCompany;
   contact: CrmContact;
   deal: CrmDeal;
+  ticket: CrmTicket;
 }
 
 /** A list page; `total` is the number of matches, on the first page. */
@@ -169,11 +219,22 @@ export interface CrmAssocDeal {
   close_date: string | null;
 }
 
+export interface CrmAssocTicket {
+  id: string;
+  name: string;
+  priority: CrmTicketPriority;
+  stage_name: string;
+  stage_outcome: CrmStageOutcome;
+  created_at: string;
+}
+
 /** Linked records you can see. */
 export interface CrmAssociations {
   companies: CrmAssocCompany[];
   contacts: CrmAssocContact[];
   deals: CrmAssocDeal[];
+  /** Absent from connected records. */
+  tickets?: CrmAssocTicket[];
 }
 
 export interface CrmRecordDetail<T extends CrmRecord = CrmRecord> {
@@ -207,7 +268,8 @@ export type CrmPropertyType =
   | "company"
   | "domain"
   | "emails"
-  | "phones";
+  | "phones"
+  | "deal";
 
 /** Types an org can add as custom properties. */
 export type CrmCustomPropertyType = "text" | "number" | "date" | "select" | "multi_select" | "user" | "url" | "email" | "phone" | "currency" | "checkbox";
@@ -320,7 +382,17 @@ export interface CrmSettings {
   source_providers: CrmProvider[];
   updated_at: string;
   /** What you may do here. */
-  can: { manage_settings: boolean; export: boolean; import: boolean; delete: boolean };
+  can: {
+    manage_settings: boolean;
+    export: boolean;
+    import: boolean;
+    delete: boolean;
+    /** 1.3: absent from older backends. */
+    manage_products?: boolean;
+    publish_quotes?: boolean;
+    manage_workflows?: boolean;
+    manage_forms?: boolean;
+  };
 }
 
 export interface CrmStage {
@@ -334,6 +406,8 @@ export interface CrmStage {
 export interface CrmPipeline {
   id: string;
   org_id: string;
+  /** deal or ticket (absent from older backends and connected CRMs: deal). */
+  object_type?: "deal" | "ticket";
   name: string;
   position: number;
   stages: CrmStage[];
@@ -347,6 +421,8 @@ export interface CrmStageInput {
 }
 
 export interface CrmPipelineRequest {
+  /** Create only: deal (default) or ticket. */
+  object_type?: "deal" | "ticket";
   name?: string;
   position?: number;
   stages?: CrmStageInput[];
@@ -406,6 +482,17 @@ export interface CrmActivity {
   unreachable?: string[];
   /** Connected activities: the platform they live on. */
   source?: SourceRef | null;
+  /** Emails sent from or logged out of a connected mailbox. */
+  email?: CrmEmailMeta | null;
+}
+
+export interface CrmEmailMeta {
+  provider: "google" | "microsoft";
+  from: string;
+  to: string[];
+  cc?: string[];
+  message_id?: string;
+  thread_id?: string;
 }
 
 export interface CrmActivityRequest {
@@ -426,7 +513,16 @@ export interface CrmActivityRequest {
   clear_reminder?: boolean;
 }
 
-export type CrmEventKind = "created" | "updated" | "stage_changed" | "associated" | "dissociated" | "merged" | "imported";
+export type CrmEventKind =
+  | "created"
+  | "updated"
+  | "stage_changed"
+  | "associated"
+  | "dissociated"
+  | "merged"
+  | "imported"
+  | "quote"
+  | "form_submitted";
 
 export interface CrmChange {
   key: string;
@@ -453,6 +549,21 @@ export interface CrmEvent {
     other_name?: string;
     other_hidden?: boolean;
     merged_name?: string;
+    /** updated: the amount followed the line items. */
+    from_line_items?: boolean;
+    /** quote: drafted | published | unpublished | accepted | declined | deleted. */
+    action?: string;
+    quote_id?: string;
+    number?: string;
+    title?: string;
+    total?: string;
+    signer_name?: string;
+    /** form_submitted */
+    form_id?: string;
+    form_name?: string;
+    values?: Record<string, string>;
+    created?: boolean;
+    consent?: boolean;
   };
 }
 
@@ -734,6 +845,6 @@ declare module "../types" {
     "crm.record_deleted": { type: CrmObjectType; id: string };
     "crm.timeline_changed": { type: CrmObjectType; id: string };
     "crm.board_changed": { pipeline_id: string };
-    "crm.settings_changed": { org_id: string; what: "settings" | "pipelines" | "properties" | "tags" | "views" };
+    "crm.settings_changed": { org_id: string; what: "settings" | "pipelines" | "properties" | "tags" | "views" | "products" | "scores" };
   }
 }

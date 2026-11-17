@@ -15,7 +15,7 @@ scripts/dev-up/dev-up.sh stop      # stop the stack this project's dev-up starte
 | `--reset-db` | drop and recreate `scaffoldapp_dev` (asks first), then migrate + seed |
 | `--no-seed` | skip `cmd/seed`; the server still migrates at boot |
 | `--clone-from <postgres-url>` | `pg_dump` a remote database (read-only on the source; highest local `pg_dump` major), restore it instead of seeding, then run `scrub.sql`. Asks first. Leave the password out of the URL and use `PGPASSWORD`/`~/.pgpass` to keep it out of shell history. |
-| `--web-prod` | `next build` in the background during step 5, then `next start`; falls back to `next dev` if the build fails |
+| `--web-dev` | serve web with `next dev` (hot reload; each page compiles on its first visit) instead of the production build that is the default. `--web-prod`, the old opt-in, is still accepted and changes nothing. |
 | `--lan` | Expo `--host lan`; writes the LAN IP into `EXPO_PUBLIC_API_URL`, `PUBLIC_API_URL` and the CORS list (physical devices on your network) |
 | `--tunnel` | Expo `--host tunnel` (needs `@expo/ngrok`). The API stays on the LAN IP unless you add `--public`. |
 | `--ios` / `--android` | open the simulator / emulator once Metro is up (see Mobile) |
@@ -57,7 +57,8 @@ Only the ports this boot needs are checked. Processes this project's dev-up left
 | `.data/postgres` | the private cluster |
 | `.data/bin/server`, `.data/bin/seed` | backend binaries |
 | `.data/run/*.pid` | one per service: pid, start time, match string, command, settled command |
-| `.data/run/stack.env` | ports, URLs, Postgres mode for `status`, the menu and `scripts/*` |
+| `.data/run/stack.env` | ports, URLs, Postgres mode, web mode for `status`, the menu and `scripts/*` |
+| `web/.next`, `.data/web-build.stamp` | the production web build, and the key it was built from (see Web) |
 | `.data/uploads`, `.data/mail` | local uploads; the mail sink (one Markdown file per email) |
 | `.data/dumps` | `--clone-from` dumps |
 | `logs/*.log` | one per service and step (`backend`, `seed`, `backend-build`, `postgres`, `install`, `web`, `web-build`, `metro`, `cloudflared`, `docker`, `clone`, `ios-build`, `android-build`); appended across restarts, rotated past 5 MB |
@@ -95,12 +96,12 @@ A process started with the generated file also gets `env -u` for every key in it
 2. **Already running?**: refuse (no terminal), or offer attach, restart or abort. Confirm `--reset-db`/`--clone-from` here, up front.
 3. **Ports**: reclaim this project's leftovers, then pick the block (above).
 4. **Env**: LAN IP (`--lan`/`--tunnel`), cloudflared (`--public`), then the hooks are sourced and each `hook_<name>_prepare` runs (it may start services and call `hook_env`). A failing prepare stops the boot. Then `env.mjs write`.
-5. **Dependencies**: `pnpm install --prefer-offline` when `node_modules` is missing or older than any `package.json`, `pnpm-lock.yaml` or `pnpm-workspace.yaml`, then `touch node_modules`. `go mod download` when `backend/go.sum` changed. Output goes to `logs/install.log`. `--web-prod` starts its build here.
-6. **Generated assets**: `pnpm tokens` when a `packages/tokens/src/**/*.ts` file is newer than `src/generated/tokens.css` (needs `node_modules`). `pnpm icons` when the root `package.json` defines it and `design/logo.svg` (or `mobile/assets/**/logo.svg`) is newer than the app icon. No `icons` script ships yet.
+5. **Dependencies**: `pnpm install --prefer-offline` when `node_modules` is missing or older than any `package.json`, `pnpm-lock.yaml` or `pnpm-workspace.yaml`, then `touch node_modules`. `go mod download` when `backend/go.sum` changed. Output goes to `logs/install.log`.
+6. **Generated assets**: `pnpm tokens` when a `packages/tokens/src/**/*.ts` file is newer than `src/generated/tokens.css` (needs `node_modules`). `pnpm icons` when the root `package.json` defines it and `design/logo.svg` (or `mobile/assets/**/logo.svg`) is newer than the app icon. No `icons` script ships yet. Then the production web build starts in the background, unless the last one is still current (see Web).
 7. **Postgres**: on first run, `initdb --auth=trust -U scaffoldapp --locale=C` into `.data/postgres`. Then `pg_ctl start` on 127.0.0.1:base+2, TCP only (`unix_socket_directories=''`: macOS caps socket paths at 103 bytes), with `synchronous_commit=off`, `wal_level=minimal` and a small WAL. A running cluster is reused, or restarted if it is on another port. Without binaries: `docker compose up -d db`, same port and URL. Creates `scaffoldapp_dev`. `--reset-db` drops and recreates it (`WITH (FORCE)`). `--clone-from` dumps, restores, then runs `scrub.sql` in one transaction; if the scrub fails the clone is dropped. Then MinIO/Redis for `--s3`/`--redis`; the bucket is created over SigV4 curl (no `mc`).
 8. **Backend**: `go build -o .data/bin/ ./cmd/server ./cmd/seed`; with `--s3`, put the output of `server -bucket-policy` on the bucket; run `seed` (it migrates first, then upserts the dev identities; skipped by `--no-seed`/`--clone-from`), start the server, wait up to 180 s for `/readyz` (200). It stops early if the process dies, showing the log tail. If the backend fails, the boot fails and everything started so far is stopped.
 9. **Feature hooks**: each `hook_<name>_started` runs (services that need the API or the database, menu items). See `hooks/README.md`.
-10. **Web**: `next dev -p base+1`, or `next start` after the `--web-prod` build. Waits up to 180 s for any HTTP answer below 500. A web failure warns and leaves the rest running (`R` retries).
+10. **Web**: waits for the production build (up to 15 minutes), then `next start -p base+1`. If the build fails it shows the log tail and runs `next dev` instead, and the summary says so. `--web-dev` runs `next dev` from the start. Waits up to 180 s for any HTTP answer below 500. A web failure warns and leaves the rest running (`R` retries).
 11. **Mobile**: `expo start --port base+3 --host localhost|lan|tunnel` with stdin `/dev/null`. Waits for `/status`. Simulators use `localhost`: the macOS firewall times out LAN URLs.
 12. **Summary**: URLs, how to sign in, a curl line, the mail sink, log paths, providers, then the menu.
 
@@ -110,6 +111,14 @@ A process started with the generated file also gets `env -u` for every key in it
 - `--android` (or `d`): uses a connected device, or starts the first AVD (stopped with the stack). It runs `adb reverse` for Metro and the API, so `localhost` works on the emulator. Then it opens the dev build the same way, or offers `expo run:android --no-bundler`.
 - Physical devices: `--lan` (same network), or `--tunnel --public` (anywhere). Scan the QR code in `logs/metro.log` with the installed dev build.
 
+## Web
+
+Web is served from a production build (`next build`, then `next start`) by default, so every page is compiled before the first visit and navigation runs at production speed. The cost is that edits under `web/` or `packages/` don't show up until `R` rebuilds. Use `--web-dev` while you work on the frontend for hot reload, where each page compiles on its first visit.
+
+The build starts at the end of step 6, after tokens are regenerated, and runs while Postgres and the backend come up. A boot skips it when the last build is still current. That means `web/.next/BUILD_ID` exists and `.data/web-build.stamp` matches the Node version and `web/.env.local`, because `NEXT_PUBLIC_*` values are inlined at build time and a moved port block changes them. It also means no file under `web/` or `packages/`, and none of the root `package.json`, lockfile, workspace file, `tsconfig.base.json` or `node_modules`, is newer than the stamp. The stamp's mtime is when that build started, so a file edited during a build counts as a change. `.env.local`, `next-env.d.ts`, `*.tsbuildinfo` and `.DS_Store` are ignored, because tools rewrite them without changing the app. Delete the stamp to force a rebuild.
+
+The build runs with `NODE_ENV=production`. The dev sign-in picker still shows because `NEXT_PUBLIC_APP_ENV=development` (step 4) keeps the dev auth shim on (`isDevAuthEnabled` in `packages/shared`). Code that branches on `NODE_ENV` alone behaves as it does in production.
+
 ## The menu
 
 | Key | Action |
@@ -118,7 +127,7 @@ A process started with the generated file also gets `env -u` for every key in it
 | `i` / `d` | iOS simulator / Android emulator (above) |
 | `l` | tail one log, or every running service's; Ctrl-C returns to the menu |
 | `r` | rebuild + restart the backend |
-| `R` | restart web (prod mode rebuilds first) |
+| `R` | rebuild + restart web (with `--web-dev`: restart `next dev`). After a build that failed at boot it builds again, and serves the build once that succeeds. |
 | `s` | rebuild + re-run `cmd/seed` |
 | `g` | grant admin: search users, pick one, show every account with that email, confirm, then `UPDATE users SET admin_role='admin' WHERE lower(email)=lower(:'e')` (psql `-v`, injection-safe) |
 | `t` | print `dev:<subject>:<email>` and a curl line for a dev user (subject = `auth_subject` without `dev_`). Clerk users (`user_…`) can't get one. Any new `dev:<name>:<name>@scaffoldapp.test` creates that user on first use. |
@@ -142,6 +151,14 @@ The menu prints one item per line in groups (open, services, data), leaves out k
 
 ## Known limits
 
-- The web and mobile process handling (start, the `--web-prod` build wait and fallback, waits, early-death detection, restart, teardown) was exercised with a stub `pnpm`. Real `next` and `expo` runs haven't happened yet: those apps were being built at the same time.
+- Web with real `next` (2026-11-16, on a scratch app without a terminal) was tested for:
+  - a fresh production build served with `next start`, with no page compiling on first visit;
+  - a boot that skipped the build because it was still current;
+  - a rebuild after a source file changed;
+  - the fallback to `next dev` when the build failed;
+  - `--web-dev`.
+
+  `R` (it needs a terminal) and the Expo side were exercised only with a stub `pnpm`.
+- Next.js 16.4.3 stops `next build` and `next dev` when it detects an AI agent, to show a security notice. An agent-run boot can therefore fail the build, and then the dev fallback. Rerunning within 5 minutes continues. Runs from your own terminal aren't stopped. Upgrading Next past the advisory ends it.
 - `--s3` has run with the `minio` binary (uploads, forced-disposition downloads, copies, policy). The simulator/emulator flows, `--redis`/`--public`/`--clone-from` and the docker fallbacks (Postgres, MinIO) are written but haven't run on this machine.
 - `scrub.sql` ships commented out: a clone scrubs nothing until you uncomment the statements that fit.

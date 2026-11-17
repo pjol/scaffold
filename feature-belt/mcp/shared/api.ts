@@ -1,6 +1,12 @@
 import type { CallOptions, HttpClient } from "../api/http";
 import type { Page } from "../types";
 import type {
+  McpAAuthClaimRequest,
+  McpAAuthDecision,
+  McpAAuthInteraction,
+  McpAAuthLink,
+  McpAdminAAuthLink,
+  McpAdminAAuthLinkListParams,
   McpAdminConnection,
   McpAdminConnectionListParams,
   McpAdminKey,
@@ -14,7 +20,7 @@ import type {
   McpOAuthRequest,
 } from "./types";
 
-/** Personal API keys and OAuth connected apps (both managed with the user's session, never with a key), the consent page and the admin views. */
+/** Personal API keys, OAuth connected apps and linked AAuth person servers (all managed with the user's session, never with a key), the consent and link pages, and the admin views. */
 export const mcpEndpoints = (http: HttpClient) => ({
   keys: (params: { cursor?: string; limit?: number } = {}, o?: CallOptions) =>
     http.get<Page<McpApiKey>>("/v1/mcp/keys", { ...o, query: { cursor: params.cursor, limit: params.limit } }),
@@ -26,6 +32,14 @@ export const mcpEndpoints = (http: HttpClient) => ({
   connections: (params: { cursor?: string; limit?: number } = {}, o?: CallOptions) =>
     http.get<Page<McpConnection>>("/v1/mcp/connections", { ...o, query: { cursor: params.cursor, limit: params.limit } }),
   revokeConnection: (id: string) => http.delete<void>(`/v1/mcp/connections/${encodeURIComponent(id)}`),
+  /** Claim the code an agent showed: single use, and binds the request to the caller. */
+  claimAAuthInteraction: (body: McpAAuthClaimRequest) => http.post<McpAAuthInteraction>("/v1/mcp/aauth/interactions", body),
+  aauthInteraction: (id: string, o?: CallOptions) => http.get<McpAAuthInteraction>(`/v1/mcp/aauth/interactions/${encodeURIComponent(id)}`, o),
+  decideAAuthInteraction: (id: string, allow: boolean) =>
+    http.post<McpAAuthDecision>(`/v1/mcp/aauth/interactions/${encodeURIComponent(id)}/decision`, { allow }),
+  aauthLinks: (params: { cursor?: string; limit?: number } = {}, o?: CallOptions) =>
+    http.get<Page<McpAAuthLink>>("/v1/mcp/aauth/links", { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+  unlinkAAuth: (id: string) => http.delete<void>(`/v1/mcp/aauth/links/${encodeURIComponent(id)}`),
   admin: {
     keys: (params: McpAdminKeyListParams = {}, o?: CallOptions) =>
       http.get<Page<McpAdminKey>>("/v1/admin/mcp/keys", {
@@ -39,6 +53,12 @@ export const mcpEndpoints = (http: HttpClient) => ({
         query: { user_id: params.user_id, status: params.status, cursor: params.cursor, limit: params.limit },
       }),
     revokeConnection: (id: string) => http.delete<void>(`/v1/admin/mcp/connections/${encodeURIComponent(id)}`),
+    aauthLinks: (params: McpAdminAAuthLinkListParams = {}, o?: CallOptions) =>
+      http.get<Page<McpAdminAAuthLink>>("/v1/admin/mcp/aauth/links", {
+        ...o,
+        query: { user_id: params.user_id, status: params.status, cursor: params.cursor, limit: params.limit },
+      }),
+    unlinkAAuth: (id: string) => http.delete<void>(`/v1/admin/mcp/aauth/links/${encodeURIComponent(id)}`),
   },
 });
 

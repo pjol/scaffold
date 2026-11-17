@@ -29,6 +29,11 @@
  *   ConsentRoute     a regex source matched against the whole pathname ("/support(/.*)?");
  *                    those routes open while the user still has to accept the Terms
  *   SupportLink      { id, href, label, icon }  a way to get help besides the support email
+ *   QuickAction      { id, label, icon, keywords?, href? | run?(ctx), withQuery?, useAvailable? }  a command in
+ *                    the ⌘K palette ("Set a status", "New page"): href opens a route, run does the
+ *                    thing (ctx.query is what was typed, ctx.navigate opens a route); withQuery
+ *                    actions show once text is typed and act on it ("Ask the assistant: …");
+ *                    useAvailable is a cheap hook that hides the action when it doesn't apply
  *   ResourceMenuProvider { id, useActions(ctx) → { actions, element? } }  rows a feature adds
  *                    to every ⋮ menu (`ResourceMenu`, src/components/resource): ctx names
  *                    the feature and, for one resource, its access kind and id. Return no
@@ -48,6 +53,7 @@
  *   headerActions     top bar, before the account menu
  *   consentRoutes     AppFrame shows these routes instead of the consent screen
  *   resourceMenuProviders  every ⋮ menu, after the screen's own actions (Share…, AI agent access)
+ *   quickActions      the ⌘K palette (search feature), beside navigation and settings entries
  *   supportLinks      consent screen, suspended banner, blocked-account screen (next to
  *                     the support email) and Settings → Support. A link that must work
  *                     before consent is accepted also goes in consentRoutes; one that must
@@ -151,6 +157,28 @@ export interface ResourceMenuProvider {
   useActions: (ctx: ResourceMenuContext) => { actions: ResourceMenuAction[]; element?: ReactNode };
 }
 
+/** What a quick action runs with: the palette's text and a way to open a route. */
+export interface QuickActionContext {
+  query: string;
+  navigate: (href: string) => void;
+}
+
+export interface QuickAction {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  /** Other words it is found by ("dnd", "pause"). */
+  keywords?: string[];
+  /** Opens this route… */
+  href?: string;
+  /** …or does this (the palette closes first). */
+  run?: (ctx: QuickActionContext) => void;
+  /** Shown only once text is typed, acting on it: "Ask the assistant: “…”". */
+  withQuery?: boolean;
+  /** A cheap hook (a cache read) that hides the action when it doesn't apply. */
+  useAvailable?: () => boolean;
+}
+
 /** Product sections in the main navigation. */
 export const featureNav: readonly NavItem[] = [
   // scaffold:nav
@@ -189,6 +217,11 @@ export const headerActions: readonly HeaderAction[] = [
 /** Path patterns reachable while consent is still required. */
 export const consentRoutes: readonly string[] = [
   // scaffold:consent-routes
+];
+
+/** Commands in the ⌘K palette, in order. */
+export const quickActions: readonly QuickAction[] = [
+  // scaffold:quick-actions
 ];
 
 /** Rows added to every ⋮ menu (ResourceMenu), in order. */

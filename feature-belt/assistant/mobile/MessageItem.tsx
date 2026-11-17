@@ -1,8 +1,9 @@
-import { assistantMessageText, assistantStopNote, type AssistantMessage } from "@scaffoldapp/shared";
+import { assistantContextChipText, assistantMessageContext, assistantMessageText, assistantStopNote, type AssistantMessage } from "@scaffoldapp/shared";
 import { Badge, Banner, IconButton, InfoTip, Spinner, Text, toast, useTheme } from "@scaffoldapp/ui-native";
-import { Flag, Share2 } from "lucide-react-native";
+import { router, type Href } from "expo-router";
+import { Flag, Paperclip, Share2 } from "lucide-react-native";
 import { useState } from "react";
-import { Share, View } from "react-native";
+import { Pressable, Share, View } from "react-native";
 import { ReportDialog } from "@/features/moderation/ReportDialog";
 import { Markdown } from "./Markdown";
 import { ToolActivity } from "./ToolActivity";
@@ -13,11 +14,30 @@ export function MessageItem({ message, onRetry }: { message: AssistantMessage; o
   const c = theme.colors;
   const s = theme.space;
   if (message.role === "user") {
+    const ctx = assistantMessageContext(message);
     return (
-      <View style={{ alignItems: "flex-end", paddingLeft: s[10] }}>
+      <View style={{ alignItems: "flex-end", paddingLeft: s[10], gap: s[1] }}>
         <View style={{ backgroundColor: c.primarySoft, borderRadius: theme.radius.xl, paddingHorizontal: s[4], paddingVertical: s[3] }}>
           <Text selectable>{assistantMessageText(message)}</Text>
         </View>
+        {ctx ? (
+          <Pressable
+            accessibilityRole={ctx.link ? "link" : "text"}
+            disabled={!ctx.link}
+            onPress={() => ctx.link && router.push(ctx.link as Href)}
+            style={{ flexDirection: "row", alignItems: "center", gap: s[1], minHeight: 32 }}
+          >
+            <Paperclip size={14} color={c.textMuted} />
+            <Text role="caption" tone="muted" numberOfLines={1}>
+              {assistantContextChipText(ctx)}
+            </Text>
+          </Pressable>
+        ) : null}
+        {ctx?.missing ? (
+          <Text role="caption" tone="muted">
+            {ctx.missing}
+          </Text>
+        ) : null}
       </View>
     );
   }

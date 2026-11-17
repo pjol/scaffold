@@ -7,20 +7,25 @@ import {
   errorMessage,
   isPresenceDND,
   isPresenceEmoji,
+  presenceDndSource,
   presenceDndUntil,
+  presenceQuietHoursLabel,
   presenceStatusRequest,
   presenceUntilLabel,
   useClearPresenceStatus,
+  useCreatePresenceStatusPreset,
+  useDeletePresenceStatusPreset,
   useMe,
   useMyPresence,
+  usePresenceStatusPresets,
   useSetPresenceAway,
   useSetPresenceDND,
   useSetPresenceStatus,
   type PresenceClearAfter,
 } from "@scaffoldapp/shared";
-import { Button, ErrorState, Field, Input, ListGroup, ListRow, Screen, Skeleton, Switch, Text, toast, useTheme } from "@scaffoldapp/ui-native";
-import { Stack, router } from "expo-router";
-import { Check } from "lucide-react-native";
+import { Button, ErrorState, Field, IconButton, Input, ListGroup, ListRow, Screen, Skeleton, Switch, Text, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Stack, router, type Href } from "expo-router";
+import { BookmarkPlus, Check, X } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { PresenceAvatar } from "./PresenceDot";
@@ -36,6 +41,9 @@ export function StatusScreen() {
   const clear = useClearPresenceStatus();
   const dnd = useSetPresenceDND();
   const away = useSetPresenceAway();
+  const saved = usePresenceStatusPresets();
+  const createPreset = useCreatePresenceStatusPreset();
+  const removePreset = useDeletePresenceStatusPreset();
   const current = activeCustomStatus(mine.data);
   const [emoji, setEmoji] = useState("");
   const [text, setText] = useState("");
@@ -71,6 +79,10 @@ export function StatusScreen() {
   const data = mine.data;
   const empty = !emoji && !text.trim();
   const paused = isPresenceDND(data);
+  const bySchedule = presenceDndSource(data) === "schedule";
+  const own = saved.data?.items ?? [];
+  const known = PRESENCE_STATUS_PRESETS.some((p) => p.emoji === emoji && p.text === text.trim()) || own.some((p) => p.emoji === emoji && p.text === text.trim());
+  const scheduleDays = data.schedule?.enabled ? data.schedule.days.filter(Boolean) : [];
   const save = () =>
     set.mutate(presenceStatusRequest(emoji, text.trim(), clearAfter), {
       onSuccess: () => {
@@ -148,30 +160,75 @@ export function StatusScreen() {
       </View>
 
       {empty ? (
-        <ListGroup title="Suggestions">
-          {PRESENCE_STATUS_PRESETS.map((p) => (
-            <ListRow
-              key={p.text}
-              title={p.text}
-              leading={<Text role="bodyLg">{p.emoji}</Text>}
-              chevron={false}
-              onPress={() => {
-                setEmoji(p.emoji);
-                setText(p.text);
-                setClearAfter(p.clear_after);
-              }}
-            />
-          ))}
-        </ListGroup>
+        <>
+          <ListGroup title="Suggestions">
+            {PRESENCE_STATUS_PRESETS.map((p) => (
+              <ListRow
+                key={p.text}
+                title={p.text}
+                leading={<Text role="bodyLg">{p.emoji}</Text>}
+                chevron={false}
+                onPress={() => {
+                  setEmoji(p.emoji);
+                  setText(p.text);
+                  setClearAfter(p.clear_after);
+                }}
+              />
+            ))}
+          </ListGroup>
+          {own.length > 0 ? (
+            <ListGroup title="Saved">
+              {own.map((p) => (
+                <ListRow
+                  key={p.id}
+                  title={p.text || p.emoji}
+                  leading={<Text role="bodyLg">{p.emoji}</Text>}
+                  chevron={false}
+                  trailing={<IconButton label={`Remove “${p.text || p.emoji}”`} icon={X} variant="ghost" onPress={() => removePreset.mutate(p.id, { onError: (e) => toast.error(errorMessage(e)) })} />}
+                  onPress={() => {
+                    setEmoji(p.emoji);
+                    setText(p.text);
+                    setClearAfter(p.clear_after);
+                  }}
+                />
+              ))}
+            </ListGroup>
+          ) : null}
+        </>
       ) : (
-        <ListGroup title="Clear after">
-          {PRESENCE_CLEAR_AFTER_OPTIONS.map((o) => (
-            <ListRow key={o.value} title={o.label} chevron={false} trailing={clearAfter === o.value ? <Check color={c.primaryStrong} size={20} /> : null} onPress={() => setClearAfter(o.value)} />
-          ))}
-        </ListGroup>
+        <>
+          <ListGroup title="Clear after">
+            {PRESENCE_CLEAR_AFTER_OPTIONS.map((o) => (
+              <ListRow key={o.value} title={o.label} chevron={false} trailing={clearAfter === o.value ? <Check color={c.primaryStrong} size={20} /> : null} onPress={() => setClearAfter(o.value)} />
+            ))}
+          </ListGroup>
+          {!known ? (
+            <ListGroup>
+              <ListRow
+                title="Save to my statuses"
+                leading={<BookmarkPlus color={c.textMuted} size={20} />}
+                chevron={false}
+                disabled={createPreset.isPending}
+                onPress={() =>
+                  createPreset.mutate(
+                    { emoji, text: text.trim(), clear_after: clearAfter },
+                    { onSuccess: () => toast.success("Saved to your statuses."), onError: (e) => toast.error(errorMessage(e, "Couldn't save it.")) },
+                  )
+                }
+              />
+            </ListGroup>
+          ) : null}
+        </>
       )}
 
-      <ListGroup title="Pause notifications" info="While paused you get no push notifications. Messages and badges still arrive in the app.">
+      <ListGroup
+        title="Pause notifications"
+        info={
+          bySchedule
+            ? "Your notification schedule paused them. Resuming lets notifications through until your next quiet hours."
+            : "While paused you get no push notifications. Messages and badges still arrive in the app."
+        }
+      >
         {paused ? <ListRow title="Resume notifications" chevron={false} onPress={() => dnd.mutate(null, { onError: (e) => toast.error(errorMessage(e)) })} /> : null}
         {PRESENCE_DND_OPTIONS.map((o) => (
           <ListRow
@@ -186,6 +243,18 @@ export function StatusScreen() {
             }
           />
         ))}
+      </ListGroup>
+
+      <ListGroup title="Schedule">
+        <ListRow
+          title="Notification schedule"
+          trailing={
+            <Text role="label" tone="muted">
+              {scheduleDays.length === 0 ? "Off" : scheduleDays.length === 7 ? "Every day" : `${scheduleDays.length} days · ${presenceQuietHoursLabel(scheduleDays[0])}`}
+            </Text>
+          }
+          onPress={() => router.push("/presence/schedule" as Href)}
+        />
       </ListGroup>
 
       <Switch label="Appear away" value={data.away} onValueChange={(v) => away.mutate(v, { onError: (e) => toast.error(errorMessage(e)) })} />

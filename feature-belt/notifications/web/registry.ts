@@ -1,6 +1,6 @@
 import { useUnreadNotificationCount } from "@scaffoldapp/shared";
 import { Bell, BellRing } from "lucide-react";
-import type { HeaderAction, HomeTile, NavItem, SessionMount, SettingsSection } from "../registry";
+import type { HeaderAction, HomeTile, NavItem, QuickAction, SessionMount, SettingsSection } from "../registry";
 import { NotificationBell } from "./NotificationBell";
 import { NotificationToasts } from "./toasts";
 
@@ -18,3 +18,6 @@ export const notificationsSettings: SettingsSection = { href: "/settings/notific
 
 /** Admin → Notifications: delivery stats and test sends. */
 export const notificationsAdminNav: NavItem = { href: "/admin/notifications", label: "Notifications", icon: BellRing };
+
+/** ⌘K: open the inbox. */
+export const notificationsInboxAction: QuickAction = { id: "notifications.inbox", label: "Open inbox", icon: Bell, keywords: ["notifications", "activity", "mentions"], href: "/notifications" };

@@ -21,7 +21,7 @@ import { topic } from "../realtime/topics";
 import type { Me, Page } from "../types";
 import { generateId } from "../utils/id";
 import { channelsEndpoints } from "./api";
-import { channelsAttachmentKind, compareChannelsMessages } from "./format";
+import { channelsAttachmentKind, channelsTimeZone, compareChannelsMessages } from "./format";
 import type {
   ChannelsAdminChannel,
   ChannelsAttachmentUrl,
@@ -77,6 +77,19 @@ export const channelsKeys = {
   message: (id: string) => ["channels", "message", id] as const,
   attachment: (id: string) => ["channels", "attachment", id] as const,
   admin: (id: string, params: object = {}) => ["channels", "admin", id, params] as const,
+  activity: (orgId: string, filter: string) => ["channels", "activity", orgId, filter] as const,
+  unreads: (orgId: string) => ["channels", "unreads", orgId] as const,
+  drafts: (orgId: string) => ["channels", "drafts", orgId] as const,
+  draft: (channelId: string, rootId?: string | null) => ["channels", "draft", channelId, rootId ?? "timeline"] as const,
+  sent: (orgId: string) => ["channels", "sent", orgId] as const,
+  scheduled: (orgId: string) => ["channels", "scheduled", orgId] as const,
+  reminders: (orgId: string, state: "open" | "done") => ["channels", "reminders", orgId, state] as const,
+  emoji: (orgId: string) => ["channels", "emoji", orgId] as const,
+  bookmarks: (channelId: string) => ["channels", "bookmarks", channelId] as const,
+  card: (url: string) => ["channels", "card", url] as const,
+  profile: (orgId: string, userId: string) => ["channels", "profile", orgId, userId] as const,
+  webhooks: (channelId: string) => ["channels", "webhooks", channelId] as const,
+  settings: (orgId: string) => ["channels", "settings", orgId] as const,
 };
 
 registerReconnectRefetch(channelsKeys.all());
@@ -252,8 +265,12 @@ registerRealtimeHandler("channels.message", (qc, e) => {
 registerRealtimeHandler("channels.message_updated", (qc, e) => {
   const msg = e.data;
   if (isHidden(qc, msg.channel_id, msg.sender?.id)) return;
-  // Viewer-specific fields (saved) aren't in broadcast events: keep the cached value.
-  updateEverywhere(qc, msg, (old) => ({ ...msg, saved: old.saved }));
+  // Viewer-specific fields (saved, your poll votes) aren't in broadcast events: keep the cached values.
+  updateEverywhere(qc, msg, (old) => ({
+    ...msg,
+    saved: old.saved,
+    poll: msg.poll && msg.poll.my_votes === null ? { ...msg.poll, my_votes: old.poll?.my_votes ?? [] } : msg.poll,
+  }));
   if (!msg.thread_root_id && msg.reply_count > 0) void qc.invalidateQueries({ queryKey: channelsKeys.topicsAll(msg.channel_id) });
 });
 
@@ -268,6 +285,8 @@ registerRealtimeHandler("channels.channel", (qc, e) => {
   void qc.invalidateQueries({ queryKey: channelsKeys.channel(channel_id) });
   if (reason === "members") void qc.invalidateQueries({ queryKey: ["channels", "members", channel_id] });
   if (reason === "pins") void qc.invalidateQueries({ queryKey: channelsKeys.pins(channel_id) });
+  if (reason === "bookmarks") void qc.invalidateQueries({ queryKey: channelsKeys.bookmarks(channel_id) });
+  if (reason === "retention") void qc.invalidateQueries({ queryKey: channelsKeys.messagesAll(channel_id) });
 });
 
 registerRealtimeHandler("channels.sidebar", (qc, e) => {
@@ -290,8 +309,28 @@ registerRealtimeHandler("channels.sidebar", (qc, e) => {
     return;
   }
   void qc.invalidateQueries({ queryKey: channelsKeys.workspace(org_id) });
+  if (reason === "emoji") {
+    void qc.invalidateQueries({ queryKey: channelsKeys.emoji(org_id) });
+    return;
+  }
+  if (reason === "draft") {
+    void qc.invalidateQueries({ queryKey: channelsKeys.drafts(org_id) });
+    void qc.invalidateQueries({ queryKey: ["channels", "draft", channel_id] });
+    return;
+  }
+  if (reason === "scheduled") {
+    void qc.invalidateQueries({ queryKey: channelsKeys.scheduled(org_id) });
+    return;
+  }
+  if (reason === "prefs" || reason === "activity") {
+    if (reason === "activity") void qc.invalidateQueries({ queryKey: ["channels", "activity", org_id] });
+    return;
+  }
   void qc.invalidateQueries({ queryKey: channelsKeys.unread() });
-  if (reason === "later") void qc.invalidateQueries({ queryKey: ["channels", "later", org_id] });
+  if (reason === "later") {
+    void qc.invalidateQueries({ queryKey: ["channels", "later", org_id] });
+    void qc.invalidateQueries({ queryKey: ["channels", "reminders", org_id] });
+  }
   if (reason === "removed" || reason === "added" || reason === "updated") void qc.invalidateQueries({ queryKey: channelsKeys.channel(channel_id) });
 });
 
@@ -464,7 +503,7 @@ export function useChannelsSearch(orgId: string | null | undefined, q: string, c
   const ready = query.length >= 2;
   return usePagedQuery<ChannelsSearchHit>(
     channelsKeys.search(orgId ?? "", query, channelId),
-    (cursor, signal) => c.search(orgId ?? "", { q: query, ...(channelId ? { channel_id: channelId } : {}), cursor, limit: 30 }, { signal }),
+    (cursor, signal) => c.search(orgId ?? "", { q: query, tz: channelsTimeZone(), ...(channelId ? { channel_id: channelId } : {}), cursor, limit: 30 }, { signal }),
     { placeholderData: (prev) => prev },
     !!orgId && ready,
   );
@@ -537,6 +576,11 @@ function optimistic(qc: QueryClient, channelId: string, input: ChannelsSendInput
     reactions: [],
     pinned: false,
     saved: false,
+    links: [],
+    links_hidden: false,
+    poll: null,
+    forward: null,
+    integration: false,
     client_id: input.client_id,
     edited_at: null,
     deleted: false,
@@ -579,7 +623,7 @@ export function useChannelsSend(channelId: string): ChannelsSender {
         ...(input.also_send_to_channel ? { also_send_to_channel: true } : {}),
         ...(input.title?.trim() ? { title: input.title.trim() } : {}),
         ...(input.tags?.length ? { tags: input.tags } : {}),
-        ...(input.attachments?.length ? { attachments: input.attachments.map(({ preview_url: _p, content_type: _c, ...a }) => a) } : {}),
+        ...(input.attachments?.length ? { attachments: input.attachments.map(({ preview_url: _p, ...a }) => a) } : {}),
       }),
     onMutate: (input) => {
       if (input.title) return; // forum posts show in the list once they exist
@@ -913,4 +957,16 @@ export function useAdminRemoveChannelsMessage(): UseMutationResult<void, ApiErro
 /** Refetch everything channels show after the user blocks or unblocks someone. */
 export function refreshChannelsAfterBlock(qc: QueryClient): Promise<void> {
   return qc.invalidateQueries({ queryKey: channelsKeys.all() });
+}
+
+// ───────────────────────────────────────────────────────────── shared cache helpers ──
+
+/** Put a message the server returned into the caches that show it (polls, forwards, scheduled sends). */
+export function channelsPutMessage(qc: QueryClient, msg: ChannelsMessage): void {
+  place(qc, msg.channel_id, msg);
+}
+
+/** Replace a message you changed (vote, close a poll, remove previews) wherever it's cached. */
+export function channelsReplaceMessage(qc: QueryClient, msg: ChannelsMessage): void {
+  updateEverywhere(qc, msg, (old) => ({ ...msg, saved: old.saved }));
 }

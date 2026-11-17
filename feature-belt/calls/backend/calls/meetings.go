@@ -137,6 +137,11 @@ func (s *Service) joinInfo(ctx context.Context, m *meetingRow, userID uuid.UUID)
 		return JoinInfo{}, err
 	}
 	info := JoinInfo{MeetingID: m.ID, Code: m.Code, Kind: m.Kind, Mode: a.Mode, Live: m.LiveNow}
+	if a.canJoin() || a.Mode == ModeKnock {
+		if info.Recording, err = recordingNow(ctx, s.d.Pool, m.ID); err != nil {
+			return JoinInfo{}, err
+		}
+	}
 	if a.Reason != "" {
 		info.Reason = &a.Reason
 	}
@@ -172,6 +177,7 @@ type updateMeetingReq struct {
 	StartsAt     *time.Time `json:"starts_at"`
 	EndsAt       *time.Time `json:"ends_at"`
 	ClearTimes   bool       `json:"clear_times"` // make it an unscheduled link
+	rulesReq
 }
 
 // updateMeeting: PATCH /calls/meetings/{id} (hosts). Settings and schedule.
@@ -209,8 +215,14 @@ func (s *Service) updateMeeting(w http.ResponseWriter, r *http.Request) error {
 		}
 		if after.Access == AccessOpen && !after.LobbyEnabled && !after.Locked {
 			admitted, err = decideWaiting(ctx, tx, m.ID, nil, "admitted", me.UserID)
+			if err != nil {
+				return err
+			}
 		}
-		return err
+		if req.rulesReq.any() {
+			return updateRules(ctx, tx, after, req.rulesReq)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -227,6 +239,12 @@ func (s *Service) updateMeeting(w http.ResponseWriter, r *http.Request) error {
 	s.lobbyDecided(ctx, row, admitted)
 	if req.Access != nil || req.Locked != nil || req.LobbyEnabled != nil {
 		s.revokeMeeting(ctx, m.ID) // people the new setting keeps out stop hearing
+	}
+	if req.rulesReq.any() && row.LiveSession != nil {
+		s.syncRoom(ctx, m.ID)
+		if req.AllowScreenShare != nil || req.AllowUnmute != nil {
+			s.applyPermissions(ctx, m.ID)
+		}
 	}
 	httpx.OK(w, d)
 	return nil
@@ -559,17 +577,48 @@ func (s *Service) mint(ctx context.Context, m *meetingRow, identity, name string
 	if _, err := ensureSession(dctx, s.d.Pool, m.ID); err != nil {
 		return JoinToken{}, err
 	}
-	room := m.ID.String()
-	if err := s.media.EnsureRoom(dctx, room, RoomOptions{MaxParticipants: s.cfg.maxParticipants, EmptyTimeout: emptyRoomTimeout, DepartureTimeout: departureTimeout}); err != nil {
+	return s.mintFor(ctx, m, m.ID.String(), identity, name, meta)
+}
+
+// mintFor issues a token for one of the meeting's rooms (the meeting's own,
+// or a breakout room), creating it with the room's metadata and limiting
+// what identity may publish to the meeting's rules.
+func (s *Service) mintFor(ctx context.Context, m *meetingRow, room, identity, name string, meta participantMetadata) (JoinToken, error) {
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	fresh, err := loadMeeting(dctx, s.d.Pool, m.ID) // the session ensureSession may just have opened
+	if err != nil {
+		return JoinToken{}, err
+	}
+	rm, err := s.roomMeta(dctx, s.d.Pool, fresh)
+	if err != nil {
+		return JoinToken{}, err
+	}
+	if room != m.ID.String() && rm.Breakout != nil {
+		for _, r := range rm.Breakout.Rooms {
+			if r.ID.String() == room {
+				rm = breakoutMeta(rm, r)
+			}
+		}
+	}
+	speakers, err := sessionSpeakers(dctx, s.d.Pool, fresh.LiveSession)
+	if err != nil {
+		return JoinToken{}, err
+	}
+	if err := s.media.EnsureRoom(dctx, room, RoomOptions{MaxParticipants: s.cfg.maxParticipants, EmptyTimeout: emptyRoomTimeout,
+		DepartureTimeout: departureTimeout, Metadata: rm.json()}); err != nil {
 		slog.ErrorContext(ctx, "calls: media server unreachable", "provider", s.media.Name(), "err", err)
 		return JoinToken{}, errMediaUnavailable
 	}
-	tok, exp, err := s.media.Token(Grant{Room: room, Identity: identity, Name: name, Metadata: meta.String(), TTL: s.cfg.tokenTTL})
+	sources := publishSources(fresh, isHostRole(meta.Role), identity, speakers)
+	tok, exp, err := s.media.Token(Grant{Room: room, Identity: identity, Name: name, Metadata: meta.String(), Sources: sources, TTL: s.cfg.tokenTTL})
 	if err != nil {
 		return JoinToken{}, err
 	}
 	return JoinToken{Token: tok, URL: s.media.ClientURL(), Room: room, Identity: identity, ExpiresAt: exp, Role: meta.Role, MeetingID: m.ID}, nil
 }
+
+func isHostRole(role string) bool { return role == RoleHost || role == RoleCohost }
 
 // syncRole updates a live participant's role in the room (best-effort).
 func (s *Service) syncRole(ctx context.Context, m *meetingRow, userID uuid.UUID, role string) {

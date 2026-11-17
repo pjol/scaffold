@@ -54,7 +54,7 @@ func (s *Service) Tools() []app.Tool {
 		},
 		{
 			Name:        "calendar_find_free_time",
-			Description: "Find times in the user's working hours when they (and optionally colleagues from their " + orgs.Nouns() + ") are all free. Colleagues are given by user id from calendar_search_people.",
+			Description: "Find times in the user's working hours when they (and optionally colleagues from their " + orgs.Nouns() + ") are all free, inside each colleague's own working hours and time zone too (free/busy only: no titles unless shared). Colleagues are given by user id from calendar_search_people.",
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -143,7 +143,7 @@ func (s *Service) Tools() []app.Tool {
 			Target:  func(json.RawMessage) (string, string) { return KindEvent, "" },
 			Preview: s.previewCreate,
 		},
-	}, s.connectedTools()...)
+	}, append(s.depthTools(), s.connectedTools()...)...)
 }
 
 func decodeTool(raw json.RawMessage, dst any) error {

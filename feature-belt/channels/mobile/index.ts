@@ -6,4 +6,5 @@ export { ThreadScreen } from "./ThreadScreen";
 export { ChannelInfoScreen } from "./ChannelInfoScreen";
 export { NewDMScreen } from "./NewDMScreen";
 export { BrowseScreen, LaterScreen, SearchScreen, ThreadsScreen } from "./ListScreens";
+export { ActivityScreen, DraftsScreen, ForwardScreen, PersonScreen, UnreadsScreen } from "./MoreScreens";
 export { ChannelsMarkdown } from "./Markdown";

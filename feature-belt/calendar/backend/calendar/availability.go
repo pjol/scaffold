@@ -16,6 +16,7 @@ type busyItem struct {
 	Start, End           time.Time
 	BlockStart, BlockEnd time.Time
 	Title                string // set only when the owner shares details
+	Type                 string // event type: default, out_of_office or focus
 }
 
 // Slot is a bookable or free time.
@@ -37,7 +38,8 @@ func (s *Service) busyFor(ctx context.Context, q db.Querier, userID uuid.UUID, f
 	}
 	blocks := map[uuid.UUID][2]time.Time{}
 	rows, err := q.Query(ctx, `SELECT id, lower(block), upper(block) FROM calendar_bookings
-		WHERE host_id = $1 AND status = 'confirmed' AND block && tstzrange($2, $3)`, userID, from.Add(-24*time.Hour), to.Add(24*time.Hour))
+		WHERE (host_id = $1 OR id IN (SELECT booking_id FROM calendar_booking_hosts WHERE user_id = $1))
+		  AND status = 'confirmed' AND block && tstzrange($2, $3)`, userID, from.Add(-24*time.Hour), to.Add(24*time.Hour))
 	if err != nil {
 		return nil, err
 	}
@@ -52,20 +54,28 @@ func (s *Service) busyFor(ctx context.Context, q db.Querier, userID uuid.UUID, f
 	}
 	rows.Close()
 
+	skipCals, err := nonBusyCalendars(ctx, q, userID)
+	if err != nil {
+		return nil, err
+	}
 	var out []busyItem
 	for _, o := range occ {
 		if o.ShowAs != "busy" || (o.MyResponse != nil && *o.MyResponse == ResponseDeclined) {
+			continue
+		}
+		if o.Role == "owner" && o.CalendarID != nil && skipCals[*o.CalendarID] {
 			continue
 		}
 		if o.BookingID != nil && *o.BookingID == excludeBooking {
 			continue
 		}
 		it := busyItem{Start: o.StartsAt, End: o.EndsAt, BlockStart: o.StartsAt, BlockEnd: o.EndsAt}
-		if o.BookingID != nil && o.Role == "owner" {
+		if o.BookingID != nil {
 			if b, ok := blocks[*o.BookingID]; ok {
 				it.BlockStart, it.BlockEnd = b[0], b[1]
 			}
 		}
+		it.Type = o.EventType
 		if it.BlockEnd.After(from) && it.BlockStart.Before(to) {
 			if o.Visibility == "details" {
 				it.Title = o.Title
@@ -229,4 +239,32 @@ func freeTimes(loc *time.Location, hours []HoursInterval, from, to time.Time, du
 	return generateSlots(slotRules{
 		loc: loc, weekly: hours, duration: dur, interval: 30 * time.Minute, earliest: now,
 	}, from, to, busy, limit)
+}
+
+// offHours is the time outside someone's weekly working hours (in their
+// zone) over [from, to), as busy items: find-a-time keeps suggestions
+// inside every attendee's day.
+func offHours(loc *time.Location, hours []HoursInterval, from, to time.Time) []busyItem {
+	r := slotRules{loc: loc, weekly: hours}
+	var out []busyItem
+	cursor := from
+	first := from.In(loc).AddDate(0, 0, -1)
+	last := to.In(loc).AddDate(0, 0, 1)
+	for day := time.Date(first.Year(), first.Month(), first.Day(), 12, 0, 0, 0, loc); !day.After(last); day = day.AddDate(0, 0, 1) {
+		for _, w := range r.windowsOn(day) {
+			if w[1].Before(from) || !w[0].Before(to) {
+				continue
+			}
+			if w[0].After(cursor) {
+				out = append(out, busyItem{Start: cursor, End: w[0], BlockStart: cursor, BlockEnd: w[0]})
+			}
+			if w[1].After(cursor) {
+				cursor = w[1]
+			}
+		}
+	}
+	if cursor.Before(to) {
+		out = append(out, busyItem{Start: cursor, End: to, BlockStart: cursor, BlockEnd: to})
+	}
+	return out
 }

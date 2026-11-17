@@ -15,7 +15,7 @@
  * Time zone: `setCallsTimeZone` (from the shared package, web and mobile alike) sets the zone
  * Calls shows times in, e.g. the person's calendar zone.
  */
-import type { CallsSource } from "@scaffoldapp/shared";
+import type { CallsMeeting, CallsSource } from "@scaffoldapp/shared";
 
 export interface CallsScheduleContext {
   /** Opens an app path. */
@@ -55,4 +55,43 @@ export function setCallsSourceLink(linker: CallsSourceLinker | null): void {
 /** The link for a meeting's source, or null (no source, or the app gave none). */
 export function callsSourceLink(source: CallsSource | null | undefined): CallsSourceLink | null {
   return source && sourceLinker ? sourceLinker(source) : null;
+}
+
+/** The meeting's agenda or notes, e.g. a docs page linked from its calendar event: an app path and a label ("Meeting notes"). */
+export type CallsNotesLinker = (meeting: CallsMeeting) => CallsSourceLink | null;
+
+let notesLinker: CallsNotesLinker | null = null;
+
+/** Sets where a meeting's notes live (shown on the meeting page); null removes the link. */
+export function setCallsNotesLink(linker: CallsNotesLinker | null): void {
+  notesLinker = linker;
+}
+
+export function callsNotesLink(meeting: CallsMeeting | null | undefined): CallsSourceLink | null {
+  return meeting && notesLinker ? notesLinker(meeting) : null;
+}
+
+/** What a saved transcript can turn into (e.g. "Summarize into a page" through the app's assistant). */
+export interface CallsTranscriptContext {
+  sessionId: string;
+  meetingId: string;
+  title: string;
+  /** Opens an app path. */
+  navigate: (href: string) => void;
+}
+
+export interface CallsTranscriptAction {
+  label: string;
+  run: (ctx: CallsTranscriptContext) => void | Promise<void>;
+}
+
+let transcriptAction: CallsTranscriptAction | null = null;
+
+/** Adds an action to saved transcripts (call pages); null removes it. */
+export function setCallsTranscriptAction(action: CallsTranscriptAction | null): void {
+  transcriptAction = action;
+}
+
+export function callsTranscriptAction(): CallsTranscriptAction | null {
+  return transcriptAction;
 }

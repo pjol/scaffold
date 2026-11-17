@@ -57,6 +57,7 @@ AI agents act for a user through one door: the agent endpoint (`/mcp`, the `mcp`
 - Every credential minted for an agent (MCP OAuth access/refresh tokens, personal API keys) starts with `auth.AgentCredentialPrefix` (`agt_<slug>_<kind>_…`). `Authenticator.Middleware` refuses it with 401 `agent_credential` before any provider sees it, so it never opens a user route, an upload, the WebSocket or another feature's API.
 - OAuth access tokens are audience-bound to the agent endpoint (RFC 8707 `resource`); the endpoint refuses tokens for any other audience and refuses people's session tokens.
 - Minting credentials, consenting to a client and changing agent scopes are user routes, so only a person's session reaches them; no agent tool can create, list or widen credentials or scopes.
+- AAuth agents (mcp ≥ 1.2.0) hold no bearer credential at all: they sign each request (RFC 9421) with a token from their person server, and only `/mcp` and `/aauth/*` verify signatures. A person token never reaches data; an auth token from the person server acts as the account its `(iss, sub)` was linked to by that person at `/connect/aauth`, within its scope and the person's agent scope. Linking and unlinking are user routes too.
 
 ## Rules
 

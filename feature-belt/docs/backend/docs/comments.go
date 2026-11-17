@@ -38,6 +38,7 @@ type Comment struct {
 	Deleted     bool       `json:"deleted"`
 	CreatedAt   time.Time  `json:"created_at"`
 	Replies     []Comment  `json:"replies"`
+	Reactions   []Reaction `json:"reactions"`
 }
 
 const maxCommentChars = 4000
@@ -69,6 +70,7 @@ func scanComment(row pgx.Row) (Comment, error) {
 		c.ResolvedBy = &RefUser{ID: *resolvedBy, Name: *resolverName}
 	}
 	c.Replies = []Comment{}
+	c.Reactions = []Reaction{}
 	return c, nil
 }
 
@@ -151,6 +153,9 @@ func (s *Service) threads(ctx context.Context, me, pageID uuid.UUID, status stri
 			roots[i].Replies = append(roots[i].Replies, c)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	// A deleted root with no replies left is noise.
 	out := roots[:0]
 	for _, c := range roots {
@@ -158,7 +163,10 @@ func (s *Service) threads(ctx context.Context, me, pageID uuid.UUID, status stri
 			out = append(out, c)
 		}
 	}
-	return out, rows.Err()
+	if err := s.attachReactions(ctx, me, blocked, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type commentReq struct {
@@ -514,4 +522,5 @@ func (s *Service) notifyComment(ctx context.Context, actor uuid.UUID, p *Page, c
 	if c.ThreadID == nil && p.CreatedBy != nil {
 		deliver(*p.CreatedBy, NotifyComment, name+" commented on "+title)
 	}
+	s.notifyFollowersOfComment(ctx, actor, p, thread, body, done)
 }

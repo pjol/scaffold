@@ -40,7 +40,8 @@ func (s *Service) loadSettings(ctx context.Context, q db.Querier, orgID, userID 
 		Scan(&st.RecordAccess, &st.Currency, &st.SourceMode, &st.SourceProviders, &st.UpdatedAt); err != nil {
 		return nil, err
 	}
-	for key, perm := range map[string]string{"manage_settings": PermManageSettings, "export": PermExport, "import": PermImport, "delete": PermDelete} {
+	for key, perm := range map[string]string{"manage_settings": PermManageSettings, "export": PermExport, "import": PermImport, "delete": PermDelete,
+		"manage_products": PermManageProducts, "publish_quotes": PermPublishQuotes, "manage_workflows": PermWorkflows, "manage_forms": PermForms} {
 		st.Can[key] = allowedHere(ctx, q, orgID, userID, perm)
 	}
 	return st, nil

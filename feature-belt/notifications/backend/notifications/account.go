@@ -17,14 +17,16 @@ import (
 
 // ---- account deletion and export -------------------------------------------
 
-// DeleteAccount removes the user's inbox, devices, preferences and pending
-// push tickets.
+// DeleteAccount removes the user's inbox, devices, preferences, mutes,
+// digest setting and pending push tickets.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	for _, q := range []string{
 		`DELETE FROM notifications WHERE user_id = $1`,
 		`DELETE FROM notification_devices WHERE user_id = $1`,
 		`DELETE FROM notification_preferences WHERE user_id = $1`,
 		`DELETE FROM notification_push_tickets WHERE user_id = $1`,
+		`DELETE FROM notification_mutes WHERE user_id = $1`,
+		`DELETE FROM notification_digests WHERE user_id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -47,7 +49,8 @@ type exportPreference struct {
 }
 
 // ExportAccount returns saved preferences, registered devices (platform and
-// dates; tokens are credentials and stay out) and the latest 500 inbox rows.
+// dates; tokens are credentials and stay out), the latest 500 inbox rows
+// (and up to 500 snoozed ones), mutes and the digest setting.
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
 	rows, err := s.d.Pool.Query(ctx, `SELECT kind, push, email, updated_at FROM notification_preferences
 		WHERE user_id = $1 ORDER BY kind`, userID)
@@ -67,11 +70,28 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if err != nil {
 		return nil, err
 	}
-	inbox, err := s.inbox(ctx, userID, false, cursor{}, 500)
+	inbox, err := s.inbox(ctx, userID, inboxFilter{}, cursor{}, 500)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"preferences": prefs, "devices": devices, "inbox": inbox}, nil
+	snoozed, err := s.inbox(ctx, userID, inboxFilter{Snoozed: true}, cursor{}, 500)
+	if err != nil {
+		return nil, err
+	}
+	inbox = append(inbox, snoozed...)
+	rows, err = s.d.Pool.Query(ctx, `SELECT resource, label, created_at FROM notification_mutes WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	mutes, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Mute])
+	if err != nil {
+		return nil, err
+	}
+	digest, err := s.digestSettings(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"preferences": prefs, "devices": devices, "inbox": inbox, "mutes": mutes, "digest": digest}, nil
 }
 
 // ---- development seed ------------------------------------------------------
@@ -104,8 +124,8 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 			readAt = &t
 		}
 		if _, err := s.d.Pool.Exec(ctx, `
-			INSERT INTO notifications (id, user_id, kind, title, body, link, read_at, created_at)
-			VALUES ($1, $2, $3, $4, $5, '', $6, $7) ON CONFLICT (id) DO NOTHING`,
+			INSERT INTO notifications (id, user_id, kind, title, body, link, read_at, created_at, sort_at)
+			VALUES ($1, $2, $3, $4, $5, '', $6, $7, $7) ON CONFLICT (id) DO NOTHING`,
 			uuid.NewSHA1(seedNS, []byte(r.key)), sam, kindTest, r.title, r.body, readAt, created); err != nil {
 			return err
 		}
@@ -122,13 +142,14 @@ func (s *Service) Tools() []app.Tool {
 	return []app.Tool{
 		{
 			Name:        "notifications_list_inbox",
-			Description: "List the user's recent notifications, newest first, with the unread count.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"unread_only":{"type":"boolean","description":"Only unread notifications."},"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}},"additionalProperties":false}`),
+			Description: "List the user's recent notifications, newest first, with the unread count. Snoozed notifications are left out until they come back.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"unread_only":{"type":"boolean","description":"Only unread notifications."},"kind":{"type":"string","description":"Only one kind (channels.mention) or one feature (channels)."},"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}},"additionalProperties":false}`),
 			ReadOnly:    true,
 			Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 				var in struct {
-					UnreadOnly bool `json:"unread_only"`
-					Limit      int  `json:"limit"`
+					UnreadOnly bool   `json:"unread_only"`
+					Kind       string `json:"kind"`
+					Limit      int    `json:"limit"`
 				}
 				if len(input) > 0 {
 					if err := json.Unmarshal(input, &in); err != nil {
@@ -138,10 +159,15 @@ func (s *Service) Tools() []app.Tool {
 				if in.Limit <= 0 || in.Limit > 50 {
 					in.Limit = 20
 				}
+				in.Kind = strings.TrimSpace(in.Kind)
+				if in.Kind != "" && !kindFilterRE.MatchString(in.Kind) {
+					return nil, httpx.BadRequest("kind is a kind like channels.mention or a feature like channels.")
+				}
+				f := inboxFilter{UnreadOnly: in.UnreadOnly, Kind: in.Kind}
 				if s.agentCall(ctx) {
 					// Only notifications about what the person lets agents read,
 					// and only those in the count.
-					items, err := s.agentInbox(ctx, caller, in.UnreadOnly, in.Limit)
+					items, err := s.agentInbox(ctx, caller, f, in.Limit)
 					if err != nil {
 						return nil, err
 					}
@@ -151,7 +177,7 @@ func (s *Service) Tools() []app.Tool {
 					}
 					return map[string]any{"items": items, "unread_count": unread}, nil
 				}
-				items, err := s.inbox(ctx, caller.UserID, in.UnreadOnly, cursor{}, in.Limit)
+				items, err := s.inbox(ctx, caller.UserID, f, cursor{}, in.Limit)
 				if err != nil {
 					return nil, err
 				}

@@ -225,7 +225,7 @@ function GrantEditor({ data, grant: g, onDone }: { data: AccessSharing; grant: A
   const [confirmOwner, setConfirmOwner] = useState(false);
   const canMakeOwner = g.subject.type === "user" && (data.is_owner || data.admin_override || data.owner === null);
   return (
-    <View style={{ gap: theme.space[3], paddingVertical: theme.space[3], paddingHorizontal: theme.space[4] }}>
+    <View style={{ gap: theme.space[3], paddingVertical: theme.space[3] }}>
       <Text weight={600}>{g.subject.type === "team" ? `${g.subject.name} · ${memberCount(g.subject.member_count)}` : g.subject.name}</Text>
       <SegmentedControl<AccessLevel>
         accessibilityLabel={`Access for ${g.subject.name}`}
@@ -289,7 +289,7 @@ function General({ data }: { data: AccessSharing }) {
     set.mutate(access === "org" ? { access, level: level ?? "view" } : { access }, { onError: (e) => toast.error(errorMessage(e, "Couldn't change general access. Try again.")) });
   return (
     <ListGroup title="General access" info={`Restricted: only the people and teams listed. ${orgsNounTitle()}: every member gets this level too.`}>
-      <View style={{ gap: theme.space[3], paddingVertical: theme.space[3], paddingHorizontal: theme.space[4] }}>
+      <View style={{ gap: theme.space[3], paddingVertical: theme.space[3] }}>
         <SegmentedControl<"restricted" | "org">
           accessibilityLabel="Who can open it"
           value={own ? "org" : "restricted"}

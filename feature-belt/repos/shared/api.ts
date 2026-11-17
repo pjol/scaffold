@@ -48,6 +48,36 @@ import type {
   ReposTreeCommits,
   ReposUpdatePullRequest,
   ReposUpdateRequest,
+  ReposApplySuggestionsRequest,
+  ReposArchiveFormat,
+  ReposArchiveLink,
+  ReposCITokens,
+  ReposCreatedCIToken,
+  ReposCreateIssueRequest,
+  ReposInsights,
+  ReposIssue,
+  ReposIssueComment,
+  ReposIssuePage,
+  ReposIssueTimeline,
+  ReposLabel,
+  ReposLabelRequest,
+  ReposLabelRow,
+  ReposMilestone,
+  ReposMilestoneRequest,
+  ReposMention,
+  ReposPendingReview,
+  ReposReaction,
+  ReposReactionEmoji,
+  ReposReactionSubject,
+  ReposRelease,
+  ReposReleaseAsset,
+  ReposReleaseRequest,
+  ReposTemplate,
+  ReposUpdateIssueRequest,
+  ReposWebhook,
+  ReposWebhookDelivery,
+  ReposWebhookEvent,
+  ReposWebhookRequest,
 } from "./types";
 
 type PageParams = { cursor?: string | undefined; limit?: number };
@@ -133,11 +163,14 @@ export function reposEndpoints(http: HttpClient) {
     updatePull: (id: string, n: number, body: ReposUpdatePullRequest, o?: CallOptions) => http.patch<ReposPull>(pull(id, n), body, o),
     closePull: (id: string, n: number, o?: CallOptions) => http.post<ReposPull>(`${pull(id, n)}/close`, undefined, o),
     reopenPull: (id: string, n: number, o?: CallOptions) => http.post<ReposPull>(`${pull(id, n)}/reopen`, undefined, o),
-    timeline: (id: string, n: number, o?: CallOptions) => http.get<{ items: ReposTimelineItem[] }>(`${pull(id, n)}/timeline`, o),
+    timeline: (id: string, n: number, o?: CallOptions) => http.get<{ items: ReposTimelineItem[]; mentions?: ReposMention[] }>(`${pull(id, n)}/timeline`, o),
     pullCommits: (id: string, n: number, o?: CallOptions) => http.get<{ items: ReposCommit[] }>(`${pull(id, n)}/commits`, o),
-    pullDiff: (id: string, n: number, params: { path?: string; commit?: string } = {}, o?: CallOptions) =>
-      http.get<{ base: string; head: string; diff: ReposDiff }>(`${pull(id, n)}/diff`, { ...o, query: { path: params.path, commit: params.commit } }),
-    threads: (id: string, n: number, o?: CallOptions) => http.get<{ items: ReposThread[]; head_sha: string }>(`${pull(id, n)}/threads`, o),
+    pullDiff: (id: string, n: number, params: { path?: string; commit?: string; ignoreWhitespace?: boolean } = {}, o?: CallOptions) =>
+      http.get<{ base: string; head: string; diff: ReposDiff }>(`${pull(id, n)}/diff`, {
+        ...o,
+        query: { path: params.path, commit: params.commit, ignore_ws: params.ignoreWhitespace ? "1" : undefined },
+      }),
+    threads: (id: string, n: number, o?: CallOptions) => http.get<{ items: ReposThread[]; head_sha: string; mentions?: ReposMention[] }>(`${pull(id, n)}/threads`, o),
     mergeability: (id: string, n: number, o?: CallOptions) => http.get<ReposMergeability>(`${pull(id, n)}/mergeability`, o),
     merge: (id: string, n: number, body: ReposMergeRequest, o?: CallOptions) => http.post<ReposPull>(`${pull(id, n)}/merge`, body, o),
     addComment: (id: string, n: number, body: ReposCommentRequest, o?: CallOptions) => http.post<ReposComment>(`${pull(id, n)}/comments`, body, o),
@@ -150,6 +183,89 @@ export function reposEndpoints(http: HttpClient) {
     requestReviewers: (id: string, n: number, userIds: string[], o?: CallOptions) =>
       http.post<{ items: ReposReviewer[] }>(`${pull(id, n)}/reviewers`, { user_ids: userIds }, o),
     removeReviewer: (id: string, n: number, userId: string, o?: CallOptions) => http.delete<void>(`${pull(id, n)}/reviewers/${seg(userId)}`, o),
+    setDraft: (id: string, n: number, draft: boolean, o?: CallOptions) => http.post<ReposPull>(`${pull(id, n)}/${draft ? "draft" : "ready"}`, undefined, o),
+    setPullLabels: (id: string, n: number, ids: string[], o?: CallOptions) => http.put<ReposPull>(`${pull(id, n)}/labels`, { ids }, o),
+    setPullAssignees: (id: string, n: number, ids: string[], o?: CallOptions) => http.put<ReposPull>(`${pull(id, n)}/assignees`, { ids }, o),
+    enableAutoMerge: (id: string, n: number, method: ReposMergeRequest["method"], o?: CallOptions) => http.put<ReposPull>(`${pull(id, n)}/auto-merge`, { method }, o),
+    disableAutoMerge: (id: string, n: number, o?: CallOptions) => http.delete<ReposPull>(`${pull(id, n)}/auto-merge`, o),
+    updateBranch: (id: string, n: number, expectedHead?: string, o?: CallOptions) => http.post<ReposPull>(`${pull(id, n)}/update-branch`, { expected_head: expectedHead }, o),
+    applySuggestions: (id: string, n: number, body: ReposApplySuggestionsRequest, o?: CallOptions) => http.post<ReposCommitResult>(`${pull(id, n)}/suggestions`, body, o),
+    viewedFiles: (id: string, n: number, o?: CallOptions) => http.get<{ items: string[] }>(`${pull(id, n)}/viewed`, o),
+    setViewed: (id: string, n: number, path: string, viewed: boolean, o?: CallOptions) =>
+      viewed ? http.put<void>(`${pull(id, n)}/viewed`, { path }, o) : http.delete<void>(`${pull(id, n)}/viewed`, { ...o, body: { path } }),
+    pendingReview: (id: string, n: number, o?: CallOptions) => http.get<ReposPendingReview>(`${pull(id, n)}/reviews/pending`, o),
+    discardPendingReview: (id: string, n: number, o?: CallOptions) => http.delete<void>(`${pull(id, n)}/reviews/pending`, o),
+
+    // ---- issues
+    issues: (id: string, params: PageParams & { q?: string } = {}, o?: CallOptions) =>
+      http.get<ReposIssuePage>(`${repo(id)}/issues`, { ...o, query: { cursor: params.cursor, limit: params.limit, q: params.q || undefined } }),
+    createIssue: (id: string, body: ReposCreateIssueRequest, o?: CallOptions) => http.post<ReposIssue>(`${repo(id)}/issues`, body, o),
+    issue: (id: string, n: number, o?: CallOptions) => http.get<ReposIssue>(`${repo(id)}/issues/${n}`, o),
+    updateIssue: (id: string, n: number, body: ReposUpdateIssueRequest, o?: CallOptions) => http.patch<ReposIssue>(`${repo(id)}/issues/${n}`, body, o),
+    deleteIssue: (id: string, n: number, o?: CallOptions) => http.delete<void>(`${repo(id)}/issues/${n}`, o),
+    setIssueLabels: (id: string, n: number, ids: string[], o?: CallOptions) => http.put<ReposIssue>(`${repo(id)}/issues/${n}/labels`, { ids }, o),
+    setIssueAssignees: (id: string, n: number, ids: string[], o?: CallOptions) => http.put<ReposIssue>(`${repo(id)}/issues/${n}/assignees`, { ids }, o),
+    issueTimeline: (id: string, n: number, o?: CallOptions) => http.get<ReposIssueTimeline>(`${repo(id)}/issues/${n}/timeline`, o),
+    addIssueComment: (id: string, n: number, body: string, o?: CallOptions) => http.post<ReposIssueComment>(`${repo(id)}/issues/${n}/comments`, { body }, o),
+    editIssueComment: (id: string, n: number, commentId: string, body: string, o?: CallOptions) =>
+      http.patch<ReposIssueComment>(`${repo(id)}/issues/${n}/comments/${seg(commentId)}`, { body }, o),
+    deleteIssueComment: (id: string, n: number, commentId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/issues/${n}/comments/${seg(commentId)}`, o),
+    react: (id: string, subject: { type: ReposReactionSubject; id: string }, emoji: ReposReactionEmoji, add: boolean, o?: CallOptions) => {
+      const body = { subject_type: subject.type, subject_id: subject.id, emoji };
+      return add ? http.put<{ items: ReposReaction[] }>(`${repo(id)}/reactions`, body, o) : http.delete<{ items: ReposReaction[] }>(`${repo(id)}/reactions`, { ...o, body });
+    },
+    templates: (id: string, kind: "issue" | "pull", o?: CallOptions) => http.get<{ items: ReposTemplate[] }>(`${repo(id)}/templates`, { ...o, query: { kind } }),
+    labels: (id: string, o?: CallOptions) => http.get<{ items: ReposLabelRow[] }>(`${repo(id)}/labels`, o),
+    createLabel: (id: string, body: ReposLabelRequest, o?: CallOptions) => http.post<ReposLabel>(`${repo(id)}/labels`, body, o),
+    updateLabel: (id: string, labelId: string, body: ReposLabelRequest, o?: CallOptions) => http.patch<ReposLabel>(`${repo(id)}/labels/${seg(labelId)}`, body, o),
+    deleteLabel: (id: string, labelId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/labels/${seg(labelId)}`, o),
+    milestones: (id: string, state: "open" | "closed" | "all" = "open", o?: CallOptions) => http.get<{ items: ReposMilestone[] }>(`${repo(id)}/milestones`, { ...o, query: { state } }),
+    milestone: (id: string, milestoneId: string, o?: CallOptions) => http.get<ReposMilestone>(`${repo(id)}/milestones/${seg(milestoneId)}`, o),
+    createMilestone: (id: string, body: ReposMilestoneRequest, o?: CallOptions) => http.post<ReposMilestone>(`${repo(id)}/milestones`, body, o),
+    updateMilestone: (id: string, milestoneId: string, body: ReposMilestoneRequest, o?: CallOptions) =>
+      http.patch<ReposMilestone>(`${repo(id)}/milestones/${seg(milestoneId)}`, body, o),
+    deleteMilestone: (id: string, milestoneId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/milestones/${seg(milestoneId)}`, o),
+
+    // ---- statuses, CI tokens
+    commitStates: (id: string, shas: string[], o?: CallOptions) =>
+      http.get<{ states: Record<string, "success" | "failure" | "pending"> }>(`${repo(id)}/commit-states`, { ...o, query: { shas: shas.join(",") } }),
+    checksFor: (id: string, sha: string, branch?: string, o?: CallOptions) => http.get<ReposChecks>(`${repo(id)}/commits/${seg(sha)}/checks`, { ...o, query: { branch } }),
+    ciTokens: (id: string, o?: CallOptions) => http.get<ReposCITokens>(`${repo(id)}/ci-tokens`, o),
+    createCIToken: (id: string, name: string, o?: CallOptions) => http.post<ReposCreatedCIToken>(`${repo(id)}/ci-tokens`, { name }, o),
+    revokeCIToken: (id: string, tokenId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/ci-tokens/${seg(tokenId)}`, o),
+
+    // ---- releases, tags, archives, insights
+    releases: (id: string, params: PageParams = {}, o?: CallOptions) =>
+      http.get<Page<ReposRelease>>(`${repo(id)}/releases`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    release: (id: string, releaseId: string, o?: CallOptions) => http.get<ReposRelease>(`${repo(id)}/releases/${seg(releaseId)}`, o),
+    createRelease: (id: string, body: ReposReleaseRequest, o?: CallOptions) => http.post<ReposRelease>(`${repo(id)}/releases`, body, o),
+    updateRelease: (id: string, releaseId: string, body: ReposReleaseRequest, o?: CallOptions) => http.patch<ReposRelease>(`${repo(id)}/releases/${seg(releaseId)}`, body, o),
+    deleteRelease: (id: string, releaseId: string, deleteTag: boolean, o?: CallOptions) =>
+      http.delete<void>(`${repo(id)}/releases/${seg(releaseId)}`, { ...o, query: { delete_tag: deleteTag ? "1" : undefined } }),
+    releaseNotes: (id: string, target: string, previous?: string, o?: CallOptions) =>
+      http.get<{ body: string; pulls: number; commits: number }>(`${repo(id)}/releases/notes`, { ...o, query: { target, previous } }),
+    addReleaseAsset: (id: string, releaseId: string, key: string, name: string, o?: CallOptions) =>
+      http.post<ReposReleaseAsset>(`${repo(id)}/releases/${seg(releaseId)}/assets`, { key, name }, o),
+    downloadReleaseAsset: (id: string, releaseId: string, assetId: string, o?: CallOptions) =>
+      http.get<{ url: string; name: string }>(`${repo(id)}/releases/${seg(releaseId)}/assets/${seg(assetId)}`, o),
+    deleteReleaseAsset: (id: string, releaseId: string, assetId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/releases/${seg(releaseId)}/assets/${seg(assetId)}`, o),
+    createTag: (id: string, name: string, target?: string, o?: CallOptions) => http.post<{ name: string; sha: string }>(`${repo(id)}/tags`, { name, target }, o),
+    deleteTag: (id: string, name: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/tags`, { ...o, query: { name } }),
+    archive: (id: string, ref: string | undefined, format: ReposArchiveFormat, o?: CallOptions) => http.post<ReposArchiveLink>(`${repo(id)}/archive`, { ref, format }, o),
+    insights: (id: string, o?: CallOptions) => http.get<ReposInsights>(`${repo(id)}/insights`, o),
+
+    // ---- webhooks (manage)
+    webhooks: (id: string, o?: CallOptions) => http.get<{ items: ReposWebhook[]; events: ReposWebhookEvent[] }>(`${repo(id)}/webhooks`, o),
+    createWebhook: (id: string, body: ReposWebhookRequest, o?: CallOptions) => http.post<ReposWebhook>(`${repo(id)}/webhooks`, body, o),
+    updateWebhook: (id: string, hookId: string, body: ReposWebhookRequest, o?: CallOptions) => http.patch<ReposWebhook>(`${repo(id)}/webhooks/${seg(hookId)}`, body, o),
+    deleteWebhook: (id: string, hookId: string, o?: CallOptions) => http.delete<void>(`${repo(id)}/webhooks/${seg(hookId)}`, o),
+    pingWebhook: (id: string, hookId: string, o?: CallOptions) => http.post<{ queued: boolean }>(`${repo(id)}/webhooks/${seg(hookId)}/ping`, undefined, o),
+    deliveries: (id: string, hookId: string, params: PageParams = {}, o?: CallOptions) =>
+      http.get<Page<ReposWebhookDelivery>>(`${repo(id)}/webhooks/${seg(hookId)}/deliveries`, { ...o, query: { cursor: params.cursor, limit: params.limit } }),
+    delivery: (id: string, hookId: string, deliveryId: string, o?: CallOptions) =>
+      http.get<ReposWebhookDelivery>(`${repo(id)}/webhooks/${seg(hookId)}/deliveries/${seg(deliveryId)}`, o),
+    redeliver: (id: string, hookId: string, deliveryId: string, o?: CallOptions) =>
+      http.post<{ queued: boolean }>(`${repo(id)}/webhooks/${seg(hookId)}/deliveries/${seg(deliveryId)}/redeliver`, undefined, o),
 
     // ---- git credentials (your own)
     credentials: (params: PageParams = {}, o?: CallOptions) =>

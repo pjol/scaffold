@@ -2,6 +2,7 @@ import type { CallOptions, HttpClient } from "../api/http";
 import type { Page } from "../types";
 import type {
   AssistantConsent,
+  AssistantContextKind,
   AssistantConversation,
   AssistantConversationListParams,
   AssistantDailyTotals,
@@ -17,6 +18,8 @@ const conv = (id: string) => `/v1/assistant/conversations/${encodeURIComponent(i
  */
 export const assistantEndpoints = (http: HttpClient) => ({
   status: (o?: CallOptions) => http.get<AssistantStatus>("/v1/assistant/status", o),
+  /** Kinds this person can summarise or ask about from a ⋮ menu. */
+  contexts: (o?: CallOptions) => http.get<{ items: AssistantContextKind[] }>("/v1/assistant/contexts", o),
   /** `provider` must be the name the consent dialog showed (`status.provider.name`). */
   acceptConsent: (provider: string) => http.post<AssistantConsent>("/v1/assistant/consent", { provider }),
   withdrawConsent: () => http.delete<void>("/v1/assistant/consent"),

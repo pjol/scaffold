@@ -92,8 +92,12 @@ func TestPreviewKind(t *testing.T) {
 		"text/x-go|main.go|1":        "code",
 		"image/svg+xml|a.svg|1":      "svg",
 		"image/heic|a.heic|0":        "other",
-		"application/zip|a.zip|0":    "other",
+		"application/zip|a.zip|0":    "archive",
 		"application/msword|a.doc|0": "office",
+		"application/json|a.json|1":  "json",
+		"font/woff2|a.woff2|0":       "font",
+		"text/plain|a.tsv|1":         "csv",
+		"|data.bin|0":                "other",
 	}
 	for in, want := range cases {
 		p := strings.Split(in, "|")

@@ -54,10 +54,12 @@ func (s *Service) afterRefUpdates(ctx context.Context, repo *Repo, actor *auth.I
 	}
 	changed := map[int]bool{}
 	for _, u := range updates {
+		s.emitPush(ctx, repo, actor, u)
 		branch, ok := u.branch()
 		if !ok {
 			continue
 		}
+		s.scanCommitRefs(ctx, repo, actor, branch, u)
 		if err := s.followHead(ctx, repo, rules, branch, u, actorID, changed); err != nil {
 			slog.WarnContext(ctx, "repos: updating pull requests failed", "repo_id", repo.ID, "branch", branch, "err", err)
 		}
@@ -67,6 +69,9 @@ func (s *Service) afterRefUpdates(ctx context.Context, repo *Repo, actor *auth.I
 	}
 	for n := range changed {
 		s.pullChanged(ctx, repo.ID, n)
+	}
+	if len(changed) > 0 {
+		s.autoMergeAll(ctx, repo)
 	}
 	s.publish(ctx, repo.ID, EventRefsChanged, map[string]any{"via": via})
 	if via != "push" { // receive-pack runs gc --auto itself

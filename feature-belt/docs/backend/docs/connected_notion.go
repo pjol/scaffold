@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -180,6 +181,7 @@ type nBody struct {
 	Cells           [][]nRich `json:"cells"`
 	IsToggleable    bool      `json:"is_toggleable"`
 	SyncedFrom      *nParent  `json:"synced_from"`
+	Color           string    `json:"color"`
 }
 
 func (b *nBlock) body() nBody {
@@ -274,6 +276,9 @@ func notionSpans(rt []nRich, refs *Refs) []Span {
 	for _, r := range rt {
 		s := Span{Text: r.PlainText, Bold: r.Annotations.Bold, Italic: r.Annotations.Italic, Underline: r.Annotations.Underline,
 			Strike: r.Annotations.Strikethrough, Code: r.Annotations.Code}
+		if c := r.Annotations.Color; c != "default" && validColor(c) {
+			s.Color = c // Notion's colour names are Docs' own
+		}
 		switch r.Type {
 		case "text":
 			if r.Text != nil {
@@ -284,7 +289,7 @@ func notionSpans(rt []nRich, refs *Refs) []Span {
 			}
 		case "equation":
 			if r.Equation != nil {
-				s.Text, s.Code = r.Equation.Expression, true
+				s.Text, s.Equation, s.Code = r.Equation.Expression, true, false
 			}
 		case "mention":
 			m := r.Mention
@@ -330,9 +335,17 @@ func notionSpans(rt []nRich, refs *Refs) []Span {
 func notionRich(spans []Span, known map[string]bool) ([]map[string]any, error) {
 	out := []map[string]any{}
 	ann := func(s Span) map[string]any {
-		return map[string]any{"bold": s.Bold, "italic": s.Italic, "strikethrough": s.Strike, "underline": s.Underline, "code": s.Code, "color": "default"}
+		color := "default"
+		if s.Color != "" {
+			color = s.Color
+		}
+		return map[string]any{"bold": s.Bold, "italic": s.Italic, "strikethrough": s.Strike, "underline": s.Underline, "code": s.Code, "color": color}
 	}
 	for _, s := range spans {
+		if s.Equation {
+			out = append(out, map[string]any{"type": "equation", "equation": map[string]any{"expression": s.Text}, "annotations": ann(s)})
+			continue
+		}
 		if m := s.Mention; m != nil {
 			switch {
 			case m.Type == "user" && known[m.ID]:
@@ -368,14 +381,19 @@ func notionRich(spans []Span, known map[string]bool) ([]map[string]any, error) {
 var notionToDocs = map[string]string{
 	"paragraph": "paragraph", "heading_1": "heading_1", "heading_2": "heading_2", "heading_3": "heading_3",
 	"bulleted_list_item": "bulleted_list", "numbered_list_item": "numbered_list", "to_do": "to_do", "toggle": "toggle",
-	"quote": "quote", "callout": "callout", "code": "code", "divider": "divider",
+	"quote": "quote", "callout": "callout", "code": "code", "divider": "divider", "equation": "equation",
 }
 
 var docsToNotion = map[string]string{
 	"paragraph": "paragraph", "heading_1": "heading_1", "heading_2": "heading_2", "heading_3": "heading_3",
 	"bulleted_list": "bulleted_list_item", "numbered_list": "numbered_list_item", "to_do": "to_do", "toggle": "toggle",
-	"quote": "quote", "callout": "callout", "code": "code", "divider": "divider",
+	"quote": "quote", "callout": "callout", "code": "code", "divider": "divider", "equation": "equation",
+	"table_of_contents": "table_of_contents",
 }
+
+// notionColored types carry a block colour on Notion.
+var notionColored = map[string]bool{"paragraph": true, "heading_1": true, "heading_2": true, "heading_3": true, "bulleted_list": true,
+	"numbered_list": true, "to_do": true, "toggle": true, "quote": true, "callout": true, "table_of_contents": true}
 
 // Notion's code language names where they differ from Docs'.
 var notionLanguages = map[string]string{"plain text": "plain", "c++": "cpp", "c#": "csharp", "shell": "bash", "objective-c": "plain"}
@@ -405,15 +423,22 @@ func notionLanguage(l string) string {
 
 // convert maps one Notion block onto a Docs block. readOnly marks blocks
 // Docs shows but doesn't change (media, embeds, sub-pages, tables,
-// equations, anything unsupported).
+// anything unsupported). Colours, toggle headings and equations map to
+// Docs' own.
 func convertNotionBlock(b *nBlock, refs *Refs) (typ string, props map[string]any, readOnly bool) {
 	body := b.body()
 	if t, ok := notionToDocs[b.Type]; ok {
 		props = map[string]any{}
+		if c := body.Color; c != "" && c != "default" && validColor(c) {
+			props["color"] = c
+		}
 		switch t {
 		case "code":
 			props["code"] = richPlain(body.RichText)
 			props["language"] = docsLanguage(body.Language)
+			props["caption"] = notionSpans(body.Caption, refs)
+		case "equation":
+			props["expression"] = body.Expression
 		case "divider":
 		default:
 			props["text"] = notionSpans(body.RichText, refs)
@@ -426,6 +451,9 @@ func convertNotionBlock(b *nBlock, refs *Refs) (typ string, props map[string]any
 					icon = *e
 				}
 				props["icon"] = icon
+			}
+			if strings.HasPrefix(t, "heading_") && body.IsToggleable {
+				props["toggleable"] = true
 			}
 		}
 		return t, props, false
@@ -445,11 +473,29 @@ func convertNotionBlock(b *nBlock, refs *Refs) (typ string, props map[string]any
 	case "file", "pdf", "video", "audio":
 		name := body.Name
 		if name == "" {
-			name = strings.ToUpper(b.Type[:1]) + b.Type[1:]
+			name = DisplayBlockType(b.Type)
 		}
-		return "file", map[string]any{"url": fileURL(), "name": name, "caption": notionSpans(body.Caption, refs), "size": 0}, true
-	case "bookmark", "embed", "link_preview":
+		ct := map[string]string{"pdf": "application/pdf", "video": "video/mp4", "audio": "audio/mpeg"}[b.Type]
+		if b.Type == "video" && body.External != nil {
+			// A YouTube or Vimeo link in a Notion video block is an embed.
+			if e, ok := embedFor(body.External.URL); ok {
+				return "embed", map[string]any{"url": e.URL, "provider": e.Provider, "src": e.Src, "caption": notionSpans(body.Caption, refs)}, true
+			}
+		}
+		return b.Type, map[string]any{"url": fileURL(), "name": name, "content_type": ct, "caption": notionSpans(body.Caption, refs), "size": 0}, true
+	case "embed":
+		if e, ok := embedFor(body.URL); ok {
+			return "embed", map[string]any{"url": e.URL, "provider": e.Provider, "src": e.Src, "caption": notionSpans(body.Caption, refs)}, true
+		}
 		return "bookmark", map[string]any{"url": body.URL, "title": "", "caption": notionSpans(body.Caption, refs)}, true
+	case "bookmark", "link_preview":
+		return "bookmark", map[string]any{"url": body.URL, "title": "", "caption": notionSpans(body.Caption, refs)}, true
+	case "table_of_contents":
+		props = map[string]any{}
+		if c := body.Color; c != "" && c != "default" && validColor(c) {
+			props["color"] = c
+		}
+		return "table_of_contents", props, true
 	case "child_page", "child_database":
 		kind := "page"
 		if b.Type == "child_database" {
@@ -468,9 +514,7 @@ func convertNotionBlock(b *nBlock, refs *Refs) (typ string, props map[string]any
 			t := "Linked page"
 			refs.Pages[platformUUID(target).String()] = RefPage{ID: platformUUID(target), Title: &t, Kind: kind}
 		}
-		return "page", map[string]any{"page_id": platformUUID(target).String()}, true
-	case "equation":
-		return "code", map[string]any{"code": body.Expression, "language": "latex"}, true
+		return "link_to_page", map[string]any{"page_id": platformUUID(target).String()}, true
 	}
 	return "paragraph", map[string]any{"text": []Span{{Text: "This Notion block (" + strings.ReplaceAll(b.Type, "_", " ") + ") isn't shown here.", Italic: true}}}, true
 }
@@ -482,8 +526,17 @@ func notionPayload(typ string, props map[string]any, known map[string]bool) (str
 		return "", nil, errUnsupported("Notion", "Adding this kind of block")
 	}
 	body := map[string]any{}
+	if c, _ := props["color"].(string); notionColored[typ] {
+		if c == "" || !validColor(c) {
+			c = "default"
+		}
+		body["color"] = c
+	}
 	switch typ {
-	case "divider":
+	case "divider", "table_of_contents":
+	case "equation":
+		expr, _ := props["expression"].(string)
+		body["expression"] = expr
 	case "code":
 		code, _ := props["code"].(string)
 		lang, _ := props["language"].(string)
@@ -508,6 +561,10 @@ func notionPayload(typ string, props map[string]any, known map[string]bool) (str
 				icon = "💡"
 			}
 			body["icon"] = map[string]any{"type": "emoji", "emoji": icon}
+		}
+		if strings.HasPrefix(typ, "heading_") {
+			t, _ := props["toggleable"].(bool)
+			body["is_toggleable"] = t
 		}
 	}
 	return nt, body, nil
@@ -741,8 +798,8 @@ func (n *notion) load(ctx context.Context, ref string) (*extDoc, error) {
 }
 
 // collect loads parent's children (paginated) into st, nesting under
-// client (nil: the top level). Columns and synced blocks are flattened:
-// their children join the level they sit in.
+// client (nil: the top level). Column lists, columns and synced blocks
+// keep their structure (add).
 func (n *notion) collect(ctx context.Context, parent string, client *uuid.UUID, depth int, synced bool, st *notionLoad) error {
 	cursor := ""
 	for {
@@ -776,25 +833,32 @@ func (n *notion) collect(ctx context.Context, parent string, client *uuid.UUID, 
 }
 
 func (n *notion) add(ctx context.Context, b *nBlock, parent string, client *uuid.UUID, depth int, synced bool, st *notionLoad) error {
-	switch b.Type {
-	case "column_list", "column":
-		if b.HasChildren {
-			return n.collect(ctx, b.ID, client, depth, synced, st)
-		}
-		return nil
-	case "synced_block":
-		if b.HasChildren {
-			return n.collect(ctx, b.ID, client, depth, true, st)
-		}
-		return nil
-	case "table_of_contents", "breadcrumb", "template":
-		return nil
+	if b.Type == "breadcrumb" || b.Type == "template" {
+		return nil // the app's own breadcrumb shows the path; templates are Notion's
 	}
 	eb := &extBlock{platformID: b.ID, platformParent: parent, platformType: b.Type, edited: b.LastEditedTime, hasKids: b.HasChildren}
 	eb.ID = platformUUID(b.ID)
 	eb.PageID = st.pageID
 	eb.ParentID = client
 	eb.CreatedAt, eb.UpdatedAt = b.CreatedTime, parseNotionTime(b.LastEditedTime)
+	switch b.Type {
+	case "column_list", "column", "synced_block":
+		// Structure stays Notion's: a column list and its columns (blocks in a
+		// column edit as usual), a synced block (original or copy) whose blocks
+		// are read-only here.
+		eb.Type, eb.Props, eb.readOnly = b.Type, map[string]any{}, b.Type != "column" || synced
+		inSynced := synced || b.Type == "synced_block"
+		eb.synced = synced
+		if depth >= maxBlockDepth-1 {
+			return nil
+		}
+		st.blocks = append(st.blocks, eb)
+		if !b.HasChildren || n.shallow {
+			return nil
+		}
+		id := eb.ID
+		return n.collect(ctx, b.ID, &id, depth+1, inSynced, st)
+	}
 	if b.Type == "table" {
 		rows := [][][]Span{}
 		var err error
@@ -816,11 +880,11 @@ func (n *notion) add(ctx context.Context, b *nBlock, parent string, client *uuid
 	if !b.HasChildren || b.Type == "child_page" || b.Type == "child_database" || n.shallow {
 		return nil
 	}
-	if isNestable(eb.Type) && depth < maxBlockDepth {
+	if holdsChildren(eb.Type, eb.Props) && depth < maxBlockDepth {
 		id := eb.ID
 		return n.collect(ctx, b.ID, &id, depth+1, synced, st)
 	}
-	// Children Docs can't nest (a toggleable heading's): shown after it.
+	// Children Docs can't nest: shown after it.
 	return n.collect(ctx, b.ID, client, depth, synced, st)
 }
 
@@ -942,7 +1006,7 @@ func sameContent(a, b map[string]any) bool {
 	if !spansEqual(spansValue(a["text"]), spansValue(b["text"])) {
 		return false
 	}
-	for _, k := range []string{"checked", "icon", "code", "language"} {
+	for _, k := range []string{"checked", "icon", "code", "language", "expression", "color", "toggleable"} {
 		if fmt.Sprint(a[k]) != fmt.Sprint(b[k]) {
 			return false
 		}
@@ -998,7 +1062,7 @@ func (n *notion) update(ctx context.Context, sess *extSession, op Op, res *OpsRe
 		}
 		next["text"] = spans
 	}
-	for _, k := range []string{"checked", "icon", "code", "language"} {
+	for _, k := range []string{"checked", "icon", "code", "language", "expression", "color", "toggleable"} {
 		if raw, ok := op.Props[k]; ok {
 			var v any
 			_ = json.Unmarshal(raw, &v)
@@ -1091,7 +1155,7 @@ func (n *notion) create(ctx context.Context, sess *extSession, op Op, res *OpsRe
 	var parent *extBlock
 	if op.ParentID != nil {
 		parent = sess.blocks[*op.ParentID]
-		if parent == nil || parent.readOnly || !isNestable(parent.Type) {
+		if parent == nil || parent.readOnly || !holdsChildren(parent.Type, parent.Props) {
 			reject(res, op, "invalid_parent", "A block can't go there on a Notion page.")
 			return nil
 		}
@@ -1197,6 +1261,17 @@ type nProp struct {
 	Select      *nOptions `json:"select"`
 	MultiSelect *nOptions `json:"multi_select"`
 	Status      *nOptions `json:"status"`
+	Formula     *struct {
+		Expression string `json:"expression"`
+	} `json:"formula"`
+	Rollup *struct {
+		Function           string `json:"function"`
+		RelationPropertyID string `json:"relation_property_id"`
+		RollupPropertyID   string `json:"rollup_property_id"`
+	} `json:"rollup"`
+	UniqueID *struct {
+		Prefix *string `json:"prefix"`
+	} `json:"unique_id"`
 }
 
 type nOptions struct {
@@ -1211,12 +1286,44 @@ type nOptions struct {
 	} `json:"groups"`
 }
 
-var notionColors = map[string]string{"default": "neutral", "gray": "neutral", "brown": "neutral", "orange": "warning", "yellow": "warning",
-	"green": "success", "blue": "info", "purple": "primary", "pink": "accent", "red": "danger"}
+// Notion's option colours are the same hues as Docs' swatches.
+var notionColors = map[string]string{"default": "default", "gray": "gray", "brown": "brown", "orange": "orange", "yellow": "yellow",
+	"green": "green", "blue": "blue", "purple": "purple", "pink": "pink", "red": "red"}
 
-// Notion property types Docs edits as its own; the rest show read-only text.
+// Notion property types and their Docs types. Formulas, rollups, created
+// and edited values, unique IDs, files and people are read-only (Notion's
+// API doesn't write them, or they aren't app people); relations show as
+// read-only text ("3 linked": naming the pages needs a request per page).
 var notionPropTypes = map[string]string{"title": "title", "rich_text": "text", "number": "number", "select": "select", "multi_select": "multi_select",
-	"status": "status", "date": "date", "people": "person", "checkbox": "checkbox", "url": "url", "email": "email", "phone_number": "text"}
+	"status": "status", "date": "date", "people": "person", "checkbox": "checkbox", "url": "url", "email": "email", "phone_number": "phone",
+	"formula": "formula", "rollup": "rollup", "created_time": "created_time", "last_edited_time": "last_edited_time",
+	"created_by": "created_by", "last_edited_by": "last_edited_by", "unique_id": "unique_id", "files": "files"}
+
+// notionNumberFormats maps Notion's number formats onto Docs' (currencies by
+// ISO code: Docs stores them in minor units, so values scale on the way in
+// and out; Notion's percent stores 0.5 for 50%, Docs stores 50).
+var notionNumberFormats = map[string]string{"number": "number", "number_with_commas": "number_commas", "percent": "percent",
+	"dollar": "usd", "canadian_dollar": "cad", "australian_dollar": "aud", "singapore_dollar": "sgd", "hong_kong_dollar": "hkd",
+	"new_zealand_dollar": "nzd", "new_taiwan_dollar": "twd", "euro": "eur", "pound": "gbp", "yen": "jpy", "ruble": "rub", "rupee": "inr",
+	"won": "krw", "yuan": "cny", "real": "brl", "lira": "try", "rupiah": "idr", "franc": "chf", "krona": "sek", "norwegian_krone": "nok",
+	"danish_krone": "dkk", "mexican_peso": "mxn", "rand": "zar", "zloty": "pln", "baht": "thb", "forint": "huf", "koruna": "czk",
+	"shekel": "ils", "chilean_peso": "clp", "philippine_peso": "php", "dirham": "aed", "colombian_peso": "cop", "riyal": "sar",
+	"ringgit": "myr", "leu": "ron", "argentine_peso": "ars", "peruvian_sol": "pen", "naira": "ngn", "shilling": "kes", "dong": "vnd"}
+
+// notionRollupFunctions maps Notion's rollup functions onto Docs'.
+var notionRollupFunctions = map[string]string{"show_original": "show_original", "show_unique": "show_unique", "count": "count_all",
+	"count_values": "count_values", "unique": "count_unique_values", "empty": "count_empty", "not_empty": "count_not_empty",
+	"percent_empty": "percent_empty", "percent_not_empty": "percent_not_empty", "sum": "sum", "average": "average", "median": "median",
+	"min": "min", "max": "max", "range": "range", "earliest_date": "earliest_date", "latest_date": "latest_date", "date_range": "date_range",
+	"checked": "checked", "unchecked": "unchecked", "percent_checked": "percent_checked", "percent_unchecked": "percent_unchecked"}
+
+// notionScale is what Docs multiplies a Notion number by (cents, percent).
+func notionScale(p Property) float64 {
+	if p.NumberFormat == "percent" {
+		return 100
+	}
+	return numberScale(p)
+}
 
 // notionSchema maps database properties onto Docs properties: title first,
 // then by name (the API doesn't say Notion's column order).
@@ -1234,14 +1341,31 @@ func notionSchema(raw map[string]json.RawMessage) []Property {
 		if prop.Type == "" {
 			prop.Type, prop.ReadOnly = "text", true
 		}
-		if p.Type == "people" {
+		switch p.Type {
+		case "people":
 			prop.ReadOnly = true // Notion people aren't app members
+		case "formula":
+			prop.ReadOnly = true
+			if p.Formula != nil {
+				prop.Formula = &FormulaConfig{Expression: p.Formula.Expression}
+			}
+		case "rollup":
+			prop.ReadOnly = true
+			if p.Rollup != nil {
+				prop.Rollup = &RollupConfig{Relation: p.Rollup.RelationPropertyID, Property: p.Rollup.RollupPropertyID, Function: notionRollupFunctions[p.Rollup.Function]}
+			}
+		case "created_time", "last_edited_time", "created_by", "last_edited_by", "files":
+			prop.ReadOnly = true
+		case "unique_id":
+			prop.ReadOnly = true
+			prop.UniqueID = &UniqueIDConfig{}
+			if p.UniqueID != nil && p.UniqueID.Prefix != nil {
+				prop.UniqueID.Prefix = *p.UniqueID.Prefix
+			}
 		}
 		if p.Number != nil {
-			switch p.Number.Format {
-			case "percent", "dollar", "euro", "pound":
-				prop.NumberFormat = p.Number.Format
-			default:
+			prop.NumberFormat = notionNumberFormats[p.Number.Format]
+			if prop.NumberFormat == "" {
 				prop.NumberFormat = "number"
 			}
 		}
@@ -1272,7 +1396,7 @@ func notionSchema(raw map[string]json.RawMessage) []Property {
 			for _, o := range opts.Options {
 				c := notionColors[o.Color]
 				if c == "" {
-					c = "neutral"
+					c = "default"
 				}
 				opt := Option{ID: o.ID, Name: o.Name, Color: c}
 				if p.Type == "status" {
@@ -1362,20 +1486,29 @@ func notionValues(raw map[string]json.RawMessage, schema []Property, refs *Refs)
 				Start string  `json:"start"`
 				End   *string `json:"end"`
 			} `json:"date"`
-			People      []nUser                 `json:"people"`
-			Checkbox    bool                    `json:"checkbox"`
-			URL         *string                 `json:"url"`
-			Email       *string                 `json:"email"`
-			Phone       *string                 `json:"phone_number"`
-			Formula     map[string]any          `json:"formula"`
-			Rollup      map[string]any          `json:"rollup"`
-			Relation    []map[string]any        `json:"relation"`
-			CreatedTime string                  `json:"created_time"`
-			EditedTime  string                  `json:"last_edited_time"`
-			CreatedBy   *nUser                  `json:"created_by"`
-			EditedBy    *nUser                  `json:"last_edited_by"`
-			Files       []struct{ Name string } `json:"files"`
-			UniqueID    *struct {
+			People      []nUser          `json:"people"`
+			Checkbox    bool             `json:"checkbox"`
+			URL         *string          `json:"url"`
+			Email       *string          `json:"email"`
+			Phone       *string          `json:"phone_number"`
+			Formula     map[string]any   `json:"formula"`
+			Rollup      map[string]any   `json:"rollup"`
+			Relation    []map[string]any `json:"relation"`
+			CreatedTime string           `json:"created_time"`
+			EditedTime  string           `json:"last_edited_time"`
+			CreatedBy   *nUser           `json:"created_by"`
+			EditedBy    *nUser           `json:"last_edited_by"`
+			Files       []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+				File *struct {
+					URL string `json:"url"`
+				} `json:"file"`
+				External *struct {
+					URL string `json:"url"`
+				} `json:"external"`
+			} `json:"files"`
+			UniqueID *struct {
 				Prefix *string `json:"prefix"`
 				Number *int    `json:"number"`
 			} `json:"unique_id"`
@@ -1396,7 +1529,7 @@ func notionValues(raw map[string]json.RawMessage, schema []Property, refs *Refs)
 			values[id] = richPlain(v.RichText)
 		case "number":
 			if v.Number != nil {
-				values[id] = *v.Number
+				values[id] = math.Round(*v.Number*notionScale(byID[id])*1e6) / 1e6
 			} else {
 				values[id] = nil
 			}
@@ -1446,36 +1579,43 @@ func notionValues(raw map[string]json.RawMessage, schema []Property, refs *Refs)
 		case "phone_number":
 			values[id] = deref(v.Phone)
 		case "formula":
-			values[id] = formulaText(v.Formula)
+			if x := notionComputed(v.Formula); x != nil {
+				values[id] = x
+			}
 		case "rollup":
-			values[id] = formulaText(v.Rollup)
+			if x := notionComputed(v.Rollup); x != nil {
+				values[id] = x
+			}
 		case "relation":
 			values[id] = fmt.Sprintf("%d linked", len(v.Relation))
-		case "created_time":
-			values[id] = docsDate(v.CreatedTime)
-		case "last_edited_time":
-			values[id] = docsDate(v.EditedTime)
+		case "created_time", "last_edited_time":
+			// Shown from the row's own times.
 		case "created_by", "last_edited_by":
 			u := v.CreatedBy
 			if v.Type == "last_edited_by" {
 				u = v.EditedBy
 			}
 			if u != nil {
-				values[id] = nonEmpty(u.Name, "Notion user")
+				// The row's created_by / updated_by (n.row moves it there).
+				values[id] = map[string]any{"notion_user": u.ID, "name": nonEmpty(u.Name, "Notion user")}
 			}
 		case "files":
-			var names []string
+			out := []map[string]any{}
 			for _, f := range v.Files {
-				names = append(names, f.Name)
+				u := ""
+				if f.File != nil {
+					u = f.File.URL // signed, short-lived: read again when shown
+				} else if f.External != nil {
+					u = f.External.URL
+				}
+				if u = safeLink(u); u != "" && !strings.HasPrefix(u, "mailto:") {
+					out = append(out, map[string]any{"url": u, "name": nonEmpty(f.Name, u)})
+				}
 			}
-			values[id] = strings.Join(names, ", ")
+			values[id] = out
 		case "unique_id":
 			if v.UniqueID != nil && v.UniqueID.Number != nil {
-				s := strconv.Itoa(*v.UniqueID.Number)
-				if v.UniqueID.Prefix != nil && *v.UniqueID.Prefix != "" {
-					s = *v.UniqueID.Prefix + "-" + s
-				}
-				values[id] = s
+				values[id] = float64(*v.UniqueID.Number)
 			}
 		default:
 			values[id] = ""
@@ -1511,6 +1651,72 @@ func formulaText(f map[string]any) string {
 	return ""
 }
 
+// notionComputed turns a Notion formula or rollup value into Docs' computed
+// JSON: numbers, text, booleans, {start, end} dates, and rollup arrays as
+// lists of their items' text (Notion sends each item as a property value).
+func notionComputed(f map[string]any) any {
+	if f == nil {
+		return nil
+	}
+	t, _ := f["type"].(string)
+	switch v := f[t].(type) {
+	case nil:
+		return nil
+	case string:
+		if v == "" {
+			return nil
+		}
+		return v
+	case float64, bool:
+		return v
+	case map[string]any:
+		if start, ok := v["start"].(string); ok && start != "" {
+			out := map[string]any{"start": docsDate(start)}
+			if end, _ := v["end"].(string); end != "" {
+				out["end"] = docsDate(end)
+			}
+			return out
+		}
+	case []any:
+		var items []any
+		for _, it := range v {
+			m, _ := it.(map[string]any)
+			if m == nil {
+				continue
+			}
+			it, _ := m["type"].(string)
+			switch x := m[it].(type) {
+			case []any: // title, rich_text
+				var b strings.Builder
+				for _, r := range x {
+					if rm, ok := r.(map[string]any); ok {
+						if pt, _ := rm["plain_text"].(string); pt != "" {
+							b.WriteString(pt)
+						}
+					}
+				}
+				if b.Len() > 0 {
+					items = append(items, b.String())
+				}
+			case map[string]any: // select, status, date, formula…
+				if name, _ := x["name"].(string); name != "" {
+					items = append(items, name)
+				} else if c := notionComputed(map[string]any{"type": it, it: x}); c != nil {
+					items = append(items, c)
+				}
+			case nil:
+			default:
+				items = append(items, x)
+			}
+		}
+		if items == nil {
+			return nil
+		}
+		return items
+	}
+	return nil
+}
+
 // docsDate turns a Notion date or time into Docs' YYYY-MM-DD[THH:MM].
 func docsDate(s string) string {
 	if len(s) >= 16 && s[10] == 'T' {
@@ -1539,6 +1745,25 @@ func nonEmpty(s, def string) string {
 func (n *notion) row(pg *nPage, schema []Property, refs *Refs, canEdit bool) Row {
 	title, values := notionValues(pg.Properties, schema, refs)
 	r := Row{ID: platformUUID(pg.ID), Title: title, Icon: emojiOf(pg.Icon), Props: values, Position: "a0", CreatedAt: pg.CreatedTime, UpdatedAt: pg.LastEditedTime, MyLevel: 1}
+	for _, p := range schema {
+		if p.Type != "created_by" && p.Type != "last_edited_by" {
+			continue
+		}
+		if m, ok := values[p.ID].(map[string]any); ok {
+			uid, _ := m["notion_user"].(string)
+			name, _ := m["name"].(string)
+			id := platformUUID(uid)
+			if p.Type == "created_by" {
+				r.CreatedBy = &id
+			} else {
+				r.UpdatedBy = &id
+			}
+			if refs != nil {
+				refs.Users[id.String()] = RefUser{ID: id, Name: name}
+			}
+		}
+		delete(values, p.ID)
+	}
 	if canEdit {
 		r.MyLevel = 3
 	}
@@ -1599,6 +1824,9 @@ func notionFilter(f Filter, schema []Property) map[string]any {
 	case "number":
 		ops := map[string]string{"eq": "equals", "neq": "does_not_equal", "gt": "greater_than", "gte": "greater_than_or_equal_to", "lt": "less_than", "lte": "less_than_or_equal_to"}
 		if op, ok := ops[f.Op]; ok && hasNum {
+			if p.NumberFormat == "percent" {
+				num /= 100 // Notion stores 0.5 for 50%
+			}
 			return cond(op, num)
 		}
 	case "select", "status":
@@ -1734,7 +1962,7 @@ func notionValue(p Property, raw json.RawMessage) (any, error) {
 		if !ok {
 			return nil, httpx.BadRequest(p.Name + " needs a number.")
 		}
-		return map[string]any{"number": f}, nil
+		return map[string]any{"number": f / notionScale(p)}, nil
 	case "select", "status":
 		if isNull {
 			return map[string]any{p.Source: nil}, nil
@@ -1892,7 +2120,7 @@ func notionChildren(list []*mdBlock, depth int) ([]any, error) {
 		if err != nil {
 			continue
 		}
-		if len(b.children) > 0 && depth < 1 && isNestable(b.typ) {
+		if len(b.children) > 0 && depth < 1 && holdsChildren(b.typ, b.props) {
 			kids, err := notionChildren(b.children, depth+1)
 			if err != nil {
 				return nil, err

@@ -3,7 +3,8 @@
  * Pure functions over the session snapshot; the editor applies the result as one step.
  */
 import {
-  docsIsNestable,
+  docsFolds,
+  docsHoldsChildren,
   docsIsTextBlock,
   docsKeyBetween,
   docsKeysBetween,
@@ -46,16 +47,17 @@ export function positionAtEnd(snap: DocsSessionSnapshot, parentId: string | null
   return docsKeyBetween(sibs[sibs.length - 1]?.position ?? null, null);
 }
 
-/** Visible blocks in document order (children of closed toggles left out). */
-export function visibleOrder(snap: DocsSessionSnapshot, isOpen: (id: string) => boolean): DocsBlock[] {
+/** Visible blocks in document order (children of closed toggles and toggle headings left out), from `root` (null: the page). */
+export function visibleOrder(snap: DocsSessionSnapshot, isOpen: (id: string) => boolean, root: string | null = null): DocsBlock[] {
   const out: DocsBlock[] = [];
-  const walk = (parent: string) => {
+  const walk = (parent: string, depth: number) => {
+    if (depth > 64) return;
     for (const b of snap.children.get(parent) ?? []) {
       out.push(b);
-      if (b.type !== "toggle" || isOpen(b.id)) walk(b.id);
+      if (!docsFolds(b.type, b.props) || isOpen(b.id)) walk(b.id, depth + 1);
     }
   };
-  walk("");
+  walk(root ?? "", 0);
   return out;
 }
 
@@ -67,6 +69,8 @@ export function newBlock(type: DocsBlockType, parentId: string | null, position:
     base.code = "";
     base.language = base.language ?? "plain";
   }
+  if (type === "equation" && base.expression === undefined) base.expression = "";
+  if (type === "button" && !base.label) base.label = "Button";
   return { op: "create", id: generateId(), type, parent_id: parentId, position, props: base };
 }
 
@@ -74,15 +78,21 @@ export function newBlock(type: DocsBlockType, parentId: string | null, position:
 export function turnInto(snap: DocsSessionSnapshot, b: DocsBlock, type: DocsBlockType, extra: DocsBlockProps = {}): DocsOp[] {
   const ops: DocsOp[] = [];
   const props: Partial<DocsBlockProps> = { ...extra };
-  if (docsIsTextBlock(type) && !docsIsTextBlock(b.type)) props.text = [];
+  const plain = (b.props.text ?? []).map((s) => s.text).join("");
+  if (docsIsTextBlock(type) && !docsIsTextBlock(b.type)) {
+    props.text = b.type === "code" ? [{ text: b.props.code ?? "" }] : b.type === "equation" ? [{ text: b.props.expression ?? "" }] : [];
+    if (!props.text[0]?.text) props.text = [];
+  }
   if (type === "to_do" && props.checked === undefined) props.checked = false;
   if (type === "callout" && !b.props.icon && !props.icon) props.icon = "💡";
-  if (type === "code") {
-    props.code = (b.props.text ?? []).map((s) => s.text).join("");
-    props.language = "plain";
+  if (type.startsWith("heading") && props.toggleable === undefined) props.toggleable = false;
+  if (type === "code" && b.type !== "code") {
+    props.code = extra.code || (b.type === "equation" ? (b.props.expression ?? "") : plain);
+    props.language = props.language ?? "plain";
   }
+  if (type === "equation" && b.type !== "equation") props.expression = extra.expression || (b.type === "code" ? (b.props.code ?? "") : plain);
   ops.push({ op: "update", id: b.id, type, props });
-  if (!docsIsNestable(type)) {
+  if (!docsHoldsChildren(type, { ...b.props, ...props } as DocsBlockProps)) {
     const kids = siblingsOf(snap, b.id);
     if (kids.length) {
       const keys = docsKeysBetween(b.position, nextSibling(snap, b)?.position ?? null, kids.length);
@@ -95,7 +105,7 @@ export function turnInto(snap: DocsSessionSnapshot, b: DocsBlock, type: DocsBloc
 /** Indent: the block becomes the last child of its previous sibling. */
 export function indentOps(snap: DocsSessionSnapshot, b: DocsBlock): DocsOp[] | null {
   const prev = prevSibling(snap, b);
-  if (!prev || !docsIsNestable(prev.type)) return null;
+  if (!prev || !docsHoldsChildren(prev.type, prev.props) || prev.type === "column_list" || b.type === "column") return null;
   return [{ op: "move", id: b.id, parent_id: prev.id, position: positionAtEnd(snap, prev.id) }];
 }
 
@@ -103,7 +113,8 @@ export function indentOps(snap: DocsSessionSnapshot, b: DocsBlock): DocsOp[] | n
 export function outdentOps(snap: DocsSessionSnapshot, b: DocsBlock): DocsOp[] | null {
   if (!b.parent_id) return null;
   const parent = snap.byId.get(b.parent_id);
-  if (!parent) return null;
+  // Blocks in a column, a synced block or a column list stay there (move them out by dragging).
+  if (!parent || parent.type === "column" || parent.type === "column_list" || parent.type === "synced_block" || b.type === "column") return null;
   return [{ op: "move", id: b.id, parent_id: parent.parent_id, position: positionAfter(snap, parent) }];
 }
 
@@ -126,7 +137,7 @@ export function draftOps(drafts: readonly DocsDraftBlock[], parentId: string | n
     const op = newBlock(d.type, parentId, keys[i]!, d.props);
     ops.push(op);
     ids.push(op.id);
-    if (d.children.length && docsIsNestable(d.type)) ops.push(...draftOps(d.children, op.id, null, null).ops);
+    if (d.children.length && docsHoldsChildren(d.type, d.props)) ops.push(...draftOps(d.children, op.id, null, null).ops);
   });
   return { ops, ids };
 }
@@ -194,4 +205,80 @@ export function moveBlocksOps(snap: DocsSessionSnapshot, ids: readonly string[],
   }
   const keys = docsKeysBetween(lo, hi, moving.length);
   return moving.map((b, i) => ({ op: "move" as const, id: b.id, parent_id: parentId, position: keys[i]! }));
+}
+
+// ---- columns ---------------------------------------------------------------------------
+
+/**
+ * Ops that put `ids` beside `target` as columns: a new column next to target's column when target is already in one
+ * (up to 5), else a new column list where target was, holding target and the moved blocks.
+ */
+export function columnDropOps(snap: DocsSessionSnapshot, ids: readonly string[], target: DocsBlock, side: "left" | "right"): DocsOp[] {
+  const set = new Set(ids);
+  const moving = snap.blocks.filter((b) => set.has(b.id) && !hasSelectedAncestor(snap, b, set));
+  if (!moving.length || moving.some((m) => isWithin(snap, target, m.id) || m.type === "column" || m.type === "column_list")) return [];
+  const parent = target.parent_id ? snap.byId.get(target.parent_id) : undefined;
+  const ops: DocsOp[] = [];
+  if (parent?.type === "column") {
+    const list = snap.byId.get(parent.parent_id ?? "");
+    const cols = list ? siblingsOf(snap, list.id) : [];
+    if (!list || cols.length >= 5) return [];
+    const i = cols.findIndex((c) => c.id === parent.id);
+    const lo = side === "left" ? (cols[i - 1]?.position ?? null) : parent.position;
+    const hi = side === "left" ? parent.position : (cols[i + 1]?.position ?? null);
+    const col = newBlock("column", list.id, docsKeyBetween(lo, hi));
+    ops.push(col, ...cols.map((c) => ({ op: "update" as const, id: c.id, props: { width: 0 } })));
+    const keys = docsKeysBetween(null, null, moving.length);
+    moving.forEach((m, k) => ops.push({ op: "move", id: m.id, parent_id: col.id, position: keys[k]! }));
+    return ops;
+  }
+  const list = newBlock("column_list", target.parent_id, positionBefore(snap, target));
+  const a = newBlock("column", list.id, "a0");
+  const b = newBlock("column", list.id, "a1");
+  const [targetCol, movedCol] = side === "left" ? [b, a] : [a, b];
+  ops.push(list, a, b, { op: "move", id: target.id, parent_id: targetCol.id, position: "a0" });
+  const keys = docsKeysBetween(null, null, moving.length);
+  moving.forEach((m, k) => ops.push({ op: "move", id: m.id, parent_id: movedCol.id, position: keys[k]! }));
+  return ops;
+}
+
+/** A column list with n columns, the first holding `first` (if given), the others an empty paragraph each. */
+export function columnsOps(snap: DocsSessionSnapshot, at: DocsBlock, n: number, replace: boolean): { ops: DocsOp[]; focus: string } {
+  const list = newBlock("column_list", at.parent_id, replace ? at.position : positionAfter(snap, at));
+  const ops: DocsOp[] = replace ? [{ op: "delete", id: at.id }, list] : [list];
+  const keys = docsKeysBetween(null, null, n);
+  let focus = "";
+  for (let i = 0; i < n; i++) {
+    const col = newBlock("column", list.id, keys[i]!);
+    const p = newBlock("paragraph", col.id, "a0");
+    if (!focus) focus = p.id;
+    ops.push(col, p);
+  }
+  return { ops, focus };
+}
+
+/**
+ * Tidies columns after blocks leave them: an empty column goes; a list left with one column becomes that column's
+ * blocks in its place; a list with none goes.
+ */
+export function columnCleanupOps(snap: DocsSessionSnapshot): DocsOp[] {
+  const ops: DocsOp[] = [];
+  for (const list of snap.blocks) {
+    if (list.type !== "column_list") continue;
+    const cols = siblingsOf(snap, list.id).filter((c) => c.type === "column");
+    const full = cols.filter((c) => siblingsOf(snap, c.id).length > 0);
+    if (full.length === cols.length && cols.length >= 2) continue;
+    for (const c of cols) if (!full.includes(c)) ops.push({ op: "delete", id: c.id });
+    if (full.length >= 2) {
+      for (const c of full) ops.push({ op: "update", id: c.id, props: { width: 0 } });
+      continue;
+    }
+    if (full.length === 1) {
+      const kids = siblingsOf(snap, full[0]!.id);
+      const keys = docsKeysBetween(prevSibling(snap, list)?.position ?? null, list.position, kids.length);
+      kids.forEach((k, i) => ops.push({ op: "move", id: k.id, parent_id: list.parent_id, position: keys[i]! }));
+    }
+    ops.push({ op: "delete", id: list.id });
+  }
+  return ops;
 }

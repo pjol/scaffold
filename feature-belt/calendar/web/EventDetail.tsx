@@ -10,20 +10,20 @@ import {
   useCalendarEvent,
   useDeleteCalendarEvent,
   useEndpoints,
-  useRespondCalendarEvent,
   type CalendarEventDetail,
   type CalendarResponse,
   type CalendarScope,
 } from "@scaffoldapp/shared";
-import { Button, Card, ConfirmDialog, EmptyState, ErrorState, SegmentedControl, Skeleton, SkeletonGroup, TextArea, toast } from "@scaffoldapp/ui-web";
-import { CalendarClock, CalendarX, ChevronLeft, Copy, Download, Link2, MapPin, Pencil, Repeat, Trash2, UserRound, Users, Video } from "lucide-react";
+import { Button, Card, ConfirmDialog, EmptyState, ErrorState, Skeleton, SkeletonGroup, TextArea, toast } from "@scaffoldapp/ui-web";
+import { CalendarClock, CalendarDays, CalendarX, ChevronLeft, Copy, CopyPlus, DoorOpen, Download, Focus, Link2, MapPin, Pencil, Plane, Repeat, Trash2, UserRound, Users, Video } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 import { EventDialog, ScopeDialog } from "./EventDialog";
 import { ColorDot, ResponseBadge, copyText, downloadText, useCalendarZone } from "./parts";
+import { GuestExtras, ReplyBox } from "./Proposals";
 
 function Row({ icon, children, label }: { icon: ReactNode; children: ReactNode; label: string }) {
   return (
@@ -39,15 +39,41 @@ function Row({ icon, children, label }: { icon: ReactNode; children: ReactNode; 
 const isURL = (v: string) => /^https?:\/\/\S+$/.test(v);
 
 /** One event (or occurrence) with guests, replies and the organizer's actions. */
-export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: string; occurrence: string | null; onEdit: (e: CalendarEventDetail) => void; onDeleted: () => void }) {
+export function EventDetailPanel({
+  id,
+  occurrence,
+  onEdit,
+  onDeleted,
+  onDuplicate,
+  onLoaded,
+  requestDelete = 0,
+}: {
+  id: string;
+  occurrence: string | null;
+  onEdit: (e: CalendarEventDetail) => void;
+  onDeleted: () => void;
+  onDuplicate?: (e: CalendarEventDetail) => void;
+  /** Hears the loaded event (keyboard shortcuts act on it). */
+  onLoaded?: (e: CalendarEventDetail | null) => void;
+  /** Bump to ask for the delete confirmation (the Delete key). */
+  requestDelete?: number;
+}) {
   const { zone } = useCalendarZone();
   const event = useCalendarEvent(id, occurrence);
-  const respond = useRespondCalendarEvent();
   const remove = useDeleteCalendarEvent();
   const api = useEndpoints(calendarEndpoints);
   const router = useRouter();
   const [confirm, setConfirm] = useState<"delete" | "scope" | null>(null);
   const [reason, setReason] = useState("");
+  const loaded = event.data ?? null;
+  useEffect(() => {
+    onLoaded?.(loaded);
+  }, [loaded, onLoaded]);
+  useEffect(() => {
+    if (requestDelete > 0 && loaded?.can_edit) setConfirm(loaded.recurring ? "scope" : "delete");
+    // Only when asked again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestDelete]);
 
   if (event.isPending) {
     return (
@@ -68,6 +94,7 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
   }
   const e = event.data;
   const owner = e.role === "owner";
+  const editable = e.can_edit;
   const counts = e.attendees.reduce((acc, a) => ({ ...acc, [a.response]: (acc[a.response] ?? 0) + 1 }), {} as Partial<Record<CalendarResponse, number>>);
   const summary = [counts.accepted && `${counts.accepted} going`, counts.tentative && `${counts.tentative} maybe`, counts.declined && `${counts.declined} declined`, counts.needs_action && `${counts.needs_action} awaiting`]
     .filter(Boolean)
@@ -86,7 +113,8 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
   };
 
   const actions = [
-    ...(owner ? [{ id: "edit", label: "Edit", icon: Pencil, onSelect: () => onEdit(e) }] : []),
+    ...(editable ? [{ id: "edit", label: "Edit", icon: Pencil, onSelect: () => onEdit(e) }] : []),
+    ...(onDuplicate && !e.booking_id ? [{ id: "duplicate", label: "Duplicate", icon: CopyPlus, onSelect: () => onDuplicate(e) }] : []),
     {
       id: "ics",
       label: "Download .ics",
@@ -100,13 +128,13 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
     },
     ...(e.conference_url ? [{ id: "copy-video", label: "Copy video link", icon: Copy, onSelect: () => void copyText(e.conference_url ?? "", toast) }] : []),
     ...(e.booking_id ? [{ id: "booking", label: "Open bookings", icon: Link2, onSelect: () => router.push("/calendar/bookings") }] : []),
-    ...(owner
+    ...(editable
       ? [{ id: "delete", label: e.booking_id ? "Cancel booking" : "Delete", icon: Trash2, destructive: true, onSelect: () => setConfirm(e.recurring ? "scope" : "delete") }]
       : []),
   ];
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6" data-calendar-event>
       <div className="flex items-start gap-3">
         <ColorDot color={e.color} className="mt-3" />
         <h2 className="min-w-0 flex-1 break-words type-title text-fg">{e.title}</h2>
@@ -144,9 +172,28 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
             </Button>
           </Row>
         ) : null}
+        {e.rooms.length > 0 ? (
+          <Row icon={<DoorOpen />} label="Rooms">
+            {e.rooms.map((r) => [r.name, r.building].filter(Boolean).join(", ")).join(" · ")}
+          </Row>
+        ) : null}
+        {e.event_type && e.event_type !== "default" ? (
+          <Row icon={e.event_type === "focus" ? <Focus /> : <Plane />} label={e.event_type === "focus" ? "Focus time" : "Out of office"}>
+            {e.auto_decline === "none" ? "Invitations aren't declined" : e.auto_decline === "all" ? "Declines new and existing invitations" : "Declines new invitations"}
+            {e.decline_message ? <span className="block type-label text-fg-muted">“{e.decline_message}”</span> : null}
+          </Row>
+        ) : null}
         <Row icon={<UserRound />} label="Organizer">
           {owner ? "You're the organizer" : `Organized by ${e.owner.display_name || "a deleted account"}`}
         </Row>
+        {e.calendar ? (
+          <Row icon={<CalendarDays />} label="Calendar">
+            <span className="flex items-center gap-2">
+              <ColorDot color={e.calendar.color} />
+              {e.calendar.is_primary && e.calendar.owner && owner ? "Your calendar" : e.calendar.name}
+            </span>
+          </Row>
+        ) : null}
       </div>
 
       {e.description ? <p className="max-w-prose whitespace-pre-wrap break-words type-body text-fg">{e.description}</p> : null}
@@ -162,10 +209,13 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
           </div>
           <ul className="flex flex-col gap-2">
             {e.attendees.map((a) => (
-              <li key={a.id} className="flex min-h-control items-center gap-3">
-                <AppAvatar name={a.name || a.email} src={a.avatar_url} size="sm" />
-                <span className="min-w-0 flex-1 truncate type-body text-fg">{a.name || a.email}</span>
-                <ResponseBadge response={a.response} />
+              <li key={a.id} className="flex flex-col gap-1">
+                <div className="flex min-h-control items-center gap-3">
+                  <AppAvatar name={a.name || a.email} src={a.avatar_url} size="sm" />
+                  <span className="min-w-0 flex-1 truncate type-body text-fg">{a.name || a.email}</span>
+                  <ResponseBadge response={a.response} />
+                </div>
+                <GuestExtras event={e} attendee={a} zone={zone} />
               </li>
             ))}
           </ul>
@@ -173,25 +223,8 @@ export function EventDetailPanel({ id, occurrence, onEdit, onDeleted }: { id: st
       ) : null}
 
       {e.role === "attendee" ? (
-        <div className="flex flex-col gap-2">
-          <span className="type-label font-semibold text-fg">Going?{e.recurring ? " (all events in the series)" : ""}</span>
-          <SegmentedControl
-            aria-label="Your reply"
-            value={e.my_response === "needs_action" || !e.my_response ? undefined : e.my_response}
-            onValueChange={(v) =>
-              respond.mutate(
-                { id: e.event_id, response: v },
-                { onSuccess: () => toast.success("Reply sent"), onError: (err) => toast.error(errorMessage(err, "Couldn't send your reply.")) },
-              )
-            }
-            options={[
-              { value: "accepted", label: "Yes" },
-              { value: "tentative", label: "Maybe" },
-              { value: "declined", label: "No" },
-            ]}
-          />
-        </div>
-      ) : owner ? (
+        <ReplyBox event={e} zone={zone} />
+      ) : editable ? (
         <Button variant="secondary" size="auto" leftIcon={<Pencil />} className="self-start" onClick={() => onEdit(e)}>
           Edit
         </Button>
@@ -228,6 +261,7 @@ export function EventPageScreen({ id, occurrence }: { id: string; occurrence: st
   const { zone } = useCalendarZone();
   const event = useCalendarEvent(id, occurrence);
   const [editing, setEditing] = useState<CalendarEventDetail | null>(null);
+  const [copying, setCopying] = useState<CalendarEventDetail | null>(null);
   const date = event.data ? calendarDateKey(event.data.starts_at, zone) : null;
   return (
     <div className="mx-auto flex w-full max-w-content flex-col gap-6 px-gutter py-section">
@@ -239,9 +273,10 @@ export function EventPageScreen({ id, occurrence }: { id: string; occurrence: st
         Calendar
       </Link>
       <Card className="max-w-form">
-        <EventDetailPanel id={id} occurrence={occurrence} onEdit={setEditing} onDeleted={() => router.push("/calendar")} />
+        <EventDetailPanel id={id} occurrence={occurrence} onEdit={setEditing} onDuplicate={setCopying} onDeleted={() => router.push("/calendar")} />
       </Card>
       {editing ? <EventDialog target={{ mode: "edit", event: editing }} zone={zone} onClose={() => setEditing(null)} /> : null}
+      {copying ? <EventDialog target={{ mode: "new", startsAt: copying.starts_at, endsAt: copying.ends_at, allDay: copying.all_day, copy: copying }} zone={zone} onClose={() => setCopying(null)} /> : null}
     </div>
   );
 }

@@ -129,16 +129,16 @@ func (g *googleCalendar) calendars(ctx context.Context) ([]extCalendar, error) {
 		}
 		var res struct {
 			Items []struct {
-				ID                    string `json:"id"`
-				Summary               string `json:"summary"`
-				SummaryOverride       string `json:"summaryOverride"`
-				Primary               bool   `json:"primary"`
-				AccessRole            string `json:"accessRole"`
-				TimeZone              string `json:"timeZone"`
-				Selected              bool   `json:"selected"`
-				Hidden                bool   `json:"hidden"`
-				Deleted               bool   `json:"deleted"`
-				ConferenceProperties  *struct {
+				ID                   string `json:"id"`
+				Summary              string `json:"summary"`
+				SummaryOverride      string `json:"summaryOverride"`
+				Primary              bool   `json:"primary"`
+				AccessRole           string `json:"accessRole"`
+				TimeZone             string `json:"timeZone"`
+				Selected             bool   `json:"selected"`
+				Hidden               bool   `json:"hidden"`
+				Deleted              bool   `json:"deleted"`
+				ConferenceProperties *struct {
 					AllowedConferenceSolutionTypes []string `json:"allowedConferenceSolutionTypes"`
 				} `json:"conferenceProperties"`
 			} `json:"items"`

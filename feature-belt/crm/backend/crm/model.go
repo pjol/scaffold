@@ -18,7 +18,7 @@ import (
 	"scaffoldapp/backend/internal/orgs"
 )
 
-// objectType is one of the three record types. Every SQL identifier derived
+// objectType is one of the four record types. Every SQL identifier derived
 // from it comes from the switch below, never from input.
 type objectType string
 
@@ -26,9 +26,17 @@ const (
 	objCompany objectType = "company"
 	objContact objectType = "contact"
 	objDeal    objectType = "deal"
+	objTicket  objectType = "ticket"
 )
 
-var objectTypes = []objectType{objCompany, objContact, objDeal}
+var objectTypes = []objectType{objCompany, objContact, objDeal, objTicket}
+
+// platformTypes are the types a connected CRM (HubSpot, Salesforce) serves;
+// tickets are the app's own only.
+var platformTypes = []objectType{objCompany, objContact, objDeal}
+
+// pipelined: the type moves through a pipeline's stages (deals, tickets).
+func (o objectType) pipelined() bool { return o == objDeal || o == objTicket }
 
 func parseObject(s string) (objectType, bool) {
 	switch objectType(strings.TrimSpace(s)) {
@@ -38,8 +46,17 @@ func parseObject(s string) (objectType, bool) {
 		return objContact, true
 	case objDeal, "deals":
 		return objDeal, true
+	case objTicket, "tickets":
+		return objTicket, true
 	}
 	return "", false
+}
+
+// parsePlatformObject is parseObject for the types connected CRMs and CSV
+// import serve (no tickets).
+func parsePlatformObject(s string) (objectType, bool) {
+	o, ok := parseObject(s)
+	return o, ok && o != objTicket
 }
 
 func objectByKind(kind string) (objectType, bool) {
@@ -48,7 +65,7 @@ func objectByKind(kind string) (objectType, bool) {
 		return "", false
 	}
 	switch objectType(o) {
-	case objCompany, objContact, objDeal:
+	case objCompany, objContact, objDeal, objTicket:
 		return objectType(o), true
 	}
 	return "", false
@@ -62,6 +79,8 @@ func (o objectType) table() string {
 		return "crm_companies"
 	case objContact:
 		return "crm_contacts"
+	case objTicket:
+		return "crm_tickets"
 	default:
 		return "crm_deals"
 	}
@@ -73,6 +92,8 @@ func (o objectType) path() string {
 		return "companies"
 	case objContact:
 		return "contacts"
+	case objTicket:
+		return "tickets"
 	default:
 		return "deals"
 	}
@@ -90,6 +111,8 @@ func (o objectType) icon() string {
 		return "building-2"
 	case objContact:
 		return "user-round"
+	case objTicket:
+		return "life-buoy"
 	default:
 		return "handshake"
 	}
@@ -199,6 +222,8 @@ type Contact struct {
 	Phones         []string   `json:"phones"`
 	JobTitle       string     `json:"job_title"`
 	LifecycleStage string     `json:"lifecycle_stage"`
+	LeadStatus     *string    `json:"lead_status"`
+	Score          int        `json:"score"`
 	City           string     `json:"city"`
 	Country        string     `json:"country"`
 	Company        *RecordRef `json:"company"`
@@ -218,9 +243,34 @@ type Deal struct {
 	Company        *RecordRef `json:"company"`
 	StageEnteredAt time.Time  `json:"stage_entered_at"`
 	ClosedAt       *time.Time `json:"closed_at"`
+	// ForecastCategory is the one set on the deal, else the one its stage implies.
+	ForecastCategory string `json:"forecast_category"`
+	ForecastSet      bool   `json:"forecast_category_set"`
+	AmountFromItems  bool   `json:"amount_from_items"`
 }
 
-// recordish is implemented by *Company, *Contact and *Deal.
+// Ticket is a crm_tickets row with its stage, pipeline, company and deal
+// (when visible). Response times are seconds from opening.
+type Ticket struct {
+	Record
+	Name                string     `json:"name"`
+	Description         string     `json:"description"`
+	Priority            string     `json:"priority"`
+	Category            string     `json:"category"`
+	Channel             string     `json:"channel"`
+	PipelineID          uuid.UUID  `json:"pipeline_id"`
+	PipelineName        string     `json:"pipeline_name"`
+	Stage               StageRef   `json:"stage"`
+	Company             *RecordRef `json:"company"`
+	Deal                *RecordRef `json:"deal"`
+	StageEnteredAt      time.Time  `json:"stage_entered_at"`
+	FirstResponseAt     *time.Time `json:"first_response_at"`
+	ClosedAt            *time.Time `json:"closed_at"`
+	FirstResponseSeconds *int64    `json:"first_response_seconds"`
+	ResolutionSeconds   *int64     `json:"resolution_seconds"`
+}
+
+// recordish is implemented by *Company, *Contact, *Deal and *Ticket.
 type recordish interface{ base() *Record }
 
 // ---- request helpers ---------------------------------------------------------

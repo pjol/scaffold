@@ -1,7 +1,7 @@
 "use client";
 
 import { useAdminAudit } from "@scaffoldapp/shared";
-import { Button, Card, EmptyState, ErrorState } from "@scaffoldapp/ui-web";
+import { Button, EmptyState, ErrorState } from "@scaffoldapp/ui-web";
 import { ScrollText, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { AuditTable } from "@/components/admin/AuditTable";
@@ -32,23 +32,21 @@ export function AuditScreen() {
             </Button>
           )}
         </div>
-        <Card padding="none">
-          {audit.isPending ? (
-            <TableSkeleton rows={8} cols={5} />
-          ) : audit.isError ? (
-            <ErrorState compact title="Couldn't load the audit log" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
-          ) : entries.length === 0 ? (
-            <EmptyState compact icon={<ScrollText />} title={filtered ? "No matching entries" : "No admin actions yet"} />
-          ) : (
-            <>
-              <AuditTable
-                entries={entries}
-                onFilterTarget={(e) => router.replace(`/admin/audit?target_type=${encodeURIComponent(e.target_type)}&target_id=${encodeURIComponent(e.target_id)}`, { scroll: false })}
-              />
-              <LoadMore hasNextPage={audit.hasNextPage} isFetchingNextPage={audit.isFetchingNextPage} fetchNextPage={audit.fetchNextPage} />
-            </>
-          )}
-        </Card>
+        {audit.isPending ? (
+          <TableSkeleton rows={8} cols={5} flush />
+        ) : audit.isError ? (
+          <ErrorState compact title="Couldn't load the audit log" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
+        ) : entries.length === 0 ? (
+          <EmptyState compact icon={<ScrollText />} title={filtered ? "No matching entries" : "No admin actions yet"} />
+        ) : (
+          <div>
+            <AuditTable
+              entries={entries}
+              onFilterTarget={(e) => router.replace(`/admin/audit?target_type=${encodeURIComponent(e.target_type)}&target_id=${encodeURIComponent(e.target_id)}`, { scroll: false })}
+            />
+            <LoadMore hasNextPage={audit.hasNextPage} isFetchingNextPage={audit.isFetchingNextPage} fetchNextPage={audit.fetchNextPage} />
+          </div>
+        )}
       </div>
     </Screen>
   );

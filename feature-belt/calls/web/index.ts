@@ -4,4 +4,18 @@ export { MeetScreen } from "./MeetScreen";
 export { CallsRinger } from "./CallsRinger";
 export { StartCallDialog, ScheduleMeetingDialog, MeetingLinkDialog, copyMeetingLink } from "./MeetingDialogs";
 export { CallsPeoplePicker } from "./PeoplePicker";
-export { setCallsScheduleAction, setCallsSourceLink, type CallsScheduleAction, type CallsScheduleContext, type CallsSourceLink, type CallsSourceLinker } from "./seams";
+export {
+  setCallsNotesLink,
+  setCallsScheduleAction,
+  setCallsSourceLink,
+  setCallsTranscriptAction,
+  type CallsNotesLinker,
+  type CallsScheduleAction,
+  type CallsScheduleContext,
+  type CallsSourceLink,
+  type CallsSourceLinker,
+  type CallsTranscriptAction,
+  type CallsTranscriptContext,
+} from "./seams";
+export { MeetingScreen } from "./MeetingScreen";
+export { RecordingScreen } from "./RecordingScreen";

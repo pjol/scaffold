@@ -74,10 +74,12 @@ function convert(el: Element, out: DocsDraftBlock[], depth: number): void {
       out.push(text("heading_2", spansOf(el)));
       return;
     case "H3":
+      out.push(text("heading_3", spansOf(el)));
+      return;
     case "H4":
     case "H5":
     case "H6":
-      out.push(text("heading_3", spansOf(el)));
+      out.push(text("heading_4", spansOf(el)));
       return;
     case "HR":
       out.push({ type: "divider", props: {}, children: [] });

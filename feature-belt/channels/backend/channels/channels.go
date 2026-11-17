@@ -41,6 +41,7 @@ import (
 	"scaffoldapp/backend/internal/notify"
 	"scaffoldapp/backend/internal/orgs"
 	"scaffoldapp/backend/internal/presence"
+	"scaffoldapp/backend/internal/safehttp"
 	"scaffoldapp/backend/internal/storage"
 )
 
@@ -52,9 +53,12 @@ const (
 	targetKind = "channels.message" // moderation target kind
 
 	// Notification kinds.
-	KindMention = "channels.mention" // mentions and direct messages
-	KindMessage = "channels.message" // every message, in channels set to "all"
-	KindThread  = "channels.thread"  // replies in threads you follow
+	KindMention   = "channels.mention"   // mentions and direct messages
+	KindMessage   = "channels.message"   // every message, in channels set to "all"
+	KindThread    = "channels.thread"    // replies in threads you follow
+	KindKeyword   = "channels.keyword"   // messages with one of your keywords
+	KindReminder  = "channels.reminder"  // your reminders
+	KindScheduled = "channels.scheduled" // a scheduled message that couldn't be sent
 
 	// Realtime events. Channel topic: message, message_updated, typing,
 	// channel (details, membership). User topic: sidebar, thread.
@@ -74,6 +78,13 @@ const (
 type Service struct {
 	d   *app.Deps
 	cfg settings
+
+	// Link previews: safehttp clients (private hosts and plain http only in
+	// development), at most 4 fetches at once.
+	pageClient, imageClient *http.Client
+	devFetch                bool
+	unfurlSem               chan struct{}
+	hookLimit               webhookLimiter
 
 	// deletedMembership holds, between an account's deletion transaction and
 	// its AccountDeleted hook, the channels whose topics to revoke.
@@ -114,10 +125,22 @@ func New(d *app.Deps) *Service {
 		s.cfg.defaultChannels[i] = clean
 	}
 	mentionAllMax.Store(int64(s.cfg.mentionAllMax))
-	storage.RegisterPurpose(storage.Purpose{Name: PurposeAttachment, Types: attachmentTypes, MaxBytes: s.cfg.attachmentMax})
+	s.devFetch = d.Cfg.IsDevelopment()
+	s.pageClient = safehttp.Client(safehttp.Options{Timeout: 8 * time.Second, MaxBody: -1, MaxRedirects: 5, AllowPrivate: s.devFetch, AllowHTTP: s.devFetch})
+	s.imageClient = safehttp.Client(safehttp.Options{Timeout: 8 * time.Second, MaxBody: previewImageMax, MaxRedirects: 3, AllowPrivate: s.devFetch, AllowHTTP: s.devFetch})
+	s.unfurlSem = make(chan struct{}, 4)
+	// Any file type: unknown types are stored as .bin and always served as downloads.
+	storage.RegisterPurpose(storage.Purpose{Name: PurposeAttachment, AnyType: true, MaxBytes: s.cfg.attachmentMax})
+	storage.RegisterPurpose(storage.Purpose{Name: PurposeEmoji, Types: emojiTypes, MaxBytes: emojiMaxBytes})
+	storage.RegisterPurpose(storage.Purpose{Name: PurposeLinkImage, Types: []string{"image/jpeg", "image/png"}, MaxBytes: 1})
+	httpx.RedactPathPrefix("/v1" + webhookPath)
+	RegisterUnfurler("/channels/", s.unfurlChannelLink)
 	notifications.RegisterKind(notifications.Kind{ID: KindMention, Label: "Mentions and direct messages", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
 	notifications.RegisterKind(notifications.Kind{ID: KindMessage, Label: "Channel messages", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
 	notifications.RegisterKind(notifications.Kind{ID: KindThread, Label: "Thread replies", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
+	notifications.RegisterKind(notifications.Kind{ID: KindKeyword, Label: "Your keywords", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
+	notifications.RegisterKind(notifications.Kind{ID: KindReminder, Label: "Reminders", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
+	notifications.RegisterKind(notifications.Kind{ID: KindScheduled, Label: "Scheduled messages not sent", Push: true, AgentTarget: notifications.DataTarget(agentKind, "channel_id")})
 	moderation.RegisterTarget(targetKind, messageTarget{s})
 	orgs.OnMemberRemoved(s.memberRemoved)
 	// Do Not Disturb (presence) holds push and email for every notification,
@@ -156,6 +179,33 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(member).Get("/channels/orgs/{orgID}/threads", h(s.threads))
 	r.With(member).Get("/channels/orgs/{orgID}/later", h(s.later))
 	r.With(member, auth.RateLimit(60, time.Minute)).Get("/channels/orgs/{orgID}/search", h(s.search))
+	r.With(member).Get("/channels/orgs/{orgID}/activity", h(s.activity))
+	r.With(member).Post("/channels/orgs/{orgID}/activity/read", h(s.markActivityRead))
+	r.With(member).Get("/channels/orgs/{orgID}/unreads", h(s.unreads))
+	r.With(member).Get("/channels/orgs/{orgID}/drafts", h(s.listDrafts))
+	r.With(member).Get("/channels/orgs/{orgID}/sent", h(s.listSent))
+	r.With(member).Get("/channels/orgs/{orgID}/scheduled", h(s.listScheduled))
+	r.With(member).Get("/channels/orgs/{orgID}/reminders", h(s.listReminders))
+	r.With(member, auth.RateLimit(30, time.Minute)).Post("/channels/orgs/{orgID}/reminders", h(s.createReminder))
+	r.With(member, auth.RateLimit(60, time.Minute)).Put("/channels/orgs/{orgID}/prefs", h(s.updatePrefs))
+	r.With(member, auth.RateLimit(30, time.Minute)).Post("/channels/orgs/{orgID}/sections", h(s.createSection))
+	r.With(member).Get("/channels/orgs/{orgID}/emoji", h(s.listEmoji))
+	w.With(member, auth.RateLimit(30, time.Hour)).Post("/channels/orgs/{orgID}/emoji", h(s.createEmoji))
+	r.With(member).Get("/channels/orgs/{orgID}/settings", h(s.getSettings))
+	w.With(member, auth.RateLimit(30, time.Minute)).Patch("/channels/orgs/{orgID}/settings", h(s.updateSettings))
+	r.With(member, auth.RateLimit(120, time.Minute)).Get("/channels/orgs/{orgID}/people/{userID}", h(s.profileCard))
+	r.With(auth.RateLimit(120, time.Minute)).Get("/channels/card", h(s.getCard))
+	r.With(auth.RateLimit(60, time.Minute)).Patch("/channels/sections/{id}", h(s.updateSection))
+	r.Delete("/channels/sections/{id}", h(s.deleteSection))
+	w.With(auth.RateLimit(60, time.Minute)).Delete("/channels/emoji/{id}", h(s.deleteEmoji))
+	r.With(auth.RateLimit(60, time.Minute)).Patch("/channels/reminders/{id}", h(s.updateReminder))
+	r.Delete("/channels/reminders/{id}", h(s.deleteReminder))
+	w.With(auth.RateLimit(30, time.Minute)).Patch("/channels/scheduled/{id}", h(s.updateScheduled))
+	r.Delete("/channels/scheduled/{id}", h(s.deleteScheduled))
+	w.With(auth.RateLimit(s.cfg.perMinute, time.Minute)).Post("/channels/scheduled/{id}/send", h(s.sendScheduledNow))
+	w.With(auth.RateLimit(30, time.Minute)).Patch("/channels/bookmarks/{id}", h(s.updateBookmark))
+	w.With(auth.RateLimit(30, time.Minute)).Delete("/channels/bookmarks/{id}", h(s.deleteBookmark))
+	w.With(auth.RateLimit(30, time.Minute)).Delete("/channels/webhooks/{id}", h(s.deleteWebhook))
 	w.With(member, auth.RateLimit(20, time.Hour)).Post("/channels/orgs/{orgID}/channels", h(s.createChannel))
 	w.With(member, auth.RateLimit(60, time.Hour)).Post("/channels/orgs/{orgID}/dms", h(s.openDM))
 
@@ -166,6 +216,12 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/channels/channels/{id}/topics", h(s.listTopics))
 	r.Get("/channels/channels/{id}/pins", h(s.listPins))
 	r.Get("/channels/channels/{id}/files", h(s.listFiles))
+	r.Get("/channels/channels/{id}/bookmarks", h(s.listBookmarks))
+	r.Get("/channels/channels/{id}/draft", h(s.getDraft))
+	r.With(auth.RateLimit(120, time.Minute)).Put("/channels/channels/{id}/draft", h(s.saveDraft))
+	r.Delete("/channels/channels/{id}/draft", h(s.deleteDraft))
+	r.With(auth.RateLimit(60, time.Minute)).Post("/channels/channels/{id}/unread", h(s.markUnread))
+	r.Get("/channels/channels/{id}/webhooks", h(s.listWebhooks))
 	// The reader's own state: allowed while suspended.
 	r.Post("/channels/channels/{id}/read", h(s.markRead))
 	r.Put("/channels/channels/{id}/prefs", h(s.setPrefs))
@@ -180,6 +236,11 @@ func (s *Service) MountUser(r chi.Router) {
 	w.With(auth.RateLimit(s.cfg.perMinute, time.Minute)).Post("/channels/channels/{id}/messages", h(s.sendMessage))
 	w.With(auth.RateLimit(40, time.Minute)).Post("/channels/channels/{id}/typing", h(s.typing))
 	w.With(auth.RateLimit(10, time.Minute)).Post("/channels/channels/{id}/call", h(s.startCall))
+	w.With(auth.RateLimit(30, time.Minute)).Post("/channels/channels/{id}/scheduled", h(s.createScheduled))
+	w.With(auth.RateLimit(20, time.Minute)).Post("/channels/channels/{id}/polls", h(s.createPoll))
+	w.With(auth.RateLimit(30, time.Minute)).Post("/channels/channels/{id}/bookmarks", h(s.createBookmark))
+	w.With(auth.RateLimit(10, time.Minute)).Post("/channels/channels/{id}/convert", h(s.convertGroupDM))
+	w.With(auth.RateLimit(10, time.Minute)).Post("/channels/channels/{id}/webhooks", h(s.createWebhook))
 
 	// One message.
 	r.Get("/channels/messages/{id}", h(s.getMessage))
@@ -195,7 +256,17 @@ func (s *Service) MountUser(r chi.Router) {
 	w.With(auth.RateLimit(60, time.Minute)).Delete("/channels/messages/{id}/reactions", h(s.removeReaction))
 	w.With(auth.RateLimit(30, time.Minute)).Put("/channels/messages/{id}/pin", h(s.pin))
 	w.With(auth.RateLimit(30, time.Minute)).Delete("/channels/messages/{id}/pin", h(s.unpin))
+	w.With(auth.RateLimit(s.cfg.perMinute, time.Minute)).Post("/channels/messages/{id}/forward", h(s.forward))
+	w.With(auth.RateLimit(60, time.Minute)).Put("/channels/messages/{id}/vote", h(s.vote))
+	w.With(auth.RateLimit(30, time.Minute)).Post("/channels/messages/{id}/poll/close", h(s.closePoll))
+	w.With(auth.RateLimit(30, time.Minute)).Delete("/channels/messages/{id}/previews", h(s.hidePreviews))
 	r.Get("/channels/attachments/{id}", h(s.attachmentURL))
+}
+
+// MountPublic serves incoming webhooks: the secret in the path is the
+// credential (redacted from logs).
+func (s *Service) MountPublic(r chi.Router) {
+	r.With(auth.RateLimit(120, time.Minute)).Post("/channels/hooks/{token}", httpx.Handler(s.receiveWebhook))
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
@@ -208,6 +279,10 @@ func (s *Service) MountAdmin(r chi.Router) {
 func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "channels.delete_objects", time.Minute, s.deleteQueuedObjects)
 	go jobs.Every(ctx, s.d.Pool, "channels.prune_departed", 15*time.Minute, s.pruneDeparted)
+	go jobs.Every(ctx, s.d.Pool, "channels.send_scheduled", 30*time.Second, s.sendDueScheduled)
+	go jobs.Every(ctx, s.d.Pool, "channels.fire_reminders", 30*time.Second, s.fireReminders)
+	go jobs.Every(ctx, s.d.Pool, "channels.prune_previews", 6*time.Hour, s.prunePreviews)
+	go jobs.Every(ctx, s.d.Pool, "channels.retention", time.Hour, s.applyRetention)
 }
 
 // AuthorizeTopic admits a viewer to channels:<id> when they may read the

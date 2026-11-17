@@ -25,6 +25,8 @@ import {
   useCalendarSettings,
   useCalendarSources,
   useCalendarSubscriptions,
+  useCalendarCalendars,
+  useCalendarCalendarPrefs,
   useUpdateCalendarConnectedEvent,
   useUpdateCalendarEvent,
   type CalendarConnectedEventDetail,
@@ -34,14 +36,17 @@ import {
   type CalendarOccurrence,
   type CalendarScope,
 } from "@scaffoldapp/shared";
-import { Button, ErrorState, IconButton, SegmentedControl, Select, Sheet, Skeleton, SourceFilter, cn, sourceFilterOptions, toast, useMediaQuery } from "@scaffoldapp/ui-web";
-import { CalendarCheck, CalendarCog, ChevronLeft, ChevronRight, Link2, ListChecks, Plus, Rss } from "lucide-react";
+import { Button, ErrorState, IconButton, Select, Sheet, Skeleton, SourceFilter, cn, sourceFilterOptions, toast, useMediaQuery } from "@scaffoldapp/ui-web";
+import { CalendarCheck, CalendarCog, ChevronLeft, ChevronRight, DoorOpen, Focus, Keyboard, Link2, ListChecks, Plane, Plus, Rss, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { useUrlState } from "@/lib/url-state";
 import { AgendaView } from "./AgendaView";
+import { CalendarsPanel } from "./CalendarsPanel";
+import { EventSearchDialog, ShortcutsDialog, WorldClocks, useAddCalendarParam, useCalendarShortcuts } from "./CalendarExtras";
+import { YearView } from "./YearView";
 import { ConnectedCalendars } from "./ConnectedCalendars";
 import { ConnectedEventPanel } from "./ConnectedEvent";
 import { EventDetailPanel } from "./EventDetail";
@@ -50,7 +55,15 @@ import { MiniMonth, MonthView } from "./MonthView";
 import { CALENDAR_COLOR_CLASSES, useCalendarZone } from "./parts";
 import { TimeGrid } from "./TimeGrid";
 
-type View = "day" | "week" | "month" | "agenda";
+type View = "day" | "3day" | "week" | "month" | "year" | "agenda";
+const VIEWS: { value: View; label: string; key: string }[] = [
+  { value: "day", label: "Day", key: "d" },
+  { value: "3day", label: "3 days", key: "x" },
+  { value: "week", label: "Week", key: "w" },
+  { value: "month", label: "Month", key: "m" },
+  { value: "year", label: "Year", key: "y" },
+  { value: "agenda", label: "Agenda", key: "a" },
+];
 const AGENDA_DAYS = 30;
 
 const isDateKey = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -139,6 +152,8 @@ export function CalendarScreen() {
 
   const days = useMemo(() => {
     if (view === "day") return [date];
+    if (view === "3day") return [date, calendarAddDays(date, 1), calendarAddDays(date, 2)];
+    if (view === "year") return [date];
     if (view === "week") {
       const s = calendarStartOfWeek(date, weekStart);
       return Array.from({ length: 7 }, (_, i) => calendarAddDays(s, i));
@@ -148,7 +163,9 @@ export function CalendarScreen() {
   }, [view, date, weekStart]);
   const from = ready ? calendarDayStart(days[0]!, zone) : null;
   const to = ready ? calendarDayStart(calendarAddDays(days[days.length - 1]!, 1), zone) : null;
-  const range = useCalendarRange(from, to);
+  const range = useCalendarRange(view === "year" ? null : from, view === "year" ? null : to);
+  const calendars = useCalendarCalendars();
+  const calendarPrefs = useCalendarCalendarPrefs();
   const sources = useCalendarSources();
   const connected = useCalendarConnectedRange(from, to);
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -157,12 +174,18 @@ export function CalendarScreen() {
   const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<{ o: CalendarOccurrence; startsAt: string; endsAt: string } | null>(null);
   const [connectedOpen, setConnectedOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [openDetail, setOpenDetail] = useState<CalendarEventDetail | null>(null);
+  const [deleteSignal, setDeleteSignal] = useState(0);
   const update = useUpdateCalendarEvent();
   const updateConnected = useUpdateCalendarConnectedEvent();
   useOpenParam(ready && !settings.isPending, setOpen);
 
   const step = (dir: -1 | 1) => {
     if (view === "day") setDate(calendarAddDays(date, dir));
+    else if (view === "3day") setDate(calendarAddDays(date, dir * 3));
+    else if (view === "year") setDate(`${Number(date.slice(0, 4)) + dir}${date.slice(4)}`);
     else if (view === "week") setDate(calendarAddDays(date, dir * 7));
     else if (view === "month") setDate(calendarStartOfMonth(date, dir));
     else setDate(calendarAddDays(date, dir * AGENDA_DAYS));
@@ -171,8 +194,10 @@ export function CalendarScreen() {
   const title =
     view === "day"
       ? formatCalendarDayLong(date)
-      : view === "week"
-        ? weekTitle(days[0]!, days[6]!)
+      : view === "year"
+        ? date.slice(0, 4)
+        : view === "week" || view === "3day"
+        ? weekTitle(days[0]!, days[days.length - 1]!)
         : view === "month"
           ? formatCalendarMonth(date)
           : `From ${formatCalendarDayLong(date)}`;
@@ -209,6 +234,27 @@ export function CalendarScreen() {
     }
   };
   useNewEventLink(ready && !settings.isPending, zone, setDialog);
+  useAddCalendarParam((id) =>
+    calendarPrefs.mutate(
+      { id, added: true, hidden: false },
+      { onSuccess: (c) => toast.success(`${c.name} added to your calendars`), onError: (e) => toast.error(errorMessage(e, "Couldn't add that calendar.")) },
+    ),
+  );
+  useCalendarShortcuts({
+    enabled: !dialog && !searchOpen && !helpOpen && !pendingMove,
+    onCreate: () => newAt(),
+    onToday: () => setDate(null),
+    onStep: step,
+    onView: (v) => setView(v),
+    onSearch: () => setSearchOpen(true),
+    onHelp: () => setHelpOpen(true),
+    onEdit: () => {
+      if (open?.kind === "app" && openDetail?.can_edit && openDetail.event_id === open.id) onEdit(openDetail);
+    },
+    onDelete: () => {
+      if (open?.kind === "app" && openDetail?.can_edit) setDeleteSignal((n) => n + 1);
+    },
+  });
 
   const commitMove = async (o: CalendarOccurrence, startsAt: string, endsAt: string, scope: CalendarScope | null) => {
     if (isCalendarConnected(o)) return commitConnectedMove(o, startsAt, endsAt, scope);
@@ -242,19 +288,47 @@ export function CalendarScreen() {
     () => (connected.data?.items ?? []).filter((o) => !hidden.has(`${o.connection_id}|${o.calendar_id}`)),
     [connected.data, hidden],
   );
-  const allItems = useMemo(() => [...(range.data?.items ?? []), ...connectedItems], [range.data, connectedItems]);
+  // The app's own events: hidden calendars drop out; events in the default colour take their calendar's.
+  const calById = useMemo(() => new Map((calendars.data?.items ?? []).map((c) => [c.id, c])), [calendars.data]);
+  const appVisible = useCallback(
+    (o: CalendarOccurrence) => {
+      const c = o.calendar_id ? calById.get(o.calendar_id) : undefined;
+      return !c?.hidden;
+    },
+    [calById],
+  );
+  const appItems = useMemo(
+    () =>
+      (range.data?.items ?? []).filter(appVisible).map((o): CalendarOccurrence => {
+        const c = o.calendar_id ? calById.get(o.calendar_id) : undefined;
+        if (o.redacted) return { ...o, color: "neutral" };
+        return c && o.color === "primary" && c.color !== "primary" ? { ...o, color: c.color } : o;
+      }),
+    [range.data, appVisible, calById],
+  );
+  const allItems = useMemo(() => [...appItems, ...connectedItems], [appItems, connectedItems]);
   const filterOptions = useMemo(
     () => sourceFilterOptions({ appLabel: "Calendar", sources: (sources.data?.sources ?? []).filter((x) => x.type === "app" || x.status === "active") }),
     [sources.data],
   );
   const items =
-    sourceFilter === "all" ? allItems : sourceFilter === "app" ? (range.data?.items ?? []) : connectedItems.filter((o) => o.connection_id === sourceFilter);
+    sourceFilter === "all" ? allItems : sourceFilter === "app" ? appItems : connectedItems.filter((o) => o.connection_id === sourceFilter);
   const connectedErrors = connected.data?.errors ?? [];
   const busy = range.data?.busy ?? [];
   const workingHours = settings.data?.working_hours ?? [];
 
+  const newBlock = (eventType: "out_of_office" | "focus") => {
+    const base = days.includes(today) ? today : days[0]!;
+    if (eventType === "out_of_office") setDialog({ mode: "new", startsAt: calendarDayStart(base, zone), endsAt: calendarDayStart(calendarAddDays(base, 1), zone), allDay: true, eventType });
+    else setDialog({ mode: "new", startsAt: calendarFromWall(base, 9 * 60, zone), endsAt: calendarFromWall(base, 11 * 60, zone), eventType });
+  };
   const headerMenu = [
-    ...(!wide ? [{ id: "connected", label: "Connected calendars", icon: CalendarCheck, onSelect: () => setConnectedOpen(true) }] : []),
+    ...(!wide ? [{ id: "connected", label: "Calendars", icon: CalendarCheck, onSelect: () => setConnectedOpen(true) }] : []),
+    { id: "search", label: "Search events", icon: Search, onSelect: () => setSearchOpen(true) },
+    { id: "ooo", label: "Out of office", icon: Plane, onSelect: () => newBlock("out_of_office") },
+    { id: "focus", label: "Focus time", icon: Focus, onSelect: () => newBlock("focus") },
+    { id: "rooms", label: "Rooms", icon: DoorOpen, onSelect: () => router.push("/calendar/rooms") },
+    { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard, onSelect: () => setHelpOpen(true) },
     { id: "links", label: "Booking links", icon: Link2, onSelect: () => router.push("/calendar/links") },
     { id: "bookings", label: "Bookings", icon: ListChecks, onSelect: () => router.push("/calendar/bookings") },
     { id: "settings", label: "Calendar settings", icon: CalendarCog, onSelect: () => router.push("/settings/calendars") },
@@ -264,6 +338,17 @@ export function CalendarScreen() {
     <Skeleton className="m-4 flex-1" />
   ) : range.isError && !range.data ? (
     <ErrorState title="Couldn't load your calendar" info={range.error.message} onRetry={() => void range.refetch()} retrying={range.isFetching} />
+  ) : view === "year" ? (
+    <YearView
+      date={date}
+      zone={zone}
+      weekStart={weekStart}
+      keep={appVisible}
+      onDay={(d) => {
+        setDate(d);
+        setView("day");
+      }}
+    />
   ) : view === "month" ? (
     <MonthView
       date={date}
@@ -297,6 +382,7 @@ export function CalendarScreen() {
       onCreateAllDay={(d) => setDialog({ mode: "new", startsAt: calendarDayStart(d, zone), endsAt: calendarDayStart(calendarAddDays(d, 1), zone), allDay: true })}
       onOpen={(o) => setOpen(openOf(o))}
       onMove={move}
+      secondaryZone={phone ? null : (settings.data?.secondary_timezone ?? null)}
     />
   );
 
@@ -318,7 +404,9 @@ export function CalendarScreen() {
             onPick={(d) => setDate(d)}
             marked={(d) => items.some((o) => o.start_date === d || o.starts_at.startsWith(d))}
           />
+          <CalendarsPanel />
           <ConnectedCalendars sources={sources.data} loading={sources.isPending} />
+          {(settings.data?.world_clocks.length ?? 0) > 0 ? <WorldClocks zones={settings.data!.world_clocks} /> : null}
           {(subs.data?.items.length ?? 0) > 0 ? (
             <section className="flex flex-col gap-2" aria-label="Other calendars">
               <h2 className="type-label font-semibold text-fg-muted">Other calendars</h2>
@@ -340,6 +428,10 @@ export function CalendarScreen() {
             <Link href="/calendar/bookings" className="flex min-h-control items-center gap-2 rounded-md px-2 type-label text-fg hover:bg-sunken">
               <ListChecks className="size-4 text-fg-muted" aria-hidden />
               Bookings
+            </Link>
+            <Link href="/calendar/rooms" className="flex min-h-control items-center gap-2 rounded-md px-2 type-label text-fg hover:bg-sunken">
+              <DoorOpen className="size-4 text-fg-muted" aria-hidden />
+              Rooms
             </Link>
             <Link href="/settings/calendars" className="flex min-h-control items-center gap-2 rounded-md px-2 type-label text-fg hover:bg-sunken">
               <Rss className="size-4 text-fg-muted" aria-hidden />
@@ -369,33 +461,13 @@ export function CalendarScreen() {
             <IconButton label="Previous" icon={<ChevronLeft />} size="sm" variant="ghost" onClick={() => step(-1)} />
             <IconButton label="Next" icon={<ChevronRight />} size="sm" variant="ghost" onClick={() => step(1)} />
             {phone ? (
-              <Select
-                value={view}
-                onValueChange={(v) => setView(v as View)}
-                options={[
-                  { value: "day", label: "Day" },
-                  { value: "week", label: "Week" },
-                  { value: "month", label: "Month" },
-                  { value: "agenda", label: "Agenda" },
-                ]}
-                className="ml-auto w-32"
-              />
+              <Select value={view} onValueChange={(v) => setView(v as View)} options={VIEWS.map((v) => ({ value: v.value, label: v.label }))} className="ml-auto w-32" />
             ) : null}
           </div>
           {!phone ? (
             <div className="flex items-center gap-2 sm:order-3">
-              <SegmentedControl<View>
-                fullWidth={false}
-                aria-label="View"
-                value={view}
-                onValueChange={(v) => setView(v)}
-                options={[
-                  { value: "day", label: "Day" },
-                  { value: "week", label: "Week" },
-                  { value: "month", label: "Month" },
-                  { value: "agenda", label: "Agenda" },
-                ]}
-              />
+              <Select value={view} onValueChange={(v) => setView(v as View)} options={VIEWS.map((v) => ({ value: v.value, label: v.label }))} className="w-32" aria-label="View" />
+              <IconButton label="Search events" icon={<Search />} size="sm" variant="ghost" onClick={() => setSearchOpen(true)} />
               {!wide ? <IconButton label="New event" icon={<Plus />} size="sm" variant="primary" onClick={() => newAt()} /> : null}
               <ResourceMenu feature="calendar" title="Calendar" actions={headerMenu} />
             </div>
@@ -422,12 +494,40 @@ export function CalendarScreen() {
       </section>
 
       <Sheet open={!!open} onOpenChange={(o) => !o && setOpen(null)} title="Event" size="md">
-        {open?.kind === "app" ? <EventDetailPanel id={open.id} occurrence={open.occurrence} onEdit={onEdit} onDeleted={() => setOpen(null)} /> : null}
+        {open?.kind === "app" ? (
+          <EventDetailPanel
+            id={open.id}
+            occurrence={open.occurrence}
+            onEdit={onEdit}
+            onDeleted={() => setOpen(null)}
+            onDuplicate={(e) => {
+              setOpen(null);
+              setDialog({ mode: "new", startsAt: e.starts_at, endsAt: e.ends_at, allDay: e.all_day, copy: e });
+            }}
+            onLoaded={setOpenDetail}
+            requestDelete={deleteSignal}
+          />
+        ) : null}
         {open?.kind === "connected" ? <ConnectedEventPanel eventRef={open.ref} onEdit={onEditConnected} onDeleted={() => setOpen(null)} /> : null}
       </Sheet>
-      <Sheet open={connectedOpen} onOpenChange={setConnectedOpen} title="Connected calendars" size="sm">
-        <ConnectedCalendars sources={sources.data} loading={sources.isPending} />
+      <Sheet open={connectedOpen} onOpenChange={setConnectedOpen} title="Calendars" size="sm">
+        <div className="flex flex-col gap-6">
+          <CalendarsPanel />
+          <ConnectedCalendars sources={sources.data} loading={sources.isPending} />
+          {(settings.data?.world_clocks.length ?? 0) > 0 ? <WorldClocks zones={settings.data!.world_clocks} /> : null}
+        </div>
       </Sheet>
+      <EventSearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        zone={zone}
+        onPick={(h) => {
+          setSearchOpen(false);
+          setDate(calendarDateKey(h.starts_at, zone));
+          setOpen({ kind: "app", id: h.event_id, occurrence: h.occurrence_start });
+        }}
+      />
+      <ShortcutsDialog open={helpOpen} onOpenChange={setHelpOpen} />
       {dialog ? <EventDialog target={dialog} zone={zone} onClose={() => setDialog(null)} /> : null}
       <ScopeDialog
         key={pendingMove ? `${pendingMove.o.event_id}${isCalendarConnected(pendingMove.o)}` : "none"}

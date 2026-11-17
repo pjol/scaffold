@@ -4,6 +4,19 @@ import { seg } from "../api/query-string";
 import type { Page } from "../types";
 import { callsTimeZone } from "./format";
 import type {
+  CallsBreakout,
+  CallsChatMessage,
+  CallsCreateBreakoutsRequest,
+  CallsOrgSettings,
+  CallsPoll,
+  CallsPollInput,
+  CallsPollUpdate,
+  CallsQuestion,
+  CallsRecording,
+  CallsRoomState,
+  CallsSessionSummary,
+  CallsTranscript,
+  CallsUpdateBreakoutsRequest,
   CallsCallDetail,
   CallsCreateMeetingRequest,
   CallsGuestKnock,
@@ -26,6 +39,12 @@ import type {
 export type CallsLobbyTarget = { ids: string[] } | { all: true };
 /** Who to mute: one participant identity, or everyone but the hosts. */
 export type CallsMuteTarget = { identity: string } | { all: true };
+
+/** Who acts in a call: a signed-in person (by meeting), or an admitted guest (their lobby pass). */
+export interface CallsRoomTarget {
+  meetingId: string;
+  guest?: { lobbyId: string; key: string } | null;
+}
 
 /** `/v1/calls` (signed in) and `/v1/calls/public` (guests, no token). */
 export function callsEndpoints(http: HttpClient) {
@@ -86,6 +105,64 @@ export function callsEndpoints(http: HttpClient) {
     startCall: (body: CallsStartCallRequest, o?: CallOptions) => http.post<CallsMeetingDetail>(`${C}/calls`, body, o),
     declineRing: (ringId: string, o?: CallOptions) => http.post<CallsRing>(`${C}/rings/${seg(ringId)}/decline`, undefined, o),
     acceptRing: (ringId: string, o?: CallOptions) => http.post<CallsRing>(`${C}/rings/${seg(ringId)}/accept`, undefined, o),
+    /** Spotlight someone for everyone (hosts); "" clears. */
+    spotlight: (id: string, identity: string, o?: CallOptions) => http.put<void>(`${mtg(id)}/spotlight`, { identity }, o),
+    /** Ask someone to unmute (hosts); while unmuting is off, this lets them. */
+    askUnmute: (id: string, identity: string, o?: CallOptions) => http.post<void>(`${mtg(id)}/ask-unmute`, { identity }, o),
+    startRecording: (id: string, o?: CallOptions) => http.post<CallsRecording>(`${mtg(id)}/recording`, undefined, o),
+    stopRecording: (id: string, o?: CallOptions) => http.delete<CallsRecording>(`${mtg(id)}/recording`, o),
+    /** Recordings of a meeting you may open (no playback links: fetch one). */
+    meetingRecordings: (id: string, o?: CallOptions) => http.get<Page<CallsRecording>>(`${mtg(id)}/recordings`, o),
+    /** One recording with playback and download links (one hour). */
+    recording: (recordingId: string, o?: CallOptions) => http.get<CallsRecording>(`${C}/recordings/${seg(recordingId)}`, o),
+    deleteRecording: (recordingId: string, o?: CallOptions) => http.delete<void>(`${C}/recordings/${seg(recordingId)}`, o),
+    /** A meeting's calls you were in or may read the records of. */
+    sessions: (id: string, params: PageParams = {}, o?: CallOptions) =>
+      http.get<Page<CallsSessionSummary>>(`${mtg(id)}/sessions`, { ...o, query: { limit: params.limit, cursor: params.cursor } }),
+    setTranscribing: (id: string, on: boolean, o?: CallOptions) => http.put<void>(`${mtg(id)}/transcribing`, { on }, o),
+    transcript: (sessionId: string, o?: CallOptions) => http.get<CallsTranscript>(`${C}/history/${seg(sessionId)}/transcript`, o),
+    savedChat: (sessionId: string, o?: CallOptions) => http.get<Page<CallsChatMessage>>(`${C}/history/${seg(sessionId)}/chat`, o),
+    /** Attendance as CSV (hosts): fetch it with the session's token, then save the text. */
+    attendanceCsv: (sessionId: string, o?: CallOptions) => http.text("GET", `${C}/history/${seg(sessionId)}/attendance.csv`, o),
+    createPoll: (id: string, body: CallsPollInput, o?: CallOptions) => http.post<CallsPoll>(`${mtg(id)}/polls`, body, o),
+    updatePoll: (id: string, pollId: string, body: CallsPollUpdate, o?: CallOptions) => http.patch<CallsPoll>(`${mtg(id)}/polls/${seg(pollId)}`, body, o),
+    deletePoll: (id: string, pollId: string, o?: CallOptions) => http.delete<void>(`${mtg(id)}/polls/${seg(pollId)}`, o),
+    moderateQuestion: (id: string, questionId: string, status: "open" | "answered" | "hidden", o?: CallOptions) =>
+      http.patch<CallsQuestion>(`${mtg(id)}/questions/${seg(questionId)}`, { status }, o),
+    /** The open breakout rooms with who is where (hosts). */
+    breakouts: (id: string, o?: CallOptions) => http.get<CallsBreakout | null>(`${mtg(id)}/breakouts`, o),
+    createBreakouts: (id: string, body: CallsCreateBreakoutsRequest, o?: CallOptions) => http.post<CallsBreakout>(`${mtg(id)}/breakouts`, body, o),
+    updateBreakouts: (id: string, body: CallsUpdateBreakoutsRequest, o?: CallOptions) => http.patch<CallsBreakout>(`${mtg(id)}/breakouts`, body, o),
+    broadcastBreakouts: (id: string, text: string, o?: CallOptions) => http.post<void>(`${mtg(id)}/breakouts/broadcast`, { text }, o),
+    /** Close the rooms after a 30-second countdown (`now`: at once). */
+    closeBreakouts: (id: string, now = false, o?: CallOptions) => http.post<void>(`${mtg(id)}/breakouts/close`, { now }, o),
+    orgSettings: (orgId: string, o?: CallOptions) => http.get<CallsOrgSettings>(`${C}/orgs/${seg(orgId)}/settings`, o),
+    updateOrgSettings: (orgId: string, body: Partial<Pick<CallsOrgSettings, "captions" | "transcripts" | "recording">>, o?: CallOptions) =>
+      http.put<CallsOrgSettings>(`${C}/orgs/${seg(orgId)}/settings`, body, o),
+    /**
+     * In-call actions for a signed-in person or an admitted guest: the same server code
+     * behind `/meetings/{id}/…` and `/public/lobby/{id}/…` (the guest's key in the body).
+     */
+    room: (t: CallsRoomTarget) => {
+      const g = t.guest;
+      const post = <T>(path: string, body: Record<string, unknown> = {}, o?: CallOptions) =>
+        g ? http.post<T>(`${pub(g.lobbyId)}${path}`, { ...body, key: g.key }, { ...o, auth: false }) : http.post<T>(`${mtg(t.meetingId)}${path}`, body, o);
+      return {
+        state: (o?: CallOptions) => (g ? http.post<CallsRoomState>(`${pub(g.lobbyId)}/room`, { key: g.key }, { ...o, auth: false }) : http.get<CallsRoomState>(`${mtg(t.meetingId)}/room`, o)),
+        vote: (pollId: string, choices: number[], o?: CallOptions) => post<CallsPoll>(`/polls/${seg(pollId)}/vote`, { choices }, o),
+        ask: (body: string, anonymous: boolean, o?: CallOptions) => post<CallsQuestion>(`/questions`, { body, anonymous }, o),
+        voteQuestion: (questionId: string, up: boolean, o?: CallOptions) => post<CallsQuestion>(`/questions/${seg(questionId)}/vote`, { up }, o),
+        deleteQuestion: (questionId: string, o?: CallOptions) =>
+          g ? post<void>(`/questions/${seg(questionId)}/delete`, {}, o) : http.delete<void>(`${mtg(t.meetingId)}/questions/${seg(questionId)}`, o),
+        /** Your own final caption lines, while the transcript is on. */
+        transcript: (lines: { text: string; spoken_at: string }[], o?: CallOptions) => post<void>(`/transcript`, { lines }, o),
+        /** A copy of a message you sent, while the meeting saves chat. */
+        chat: (text: string, o?: CallOptions) => post<void>(`/chat`, { text }, o),
+        /** A token for your breakout room (or `roomId`: hosts any, others when choosing is on). */
+        joinBreakout: (roomId?: string | null, o?: CallOptions) => post<CallsJoinToken>(`/breakouts/join`, roomId ? { room_id: roomId } : {}, o),
+        askForHelp: (o?: CallOptions) => post<void>(`/breakouts/help`, {}, o),
+      };
+    },
     /** Guests without an account (no token sent). */
     guest: {
       meeting: (code: string, o?: CallOptions) => http.get<CallsPublicMeeting>(`${C}/public/meetings/${seg(code)}`, { ...o, auth: false }),

@@ -54,31 +54,36 @@ func userRef(id uuid.UUID, name string, avatar *string, status string) UserRef {
 
 // Message is one message, from the caller's point of view.
 type Message struct {
-	ID            uuid.UUID    `json:"id"`
-	ChannelID     uuid.UUID    `json:"channel_id"`
-	Kind          string       `json:"kind"`     // text | system | bot
-	Sender        *UserRef     `json:"sender"`   // null for bot messages
-	BotName       *string      `json:"bot_name"` // bot messages
-	Body          string       `json:"body"`     // markdown with mention tokens; "" once deleted
-	Event         *string      `json:"event"`    // system: created, joined, left, added, removed, renamed, archived, unarchived, topic, converted
-	Subject       *UserRef     `json:"subject"`  // system: who the event is about
-	ThreadRootID  *uuid.UUID   `json:"thread_root_id"`
-	AlsoInChannel bool         `json:"also_in_channel"`
-	Title         *string      `json:"title"` // forum posts
-	Tags          []string     `json:"tags"`
-	Mentions      []UserRef    `json:"mentions"` // people the body's <@id> tokens name, with current names
-	ReplyCount    int          `json:"reply_count"`
-	LastReplyAt   *time.Time   `json:"last_reply_at"`
-	ReplyUsers    []UserRef    `json:"reply_users"` // up to 4 most recent repliers
-	Attachments   []Attachment `json:"attachments"`
-	Reactions     []Reaction   `json:"reactions"`
-	Pinned        bool         `json:"pinned"`
-	Saved         bool         `json:"saved"` // in the caller's Later list
-	ClientID      *string      `json:"client_id"`
-	EditedAt      *time.Time   `json:"edited_at"`
-	Deleted       bool         `json:"deleted"`
-	CreatedAt     time.Time    `json:"created_at"`
-	DeletedBy     *string      `json:"deleted_by,omitempty"` // staff view only
+	ID            uuid.UUID     `json:"id"`
+	ChannelID     uuid.UUID     `json:"channel_id"`
+	Kind          string        `json:"kind"`     // text | system | bot
+	Sender        *UserRef      `json:"sender"`   // null for bot messages
+	BotName       *string       `json:"bot_name"` // bot messages
+	Body          string        `json:"body"`     // markdown with mention tokens; "" once deleted
+	Event         *string       `json:"event"`    // system: created, joined, left, added, removed, renamed, archived, unarchived, topic, converted
+	Subject       *UserRef      `json:"subject"`  // system: who the event is about
+	ThreadRootID  *uuid.UUID    `json:"thread_root_id"`
+	AlsoInChannel bool          `json:"also_in_channel"`
+	Title         *string       `json:"title"` // forum posts
+	Tags          []string      `json:"tags"`
+	Mentions      []UserRef     `json:"mentions"` // people the body's <@id> tokens name, with current names
+	ReplyCount    int           `json:"reply_count"`
+	LastReplyAt   *time.Time    `json:"last_reply_at"`
+	ReplyUsers    []UserRef     `json:"reply_users"` // up to 4 most recent repliers
+	Attachments   []Attachment  `json:"attachments"`
+	Reactions     []Reaction    `json:"reactions"`
+	Pinned        bool          `json:"pinned"`
+	Saved         bool          `json:"saved"` // in the caller's Later list
+	Links         []LinkPreview `json:"links"`
+	LinksHidden   bool          `json:"links_hidden"` // the author removed the previews
+	Poll          *Poll         `json:"poll"`
+	Forward       *ForwardRef   `json:"forward"`     // a forwarded message: clients load the original as the viewer
+	Integration   bool          `json:"integration"` // posted by an incoming webhook (bot_name is its name)
+	ClientID      *string       `json:"client_id"`
+	EditedAt      *time.Time    `json:"edited_at"`
+	Deleted       bool          `json:"deleted"`
+	CreatedAt     time.Time     `json:"created_at"`
+	DeletedBy     *string       `json:"deleted_by,omitempty"` // staff view only
 
 	deletedBy *string
 	senderID  *uuid.UUID
@@ -120,7 +125,8 @@ const messageSelect = `
 	SELECT m.id, m.channel_id, m.kind, m.body, m.bot_name, m.thread_root_id, m.also_in_channel, m.title, m.tags,
 	       m.reply_count, m.last_reply_at, m.pinned_at IS NOT NULL, m.client_id, m.edited_at, m.deleted_at, m.deleted_by, m.created_at,
 	       m.sender_id, su.display_name, su.avatar_url, su.status,
-	       m.subject_user_id, sj.display_name, sj.avatar_url, sj.status
+	       m.subject_user_id, sj.display_name, sj.avatar_url, sj.status,
+	       m.forward_of, m.is_forward, m.links_hidden, m.webhook_id IS NOT NULL
 	FROM channel_messages m
 	LEFT JOIN users su ON su.id = m.sender_id
 	LEFT JOIN users sj ON sj.id = m.subject_user_id`
@@ -139,12 +145,18 @@ func scanMessages(rows pgx.Rows, staff bool) ([]*Message, error) {
 			senderName, senderStatus    *string
 			subjectName, subjectStatus  *string
 			senderAvatar, subjectAvatar *string
+			forwardOf                   *uuid.UUID
+			isForward                   bool
 		)
 		if err := rows.Scan(&m.ID, &m.ChannelID, &m.Kind, &body, &m.BotName, &m.ThreadRootID, &m.AlsoInChannel, &m.Title, &m.Tags,
 			&m.ReplyCount, &m.LastReplyAt, &m.Pinned, &m.ClientID, &m.EditedAt, &deletedAt, &m.deletedBy, &m.CreatedAt,
 			&senderID, &senderName, &senderAvatar, &senderStatus,
-			&subjectID, &subjectName, &subjectAvatar, &subjectStatus); err != nil {
+			&subjectID, &subjectName, &subjectAvatar, &subjectStatus,
+			&forwardOf, &isForward, &m.LinksHidden, &m.Integration); err != nil {
 			return nil, err
+		}
+		if isForward && (deletedAt == nil || staff) {
+			m.Forward = &ForwardRef{MessageID: forwardOf}
 		}
 		m.senderID = senderID
 		if senderID != nil {
@@ -169,7 +181,7 @@ func scanMessages(rows pgx.Rows, staff bool) ([]*Message, error) {
 		if m.Tags == nil {
 			m.Tags = []string{}
 		}
-		m.Mentions, m.ReplyUsers, m.Attachments, m.Reactions = []UserRef{}, []UserRef{}, []Attachment{}, []Reaction{}
+		m.Mentions, m.ReplyUsers, m.Attachments, m.Reactions, m.Links = []UserRef{}, []UserRef{}, []Attachment{}, []Reaction{}, []LinkPreview{}
 		out = append(out, &m)
 	}
 	return out, rows.Err()
@@ -306,7 +318,17 @@ func (s *Service) hydrate(ctx context.Context, q db.Querier, msgs []*Message, vi
 			byID[id].Saved = true
 		}
 	}
-	return nil
+	if err := s.hydrateLinks(ctx, q, byID, ids); err != nil {
+		return err
+	}
+	return s.hydratePolls(ctx, q, byID, ids, viewer)
+}
+
+// ForwardRef points at the message a forward shows. MessageID is null when
+// the original is gone; clients load it with GET /channels/messages/{id},
+// which answers only when the viewer may read it.
+type ForwardRef struct {
+	MessageID *uuid.UUID `json:"message_id"`
 }
 
 // messagesByID loads and hydrates messages by id.
@@ -369,14 +391,9 @@ func loadUsers(ctx context.Context, q db.Querier, ids []uuid.UUID) (map[uuid.UUI
 
 // ---- attachments ---------------------------------------------------------------------
 
-// attachmentTypes: photos, video, audio and documents.
-var attachmentTypes = append([]string{
-	"image/jpeg", "image/png", "image/heic", "image/webp", "image/gif",
-	"video/mp4", "video/quicktime", "audio/mp4", "audio/mpeg",
-}, storage.DocumentTypes...)
-
 // attachmentExt maps a storage key's extension to its type and kind. Keys are
-// issued by storage.PresignPut, so the extension is the validated type.
+// issued by storage.PresignPut, so a known extension is the validated type;
+// any other file is stored as .bin and always served as a download.
 var attachmentExt = map[string]struct{ contentType, kind string }{
 	"jpg": {"image/jpeg", "image"}, "png": {"image/png", "image"}, "heic": {"image/heic", "image"},
 	"webp": {"image/webp", "image"}, "gif": {"image/gif", "image"},
@@ -471,12 +488,48 @@ func dedupe(ids []uuid.UUID, except ...uuid.UUID) []uuid.UUID {
 
 var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// signAttachment presigns a download that opens what the browser can show
-// and saves the rest under the attachment's name (not the storage key's).
+// inlineTypes are the vetted types a browser may open in place (none can
+// run script). Everything else downloads, as application/octet-stream when
+// the type was only claimed by the client.
+var inlineTypes = map[string]bool{
+	"image/jpeg": true, "image/png": true, "image/webp": true, "image/gif": true, "image/heic": true,
+	"video/mp4": true, "video/quicktime": true, "audio/mp4": true, "audio/mpeg": true,
+	"application/pdf": true, "text/plain": true, "text/csv": true,
+}
+
+// vettedType reports whether contentType came from a known key extension.
+func vettedType(contentType string) bool {
+	for _, v := range attachmentExt {
+		if v.contentType == contentType {
+			return true
+		}
+	}
+	return false
+}
+
+// signAttachment presigns a download that opens what the browser can safely
+// show and saves the rest under the attachment's name (not the storage key's).
 func (s *Service) signAttachment(ctx context.Context, key, contentType, fileName string, ttl time.Duration) (string, error) {
-	disp := "inline"
-	if d := mime.FormatMediaType("inline", map[string]string{"filename": fileName}); fileName != "" && d != "" {
+	mode := "inline"
+	if !inlineTypes[contentType] || !strings.HasSuffix(key, "."+extOf(contentType)) {
+		mode = "attachment"
+	}
+	if !vettedType(contentType) || !strings.HasSuffix(key, "."+extOf(contentType)) {
+		contentType = "application/octet-stream"
+	}
+	disp := mode
+	if d := mime.FormatMediaType(mode, map[string]string{"filename": fileName}); fileName != "" && d != "" {
 		disp = d
 	}
 	return s.d.Storage.PresignGetWith(ctx, key, ttl, storage.GetOptions{ContentType: contentType, Disposition: disp})
+}
+
+// extOf is the key extension storage gives a vetted type ("" otherwise).
+func extOf(contentType string) string {
+	for ext, v := range attachmentExt {
+		if v.contentType == contentType {
+			return ext
+		}
+	}
+	return ""
 }

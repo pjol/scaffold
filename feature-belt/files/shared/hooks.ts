@@ -10,6 +10,15 @@ import { filesConnectedUpload, filesUpload, type FilesConnectedUploadInput, type
 import type {
   FilesActivity,
   FilesAdminPublicItem,
+  FilesComment,
+  FilesCreateRequest,
+  FilesNewComment,
+  FilesPublicLinkInfo,
+  FilesPublicRequest,
+  FilesRequest,
+  FilesRequestUpload,
+  FilesSearchFilters,
+  FilesStorage,
   FilesArchive,
   FilesBatchAction,
   FilesBatchResult,
@@ -44,7 +53,14 @@ export const filesKeys = {
   lists: () => ["files", "list"] as const,
   section: (orgId: string, section: FilesSection, p: FilesListParams = {}) => ["files", "list", "section", orgId, section, p] as const,
   children: (folderId: string, p: FilesListParams = {}) => ["files", "list", "children", folderId, p] as const,
-  search: (orgId: string, q: string) => ["files", "list", "search", orgId, q] as const,
+  search: (orgId: string, q: string, filters: FilesSearchFilters = {}) => ["files", "list", "search", orgId, q, filters] as const,
+  comments: (id: string, status: string) => ["files", "item", id, "comments", status] as const,
+  publicLinks: (id: string) => ["files", "item", id, "public-links"] as const,
+  folderRequests: (id: string) => ["files", "item", id, "requests"] as const,
+  myRequests: (orgId: string) => ["files", "requests", orgId] as const,
+  requestUploads: (requestId: string) => ["files", "request", requestId, "uploads"] as const,
+  publicRequest: (token: string) => ["files", "public-request", token] as const,
+  storage: (orgId: string) => ["files", "storage", orgId] as const,
   item: (id: string) => ["files", "item", id] as const,
   versions: (id: string) => ["files", "item", id, "versions"] as const,
   activity: (id: string) => ["files", "item", id, "activity"] as const,
@@ -112,10 +128,23 @@ export function useFilesChildren(folderId: string | null | undefined, params: Fi
 }
 
 /** Name and text search in one org (pass a debounced query; under 1 character it stays idle). */
-export function useFilesSearch(orgId: string | null | undefined, q: string, options?: InfiniteOverrides<FilesSearchHit>): PagedQueryResult<FilesSearchHit> {
+/** Search by name and text with Drive-style filters; runs when there's a query or any filter. */
+export function useFilesSearch(orgId: string | null | undefined, q: string, options?: InfiniteOverrides<FilesSearchHit>, filters: FilesSearchFilters = {}): PagedQueryResult<FilesSearchHit> {
   const f = useEndpoints(filesEndpoints);
   const query = q.trim();
-  return usePagedQuery(filesKeys.search(orgId ?? "", query), (cursor, signal) => f.search(orgId ?? "", query, cursor, { signal }), options, !!orgId && query.length > 0);
+  const active = query.length > 0 || filesHasFilters(filters);
+  return usePagedQuery(filesKeys.search(orgId ?? "", query, filters), (cursor, signal) => f.search(orgId ?? "", query, cursor, { signal }, filters), options, !!orgId && active);
+}
+
+/** True when any search filter is set. */
+export function filesHasFilters(f: FilesSearchFilters): boolean {
+  return !!(f.kind || f.owner || f.modified_after || f.modified_before || f.location || f.starred || f.shared_with_me);
+}
+
+/** Your storage (and everyone's for org owners and admins). */
+export function useFilesStorage(orgId: string | null | undefined, enabled = true): UseQueryResult<FilesStorage, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.storage(orgId ?? ""), ({ signal }) => f.storage(orgId ?? "", { signal }), { staleTime: 60_000 }, !!orgId && enabled);
 }
 
 /** An item with its path. 404 when you can't open it. */
@@ -466,19 +495,31 @@ export function useFilesSaveTo(): UseMutationResult<FilesConnectedItem, ApiError
 // ---- public links ------------------------------------------------------------------------
 
 /** What a public link opens (itemId: something inside a shared folder). Works signed out. */
-export function useFilesPublic(token: string | null | undefined, itemId?: string | null, options?: QueryOverrides<FilesPublicView>): UseQueryResult<FilesPublicView, ApiError> {
+/** `proof` shows the visitor typed the link's password (useFilesPublicPassword); 401 link_password_required without it. */
+export function useFilesPublic(token: string | null | undefined, itemId?: string | null, options?: QueryOverrides<FilesPublicView>, proof?: string): UseQueryResult<FilesPublicView, ApiError> {
   const f = useEndpoints(filesEndpoints);
-  return useApiQuery(filesKeys.public(token ?? "", itemId ?? ""), ({ signal }) => f.publicView(token ?? "", itemId ?? undefined, { signal }), { retry: retryServerErrors, ...options }, !!token);
+  return useApiQuery(
+    [...filesKeys.public(token ?? "", itemId ?? ""), proof ?? ""],
+    ({ signal }) => f.publicView(token ?? "", itemId ?? undefined, { signal }, proof),
+    { retry: (n, e) => e.status !== 401 && retryServerErrors(n, e), ...options },
+    !!token,
+  );
 }
 
-export function useFilesPublicChildren(token: string | null | undefined, folderId: string | null | undefined, params: FilesListParams = {}): PagedQueryResult<FilesPublicItem> {
+export function useFilesPublicChildren(token: string | null | undefined, folderId: string | null | undefined, params: FilesListParams = {}, proof?: string): PagedQueryResult<FilesPublicItem> {
   const f = useEndpoints(filesEndpoints);
   return usePagedQuery(
-    filesKeys.publicChildren(token ?? "", folderId ?? "", params),
-    (cursor, signal) => f.publicChildren(token ?? "", folderId ?? "", { ...params, cursor }, { signal }),
+    [...filesKeys.publicChildren(token ?? "", folderId ?? "", params), proof ?? ""],
+    (cursor, signal) => f.publicChildren(token ?? "", folderId ?? "", { ...params, cursor }, { signal }, proof),
     { placeholderData: keepPreviousData },
     !!token && !!folderId,
   );
+}
+
+/** Trade a link's password for a proof (12 hours). */
+export function useFilesPublicPassword(token: string): UseMutationResult<{ proof: string; expires_at: string | null }, ApiError, string> {
+  const f = useEndpoints(filesEndpoints);
+  return useMutation<{ proof: string; expires_at: string | null }, ApiError, string>({ mutationFn: (password) => f.publicPassword(token, password) });
 }
 
 export function useFilesPublicText(token: string | null | undefined, itemId: string | null | undefined, enabled = true): UseQueryResult<FilesTextContent, ApiError> {
@@ -487,17 +528,17 @@ export function useFilesPublicText(token: string | null | undefined, itemId: str
 }
 
 /** A public download or preview link (counted; limited per visitor). */
-export function useFilesPublicUrl(token: string): UseMutationResult<FilesUrl, ApiError, { itemId: string; disposition?: "inline" | "attachment" }> {
+export function useFilesPublicUrl(token: string, proof?: string): UseMutationResult<FilesUrl, ApiError, { itemId: string; disposition?: "inline" | "attachment" }> {
   const f = useEndpoints(filesEndpoints);
-  return useMutation<FilesUrl, ApiError, { itemId: string; disposition?: "inline" | "attachment" }>({ mutationFn: ({ itemId, disposition }) => f.publicUrl(token, itemId, disposition) });
+  return useMutation<FilesUrl, ApiError, { itemId: string; disposition?: "inline" | "attachment" }>({ mutationFn: ({ itemId, disposition }) => f.publicUrl(token, itemId, disposition, undefined, proof) });
 }
 
-/** An inline public preview link (images, PDF, video, audio), fetched once per item. */
-export function useFilesPublicPreviewUrl(token: string | null | undefined, itemId: string | null | undefined, enabled = true): UseQueryResult<FilesUrl, ApiError> {
+/** An inline public preview link, fetched once per item. */
+export function useFilesPublicPreviewUrl(token: string | null | undefined, itemId: string | null | undefined, enabled = true, proof?: string): UseQueryResult<FilesUrl, ApiError> {
   const f = useEndpoints(filesEndpoints);
   return useApiQuery(
-    ["files", "public", token ?? "", itemId ?? "", "preview-url"],
-    ({ signal }) => f.publicUrl(token ?? "", itemId ?? "", "inline", { signal }),
+    ["files", "public", token ?? "", itemId ?? "", "preview-url", proof ?? ""],
+    ({ signal }) => f.publicUrl(token ?? "", itemId ?? "", "inline", { signal }, proof),
     { staleTime: 10 * 60_000, retry: retryServerErrors },
     !!token && !!itemId && enabled,
   );
@@ -529,6 +570,141 @@ export function useFilesAdminSetPublic(): UseMutationResult<FilesAdminPublicItem
 }
 
 // ---- realtime ------------------------------------------------------------------------------
+
+// ---- comments ----------------------------------------------------------------------
+
+/** An item's comment threads (with replies), live. status: open (default), resolved or all. */
+export function useFilesComments(id: string | null | undefined, status: "open" | "resolved" | "all" = "open"): PagedQueryResult<FilesComment> {
+  const f = useEndpoints(filesEndpoints);
+  return usePagedQuery(filesKeys.comments(id ?? "", status), (cursor, signal) => f.comments(id ?? "", status === "all" ? undefined : status, cursor, { signal }), undefined, !!id);
+}
+
+function refreshComments(qc: QueryClient, id: string) {
+  void qc.invalidateQueries({ queryKey: [...filesKeys.item(id), "comments"] });
+  void qc.invalidateQueries({ queryKey: filesKeys.activity(id) });
+}
+
+export function useFilesAddComment(id: string): UseMutationResult<{ comment: FilesComment; not_notified: string[] }, ApiError, FilesNewComment> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ comment: FilesComment; not_notified: string[] }, ApiError, FilesNewComment>({ mutationFn: (body) => f.addComment(id, body), onSuccess: () => refreshComments(qc, id) });
+}
+
+export function useFilesPatchComment(id: string): UseMutationResult<FilesComment, ApiError, { commentId: string; body?: string; resolved?: boolean }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesComment, ApiError, { commentId: string; body?: string; resolved?: boolean }>({
+    mutationFn: ({ commentId, ...body }) => f.patchComment(commentId, body),
+    onSuccess: () => refreshComments(qc, id),
+  });
+}
+
+export function useFilesDeleteComment(id: string): UseMutationResult<void, ApiError, string> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({ mutationFn: (commentId) => f.deleteComment(commentId), onSuccess: () => refreshComments(qc, id) });
+}
+
+// ---- locks, colours, versions, owner ----------------------------------------------------
+
+export function useFilesLock(): UseMutationResult<FilesItem, ApiError, { id: string; locked: boolean; note?: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesItem, ApiError, { id: string; locked: boolean; note?: string }>({
+    mutationFn: ({ id, locked, note }) => (locked ? f.lock(id, note) : f.checkIn(id)),
+    onSuccess: (it) => refreshFiles(qc, [it.id]),
+  });
+}
+
+export function useFilesSetColor(): UseMutationResult<FilesItem, ApiError, { id: string; color: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesItem, ApiError, { id: string; color: string }>({ mutationFn: ({ id, color }) => f.setColor(id, color), onSuccess: (it) => refreshFiles(qc, [it.id]) });
+}
+
+export function useFilesTransferOwner(): UseMutationResult<FilesItem, ApiError, { id: string; userId: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesItem, ApiError, { id: string; userId: string }>({ mutationFn: ({ id, userId }) => f.transferOwner(id, userId), onSuccess: (it) => refreshFiles(qc, [it.id], it.org_id) });
+}
+
+export function useFilesPatchVersion(id: string): UseMutationResult<{ items: FilesVersion[] }, ApiError, { versionId: string; name?: string; keep_forever?: boolean }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ items: FilesVersion[] }, ApiError, { versionId: string; name?: string; keep_forever?: boolean }>({
+    mutationFn: ({ versionId, ...body }) => f.patchVersion(id, versionId, body),
+    onSuccess: (res) => {
+      qc.setQueryData(filesKeys.versions(id), res);
+      void qc.invalidateQueries({ queryKey: filesKeys.activity(id) });
+    },
+  });
+}
+
+/** Sends a poster frame for a video the browser just uploaded (best effort). */
+export function useFilesPutThumbnail(): UseMutationResult<void, ApiError, { id: string; dataUrl: string }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, { id: string; dataUrl: string }>({ mutationFn: ({ id, dataUrl }) => f.putThumbnail(id, dataUrl), onSuccess: () => refreshFiles(qc) });
+}
+
+// ---- public link options ----------------------------------------------------------------
+
+export function useFilesPublicLinks(id: string | null | undefined, enabled = true): UseQueryResult<{ items: FilesPublicLinkInfo[] }, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.publicLinks(id ?? ""), ({ signal }) => f.publicLinks(id ?? "", { signal }), { staleTime: 30_000 }, !!id && enabled);
+}
+
+export function useFilesSetLinkOptions(id: string): UseMutationResult<{ items: FilesPublicLinkInfo[] }, ApiError, { linkId: string; password?: string; allow_download?: boolean }> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<{ items: FilesPublicLinkInfo[] }, ApiError, { linkId: string; password?: string; allow_download?: boolean }>({
+    mutationFn: ({ linkId, ...body }) => f.setLinkOptions(id, linkId, body),
+    onSuccess: (res) => qc.setQueryData(filesKeys.publicLinks(id), res),
+  });
+}
+
+// ---- file requests ------------------------------------------------------------------------
+
+export function useFilesFolderRequests(folderId: string | null | undefined, enabled = true): PagedQueryResult<FilesRequest> {
+  const f = useEndpoints(filesEndpoints);
+  return usePagedQuery(filesKeys.folderRequests(folderId ?? ""), (cursor, signal) => f.folderRequests(folderId ?? "", cursor, { signal }), undefined, !!folderId && enabled);
+}
+
+export function useFilesMyRequests(orgId: string | null | undefined): PagedQueryResult<FilesRequest> {
+  const f = useEndpoints(filesEndpoints);
+  return usePagedQuery(filesKeys.myRequests(orgId ?? ""), (cursor, signal) => f.myRequests(orgId ?? "", cursor, { signal }), undefined, !!orgId);
+}
+
+function refreshRequests(qc: QueryClient) {
+  void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "files" && (q.queryKey[1] === "requests" || q.queryKey[3] === "requests") });
+}
+
+export function useFilesCreateRequest(folderId: string): UseMutationResult<FilesRequest, ApiError, FilesCreateRequest> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesRequest, ApiError, FilesCreateRequest>({ mutationFn: (body) => f.createRequest(folderId, body), onSuccess: () => refreshRequests(qc) });
+}
+
+export function useFilesCloseRequest(): UseMutationResult<FilesRequest, ApiError, string> {
+  const f = useEndpoints(filesEndpoints);
+  const qc = useQueryClient();
+  return useMutation<FilesRequest, ApiError, string>({ mutationFn: (requestId) => f.closeRequest(requestId), onSuccess: () => refreshRequests(qc) });
+}
+
+export function useFilesRequestUploads(requestId: string | null | undefined): UseQueryResult<{ items: FilesRequestUpload[] }, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.requestUploads(requestId ?? ""), ({ signal }) => f.requestUploads(requestId ?? "", { signal }), {}, !!requestId);
+}
+
+/** What a file request link shows; 404 request_not_found once it stops taking files. */
+export function useFilesPublicRequest(token: string | null | undefined): UseQueryResult<FilesPublicRequest, ApiError> {
+  const f = useEndpoints(filesEndpoints);
+  return useApiQuery(filesKeys.publicRequest(token ?? ""), ({ signal }) => f.publicRequest(token ?? "", { signal }), { retry: retryServerErrors }, !!token);
+}
+
+registerRealtimeHandler("files.comments", (qc, e) => {
+  void qc.invalidateQueries({ queryKey: [...filesKeys.item(e.data.item_id), "comments"] });
+});
 
 registerRealtimeHandler("files.changed", (qc, e) => {
   void qc.invalidateQueries({ queryKey: filesKeys.lists() });

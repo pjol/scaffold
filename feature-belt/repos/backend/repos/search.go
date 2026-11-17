@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"path"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"scaffoldapp/backend/internal/access"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 )
@@ -141,7 +143,51 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 			}
 		}
 	}
+	if len(out) < limit {
+		hits, err := s.searchIssueHits(ctx, caller, scope, lq, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, hits...)
+	}
 	return append(out, <-connected...), nil
+}
+
+// searchIssueHits finds issues by title in repositories the caller can see
+// (agent-capped through access_visible).
+func (s *Service) searchIssueHits(ctx context.Context, caller *auth.Identity, scope *uuid.UUID, lq string, limit int) ([]app.SearchResult, error) {
+	rows, err := s.d.Pool.Query(ctx, `
+		SELECT i.repo_id, i.number, i.title, i.state, i.updated_at, fi.name, o.id, o.name
+		FROM repos_issues i
+		JOIN access_visible($1, $2, $3) v ON v.id = i.repo_id
+		JOIN repos_repos r ON r.id = i.repo_id
+		JOIN files_items fi ON fi.id = r.id AND fi.trashed_at IS NULL
+		JOIN orgs o ON o.id = r.org_id
+		WHERE ($4::uuid IS NULL OR r.org_id = $4) AND (lower(i.title) LIKE '%' || $5 || '%' OR i.number::text = ltrim($5, '#'))
+		ORDER BY (i.state = 'open') DESC, i.updated_at DESC LIMIT $6`,
+		caller.UserID, RepoKind, access.ViaAgent(ctx), scope, likeEscape(lq), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.SearchResult
+	for rows.Next() {
+		var repoID, orgID uuid.UUID
+		var number int
+		var title, state, repoName, orgName string
+		var at time.Time
+		if err := rows.Scan(&repoID, &number, &title, &state, &at, &repoName, &orgID, &orgName); err != nil {
+			return nil, err
+		}
+		score := 0.45
+		if strings.HasPrefix(strings.ToLower(title), lq) {
+			score = 0.55
+		}
+		out = append(out, app.SearchResult{Kind: "repos.issue", ID: fmt.Sprintf("%s#%d", repoID, number), Title: title,
+			Snippet: fmt.Sprintf("#%d · %s", number, state), Link: fmt.Sprintf("/repos/%s/issues/%d", repoID, number), Icon: "circle-dot",
+			Score: score, At: at, OrgID: orgID.String(), Context: app.SearchContext(orgName, repoName)})
+	}
+	return out, rows.Err()
 }
 
 type repoOrg struct{ id, name string }

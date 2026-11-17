@@ -73,7 +73,7 @@ func (s *Service) searchPages(ctx context.Context, me uuid.UUID, query string, o
 		FROM best
 		JOIN docs_pages p ON p.id = best.page_id
 		JOIN v ON v.id = p.id
-		WHERE p.deleted_at IS NULL AND ($5::uuid IS NULL OR p.org_id = $5)
+		WHERE p.deleted_at IS NULL AND NOT p.is_template AND ($5::uuid IS NULL OR p.org_id = $5)
 		  AND p.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1)
 		  AND ($6 = '' OR p.kind = $6) AND (NOT $7 OR NOT p.is_row) AND v.level >= $8
 		ORDER BY 12 DESC, p.updated_at DESC, p.id LIMIT $9`,
@@ -148,7 +148,7 @@ func (s *Service) searchRoute(w http.ResponseWriter, r *http.Request) error {
 		rows, err := s.d.Pool.Query(ctx, `
 			SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), p.org_id, 0.5::float8, ''
 			FROM docs_visits v JOIN docs_pages p ON p.id = v.page_id
-			WHERE v.user_id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL AND ($4 = '' OR p.kind = $4) AND (NOT $5 OR NOT p.is_row)
+			WHERE v.user_id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL AND NOT p.is_template AND ($4 = '' OR p.kind = $4) AND (NOT $5 OR NOT p.is_row)
 			  AND access_level($1, 'docs.page', p.id, $3) >= $6
 			ORDER BY v.visited_at DESC, p.id LIMIT $7`, me, m.OrgID, access.ViaAgent(ctx), o.kind, o.noRows, int(o.minLevel), o.limit)
 		if err != nil {

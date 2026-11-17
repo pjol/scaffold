@@ -14,14 +14,15 @@ import {
   type DocsViewType,
 } from "@scaffoldapp/shared";
 import { Badge, Button, ErrorState, IconButton, Input, cn, toast } from "@scaffoldapp/ui-web";
-import { ArrowUpDown, CalendarDays, Columns3, Filter, LayoutList, Plus, Search, Table2, X } from "lucide-react";
+import { ArrowUpDown, Filter, Plus, Search, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import type { ComponentType } from "react";
 import { Floating } from "../Floating";
+import { VIEW_ICON } from "../format";
 import { FilterPanel, SortPanel } from "../database/panels";
 import { BoardView, CalendarView, ListView, TableView, type ViewProps } from "../database/views";
 
-const VIEW_ICON: Record<DocsViewType, typeof Table2> = { table: Table2, board: Columns3, list: LayoutList, calendar: CalendarDays };
 
 function recall(key: string): string | null {
   try {
@@ -113,7 +114,8 @@ export function ConnectedDatabaseView({ connectionId, dbRef, db, views, orgId, e
     onTrashRow: () => toast.error(`Delete rows in ${platform}.`),
     onDuplicateRow: () => toast.error(`Duplicate rows in ${platform}.`),
   };
-  const Body = { table: TableView, board: BoardView, list: ListView, calendar: CalendarView }[view.type];
+  // Connected databases offer table, board, list and calendar views.
+  const Body = ({ table: TableView, board: BoardView, list: ListView, calendar: CalendarView } as Partial<Record<DocsViewType, ComponentType<ViewProps>>>)[view.type] ?? TableView;
   const filterCount = config.filters.length;
   const sortCount = config.sorts.length;
   return (

@@ -24,7 +24,7 @@ import { AppAvatar } from "@/components/shell/AppAvatar";
 import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { CreateRecordDialog } from "./CreateRecordDialog";
-import { dayLabel, recordHref } from "./parts";
+import { dayLabel, pipelinesFor, recordHref } from "./parts";
 import { CrmLoadError, CrmSourceBar, CrmSourceNotices, useCrmSource, type CrmSourceState } from "./Sources";
 
 /** /crm/deals/board: a pipeline's stages as columns; drag a card (or use its menu) to move it. */
@@ -86,7 +86,8 @@ function Board() {
   const { orgId, settings } = useCrm();
   const src = useCrmSource("board");
   const sourceId = src.connection ? src.value : CRM_SOURCE_APP;
-  const pipelines = useCrmPipelines(orgId, sourceId);
+  const pipelineQuery = useCrmPipelines(orgId, sourceId);
+  const dealPipelines = pipelinesFor(pipelineQuery.data, "deal");
   const [pipelineId, setPipelineId] = useUrlState("pipeline", "");
   // Pipelines differ per source: switching starts on the source's first one.
   const sourceState: CrmSourceState = {
@@ -127,13 +128,13 @@ function Board() {
       <CrmSourceBar state={sourceState} scope="board" />
       <CrmSourceNotices state={src} />
       <div className="flex flex-col gap-3 md:flex-row md:items-center">
-        {pipelines.data && pipelines.data.length > 1 ? (
+        {dealPipelines.length > 1 ? (
           <Select
             aria-label="Pipeline"
             className="md:w-56"
-            value={pipelineId || pipelines.data[0]?.id}
-            onValueChange={(v) => setPipelineId(v === pipelines.data?.[0]?.id ? "" : v)}
-            options={pipelines.data.map((p) => ({ value: p.id, label: p.name }))}
+            value={pipelineId || dealPipelines[0]?.id}
+            onValueChange={(v) => setPipelineId(v === dealPipelines[0]?.id ? "" : v)}
+            options={dealPipelines.map((p) => ({ value: p.id, label: p.name }))}
           />
         ) : null}
         <Input aria-label="Search deals" placeholder="Search deals" value={q} onChange={(e) => setQ(e.target.value)} wrapperClassName="md:w-56" />

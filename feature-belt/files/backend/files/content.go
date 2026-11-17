@@ -49,6 +49,8 @@ var knownTypes = map[string]string{
 	"odt":  "application/vnd.oasis.opendocument.text", "ods": "application/vnd.oasis.opendocument.spreadsheet",
 	"odp": "application/vnd.oasis.opendocument.presentation", "rtf": "application/rtf", "key": "application/x-iwork-keynote-sffkey",
 	"pages": "application/x-iwork-pages-sffpages", "numbers": "application/x-iwork-numbers-sffnumbers",
+	"woff": "font/woff", "woff2": "font/woff2", "ttf": "font/ttf", "otf": "font/otf", "7z": "application/x-7z-compressed",
+	"rar": "application/vnd.rar", "jar": "application/java-archive", "tgz": "application/gzip",
 }
 
 // inlineTypes are the only types ever served inline: browsers render them
@@ -69,6 +71,15 @@ var officeTypes = map[string]bool{
 	"application/vnd.oasis.opendocument.presentation": true, "application/rtf": true,
 	"application/x-iwork-keynote-sffkey": true, "application/x-iwork-pages-sffpages": true, "application/x-iwork-numbers-sffnumbers": true,
 }
+
+var archiveTypes = map[string]bool{
+	"application/zip": true, "application/x-zip-compressed": true, "application/gzip": true, "application/x-gzip": true,
+	"application/x-tar": true, "application/x-7z-compressed": true, "application/vnd.rar": true, "application/x-rar-compressed": true,
+}
+
+var archiveExts = map[string]bool{"zip": true, "jar": true, "gz": true, "tgz": true, "tar": true, "rar": true, "7z": true}
+
+var fontExts = map[string]bool{"woff": true, "woff2": true, "ttf": true, "otf": true}
 
 // extOf is the lower-case extension without the dot ("" for none). A name
 // like "Makefile" or ".gitignore" counts as its own extension.
@@ -185,12 +196,18 @@ func previewKind(typ, mt, name string, textLike bool) string {
 		return "audio"
 	case officeTypes[mt]:
 		return "office"
+	case archiveTypes[mt] || archiveExts[ext]:
+		return "archive"
+	case strings.HasPrefix(mt, "font/") || fontExts[ext]:
+		return "font"
 	case !textLike:
 		return "other"
 	case mt == "text/markdown" || ext == "md" || ext == "markdown":
 		return "markdown"
-	case mt == "text/csv" || ext == "csv":
+	case mt == "text/csv" || mt == "text/tab-separated-values" || ext == "csv" || ext == "tsv":
 		return "csv"
+	case mt == "application/json" || strings.HasSuffix(mt, "+json") || ext == "json" || ext == "geojson":
+		return "json"
 	case mt == "text/plain" && codeTypes[ext] == "":
 		return "text"
 	case isTextual(mt) || codeTypes[ext] != "":

@@ -1,7 +1,7 @@
 "use client";
 
 import { errorMessage, useExportAccount } from "@scaffoldapp/shared";
-import { Card, Divider, ListRow, Spinner, toast } from "@scaffoldapp/ui-web";
+import { ListGroup, ListRow, Spinner, toast } from "@scaffoldapp/ui-web";
 import { Download, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { DeleteAccountDialog } from "@/components/account/DeleteAccountDialog";
@@ -33,7 +33,7 @@ export function AccountScreen() {
 
   return (
     <Screen title="Account">
-      <Card padding="none" className="p-1">
+      <ListGroup>
         <ListRow
           title="Download my data"
           onClick={download}
@@ -46,7 +46,6 @@ export function AccountScreen() {
           }
           trailing={exportAccount.isPending ? <Spinner size={16} label="Preparing your data" /> : null}
         />
-        <Divider className="mx-4" />
         <ListRow
           title="Delete account"
           destructive
@@ -58,7 +57,7 @@ export function AccountScreen() {
             </span>
           }
         />
-      </Card>
+      </ListGroup>
       <DeleteAccountDialog
         open={deleting}
         onOpenChange={setDeleting}

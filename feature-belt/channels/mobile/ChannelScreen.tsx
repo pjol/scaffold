@@ -17,6 +17,8 @@ import {
   useChannelsTopic,
   useChannelsTopics,
   useChannelsTypingUsers,
+  useChannelsHidePreviews,
+  channelsNames,
   useChannelsWorkspace,
   useJoinChannel,
   useMe,
@@ -55,7 +57,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, Pressable, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { PresenceAvatar } from "@/features/presence";
+import { BookmarksRow } from "./Bookmarks";
 import { useChannelMenuActions } from "./ChannelMenu";
+import { ChannelsEmojiProvider } from "./emoji";
 import { Composer } from "./Composer";
 import { ChannelsMarkdown } from "./Markdown";
 import { useMessageActions } from "./MessageActions";
@@ -161,10 +165,10 @@ export function ChannelScreen() {
     );
   }
   return (
-    <>
+    <ChannelsEmojiProvider orgId={c.org_id}>
       {header}
       <Timeline key={id} c={c} around={around} meId={me.data?.id} suspended={me.data?.status === "suspended"} />
-    </>
+    </ChannelsEmojiProvider>
   );
 }
 
@@ -176,6 +180,7 @@ function ComposerNotice({ c, suspended }: { c: ChannelsDetail; suspended: boolea
   if (suspended) text = "Your account is suspended. You can read but not send.";
   else if (c.archived) text = "This channel is archived.";
   else if (!c.member) text = `You're viewing ${channelsDisplayName(c)}.`;
+  else if (!c.permissions.post) text = c.replies_open ? `Only admins post in ${channelsDisplayName(c)}. Reply in a thread.` : `Only admins post in ${channelsDisplayName(c)}.`;
   if (!text) return null;
   return (
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: theme.space[3], minHeight: theme.tap.base }}>
@@ -208,6 +213,10 @@ function Timeline({ c, around, meId, suspended }: { c: ChannelsDetail; around: s
   const [nearNewest, setNearNewest] = useState(true);
   const listRef = useRef<FlatList<ChannelsCachedMessage>>(null);
   const canPost = c.permissions.post && !suspended;
+  const canInteract = c.member && !c.archived && !suspended;
+  const [collapsed, setCollapsed] = useState(false);
+  const names = useMemo(() => channelsNames(messages), [messages]);
+  const hidePreviews = useChannelsHidePreviews();
   const openThread = useCallback((m: ChannelsMessage) => router.push(`/channels/thread/${m.thread_root_id ?? m.id}`), []);
   const actions = useMessageActions({ channel: c, meId, onReplyInThread: openThread, onEdit: setEditing });
 
@@ -274,6 +283,7 @@ function Timeline({ c, around, meId, suspended }: { c: ChannelsDetail; around: s
           channel={c}
           editing={editing}
           onCancelEdit={() => setEditing(null)}
+          onCollapse={setCollapsed}
           placeholder={`Message ${channelsDisplayName(c)}`}
           onSent={() => {
             if (around || thread.hasPreviousPage) router.setParams({ message: "" });
@@ -288,6 +298,7 @@ function Timeline({ c, around, meId, suspended }: { c: ChannelsDetail; around: s
 
   return (
     <Screen scroll={false} padded={false} edges={["bottom"]} keyboard gap={0} footer={footer}>
+      {c.kind === "public" || c.kind === "private" ? <BookmarksRow c={c} /> : null}
       {thread.isPending ? (
         <View style={{ flex: 1, justifyContent: "flex-end", gap: s[4], paddingHorizontal: layout.gutter, paddingBottom: s[4] }}>
           {Array.from({ length: 4 }, (_, i) => (
@@ -315,7 +326,12 @@ function Timeline({ c, around, meId, suspended }: { c: ChannelsDetail; around: s
                   dayLabel={newDay ? channelsDayLabel(item.created_at) : undefined}
                   firstUnread={unreadHere}
                   highlighted={highlight === item.id}
-                  canInteract={!suspended}
+                  canInteract={canInteract}
+                  canModerate={c.permissions.edit}
+                  names={names}
+                  collapsed={collapsed}
+                  onOpenProfile={(userId) => router.push(`/channels/person/${userId}?org=${c.org_id}`)}
+                  onHidePreviews={(msg) => hidePreviews.mutate(msg, { onError: (err) => toast.error(errorMessage(err)) })}
                   showThread
                   onLongPress={actions.open}
                   onReact={(msg, emoji) => react.mutate({ message: msg, emoji }, { onError: (err) => toast.error(errorMessage(err)) })}

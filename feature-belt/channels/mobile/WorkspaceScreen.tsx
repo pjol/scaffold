@@ -9,11 +9,15 @@ import {
   useActiveOrg,
   useChannelsWorkspace,
   useCreateChannel,
+  useCreateChannelsSection,
+  useUpdateChannelsSection,
+  useUpdateChannelsUserPrefs,
+  type ChannelsBuiltinSection,
   type ChannelsSidebarChannel,
 } from "@scaffoldapp/shared";
 import { AvatarGroup, Badge, Button, EmptyState, ErrorState, Field, IconButton, Input, SegmentedControl, Sheet, SkeletonRow, Text, Title, haptic, toast, useLayout, useTheme } from "@scaffoldapp/ui-native";
 import { router, useScrollToTop } from "expo-router";
-import { Bookmark, Building2, Compass, Hash, LayoutList, Lock, MessageSquareText, Plus, Search, SquarePen } from "lucide-react-native";
+import { ArrowDownAZ, AtSign, Bookmark, Building2, ChevronDown, ChevronRight, Compass, FolderPlus, Hash, Inbox, LayoutList, Lock, MessageSquareText, Plus, Search, SendHorizontal, SquarePen } from "lucide-react-native";
 import { useRef, useState } from "react";
 import { Pressable, RefreshControl, SectionList, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,7 +25,7 @@ import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { PresenceAvatar } from "@/features/presence";
 
 type Row =
-  | { kind: "shortcut"; id: "threads" | "later"; label: string; count: number }
+  | { kind: "shortcut"; id: "activity" | "unreads" | "threads" | "later" | "drafts"; label: string; count: number }
   | { kind: "channel"; channel: ChannelsSidebarChannel }
   | { kind: "action"; id: "browse" | "new-dm"; label: string };
 
@@ -143,6 +147,10 @@ export function WorkspaceScreen() {
   const { org, isPending: orgPending } = useActiveOrg();
   const ws = useChannelsWorkspace(org?.id);
   const [creating, setCreating] = useState(false);
+  const [newSection, setNewSection] = useState<string | null>(null);
+  const setPrefs = useUpdateChannelsUserPrefs(org?.id);
+  const createSection = useCreateChannelsSection(org?.id);
+  const updateSection = useUpdateChannelsSection(org?.id);
   const listRef = useRef<SectionList<Row>>(null);
   useScrollToTop(listRef);
   const pad = { paddingLeft: insets.left + layout.gutter, paddingRight: insets.right + layout.gutter };
@@ -165,8 +173,17 @@ export function WorkspaceScreen() {
             actions={[
               { id: "browse", label: "Browse channels", icon: Compass, onSelect: () => router.push("/channels/browse") },
               ...(canCreate ? [{ id: "new", label: "New channel", icon: Plus, onSelect: () => setCreating(true) }] : []),
-              { id: "threads", label: "Threads", icon: MessageSquareText, onSelect: () => router.push("/channels/threads") },
-              { id: "later", label: "Later", icon: Bookmark, onSelect: () => router.push("/channels/later") },
+              { id: "new-section", label: "New section", icon: FolderPlus, onSelect: () => setNewSection("") },
+              {
+                id: "sort",
+                label: "Sort",
+                icon: ArrowDownAZ,
+                hint: ws.data?.prefs.sidebar_sort === "recent" ? "Recent activity" : "A–Z",
+                choices: [
+                  { id: "alpha", label: "A–Z", checked: ws.data?.prefs.sidebar_sort !== "recent", onSelect: () => setPrefs.mutate({ sidebar_sort: "alpha" }) },
+                  { id: "recent", label: "Recent activity", checked: ws.data?.prefs.sidebar_sort === "recent", onSelect: () => setPrefs.mutate({ sidebar_sort: "recent" }) },
+                ],
+              },
             ]}
           />
         </>
@@ -200,18 +217,47 @@ export function WorkspaceScreen() {
     body = <ErrorState title="Couldn't load channels" info={ws.error.message} onRetry={() => void ws.refetch()} retrying={ws.isFetching} />;
   } else {
     const data = ws.data;
-    const sec = channelsSections(data?.channels ?? []);
-    const sections: { key: string; title?: string; data: Row[] }[] = [
+    const sec = channelsSections(data?.channels ?? [], data?.prefs.sidebar_sort, data?.sections ?? []);
+    const collapsed = new Set(data?.prefs.collapsed ?? []);
+    const toggle = (id: ChannelsBuiltinSection) =>
+      setPrefs.mutate({ collapsed: collapsed.has(id) ? [...collapsed].filter((x) => x !== id) : [...collapsed, id] }, { onError: (e) => toast.error(errorMessage(e)) });
+    const unreadCount = (data?.channels ?? []).filter((c) => c.unread > 0 && !c.muted).length;
+    const rows = (list: ChannelsSidebarChannel[], hidden: boolean): Row[] => (hidden ? [] : list.map((channel): Row => ({ kind: "channel", channel })));
+    const sections: { key: string; title?: string; collapsed?: boolean; onToggle?: () => void; data: Row[] }[] = [
       {
         key: "shortcuts",
         data: [
+          { kind: "shortcut", id: "activity", label: "Activity", count: data?.activity_unread ?? 0 },
+          { kind: "shortcut", id: "unreads", label: "All unread", count: unreadCount },
           { kind: "shortcut", id: "threads", label: "Threads", count: data?.threads_unread ?? 0 },
           { kind: "shortcut", id: "later", label: "Later", count: data?.later_count ?? 0 },
+          { kind: "shortcut", id: "drafts", label: "Drafts & sent", count: 0 },
         ],
       },
-      ...(sec.starred.length ? [{ key: "starred", title: "Starred", data: sec.starred.map((channel): Row => ({ kind: "channel", channel })) }] : []),
-      { key: "channels", title: "Channels", data: [...sec.channels.map((channel): Row => ({ kind: "channel", channel })), { kind: "action", id: "browse", label: "Browse channels" }] },
-      { key: "direct", title: "Direct messages", data: [...sec.direct.map((channel): Row => ({ kind: "channel", channel })), { kind: "action", id: "new-dm", label: "New message" }] },
+      ...(sec.starred.length
+        ? [{ key: "starred", title: "Starred", collapsed: collapsed.has("starred"), onToggle: () => toggle("starred"), data: rows(sec.starred, collapsed.has("starred")) }]
+        : []),
+      ...(data?.sections ?? []).map((x) => ({
+        key: `section-${x.id}`,
+        title: x.name,
+        collapsed: x.collapsed,
+        onToggle: () => updateSection.mutate({ id: x.id, collapsed: !x.collapsed }, { onError: (e) => toast.error(errorMessage(e)) }),
+        data: rows(sec.custom[x.id] ?? [], x.collapsed),
+      })),
+      {
+        key: "channels",
+        title: "Channels",
+        collapsed: collapsed.has("channels"),
+        onToggle: () => toggle("channels"),
+        data: collapsed.has("channels") ? [] : [...rows(sec.channels, false), { kind: "action", id: "browse", label: "Browse channels" }],
+      },
+      {
+        key: "direct",
+        title: "Direct messages",
+        collapsed: collapsed.has("direct"),
+        onToggle: () => toggle("direct"),
+        data: collapsed.has("direct") ? [] : [...rows(sec.direct, false), { kind: "action", id: "new-dm", label: "New message" }],
+      },
     ];
     body = (
       <SectionList
@@ -221,16 +267,24 @@ export function WorkspaceScreen() {
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section }) =>
           section.title ? (
-            <View style={{ paddingTop: s[6], paddingBottom: s[1] }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !section.collapsed }}
+              accessibilityLabel={section.title}
+              onPress={section.onToggle}
+              style={{ flexDirection: "row", alignItems: "center", gap: s[1], paddingTop: s[6], paddingBottom: s[1], minHeight: theme.tap.base }}
+            >
+              {section.collapsed ? <ChevronRight color={col.textMuted} size={16} /> : <ChevronDown color={col.textMuted} size={16} />}
               <Text role="label" weight={600} tone="muted" accessibilityRole="header">
                 {section.title}
               </Text>
-            </View>
+            </Pressable>
           ) : null
         }
         renderItem={({ item }) => {
           if (item.kind === "channel") return <ChannelRow c={item.channel} />;
-          const Icon = item.kind === "shortcut" ? (item.id === "threads" ? MessageSquareText : Bookmark) : item.id === "browse" ? Compass : Plus;
+          const shortcutIcon = { activity: AtSign, unreads: Inbox, threads: MessageSquareText, later: Bookmark, drafts: SendHorizontal } as const;
+          const Icon = item.kind === "shortcut" ? shortcutIcon[item.id] : item.id === "browse" ? Compass : Plus;
           const onPress = () => router.push(item.kind === "shortcut" ? `/channels/${item.id}` : item.id === "browse" ? "/channels/browse" : "/channels/new-dm");
           const count = item.kind === "shortcut" ? item.count : 0;
           return (
@@ -274,6 +328,26 @@ export function WorkspaceScreen() {
       {header}
       <View style={{ flex: 1 }}>{body}</View>
       {org && perms ? <NewChannelSheet orgId={org.id} open={creating} onClose={() => setCreating(false)} canPublic={perms.create_public} canPrivate={perms.create_private} /> : null}
+      <Sheet
+        open={newSection !== null}
+        onClose={() => setNewSection(null)}
+        title="New section"
+        info="Sections are yours alone. Move conversations into them from a conversation's menu."
+        footer={
+          <Button
+            fullWidth
+            disabled={!newSection?.trim()}
+            loading={createSection.isPending}
+            onPress={() => createSection.mutate((newSection ?? "").trim(), { onSuccess: () => setNewSection(null), onError: (e) => toast.error(errorMessage(e)) })}
+          >
+            Create section
+          </Button>
+        }
+      >
+        <Field label="Name">
+          <Input value={newSection ?? ""} onChangeText={setNewSection} maxLength={40} autoFocus />
+        </Field>
+      </Sheet>
     </View>
   );
 }

@@ -130,7 +130,7 @@ export function ThreadPane({ rootId, channel, config, meId, around, onClose, onO
                 highlighted={highlight === root.id}
                 names={names}
                 actions={actions}
-                canInteract={channel.permissions.post}
+                canInteract={channel.member && !channel.archived}
                 canModerate={channel.permissions.edit}
                 inThread
                 editWindowMs={editWindowMs}
@@ -157,7 +157,7 @@ export function ThreadPane({ rootId, channel, config, meId, around, onClose, onO
                   highlighted={highlight === m.id}
                   names={names}
                   actions={actions}
-                  canInteract={channel.permissions.post}
+                  canInteract={channel.member && !channel.archived}
                   canModerate={channel.permissions.edit}
                   inThread
                   editWindowMs={editWindowMs}
@@ -175,7 +175,7 @@ export function ThreadPane({ rootId, channel, config, meId, around, onClose, onO
       <p className={cn("min-h-6 px-gutter type-caption text-fg-muted lg:px-5", typing.length === 0 && "invisible")} aria-live="polite">
         {channelsTypingText(typing)}
       </p>
-      {root && !root.deleted && channel.permissions.post && (
+      {root && !root.deleted && channel.permissions.reply && (
         <Composer
           channel={channel}
           config={config}

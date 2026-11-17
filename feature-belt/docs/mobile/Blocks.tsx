@@ -1,22 +1,26 @@
 import {
+  docsEmbedName,
+  docsFolds,
   docsIsTextBlock,
   docsListNumbers,
   docsPlain,
   docsTitle,
   useDocsFileUrl,
+  useDocsLinkPreview,
   type DocsBlock,
   type DocsRefs,
   type DocsTextBlockType,
   type DocsViewer,
 } from "@scaffoldapp/shared";
-import { Avatar, Skeleton, Text, useTheme } from "@scaffoldapp/ui-native";
+import { Avatar, Button, FilePreview, Skeleton, Text, useTheme } from "@scaffoldapp/ui-native";
 import { Image } from "expo-image";
 import { router } from "expo-router";
-import { Check, ChevronRight, Download, FileText, Globe, Lock } from "lucide-react-native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import * as WebBrowser from "expo-web-browser";
+import { AppWindow, ArrowUpRight, Check, ChevronRight, FileText, Globe, ListTree, Lock, RefreshCw, Sigma } from "lucide-react-native";
+import { useRef, useState, type ReactNode } from "react";
 import { Linking, Platform, Pressable, ScrollView, TextInput, View } from "react-native";
 import { ConnectedPageCard } from "./ConnectedPageCard";
-import { RichText } from "./RichText";
+import { RichText, useSwatchStyle } from "./RichText";
 
 const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
 
@@ -25,6 +29,7 @@ const ROLE: Record<DocsTextBlockType, "body" | "headline" | "title" | "titleSm" 
   heading_1: "headline",
   heading_2: "title",
   heading_3: "titleSm",
+  heading_4: "bodyLg",
   bulleted_list: "body",
   numbered_list: "body",
   to_do: "body",
@@ -38,6 +43,7 @@ const PLACEHOLDER: Record<DocsTextBlockType, string> = {
   heading_1: "Heading 1",
   heading_2: "Heading 2",
   heading_3: "Heading 3",
+  heading_4: "Heading 4",
   bulleted_list: "List",
   numbered_list: "List",
   to_do: "To-do",
@@ -59,70 +65,127 @@ export interface BlockListProps {
   onToggleTodo?: (b: DocsBlock) => void;
   onBlockMenu?: (b: DocsBlock) => void;
   onBackspaceEmpty?: (b: DocsBlock) => void;
-  renderDatabase?: (id: string) => ReactNode;
+  /** A database block: its database and the block (linked views keep their own views per block). */
+  renderDatabase?: (id: string, blockId: string) => ReactNode;
   /** Connected pages: blocks shown but not changed here. */
   readOnly?: ReadonlySet<string>;
   /** The workspace connected-page blocks open in. */
   orgId?: string | null;
 }
 
+/** Opens a link in the in-app browser (embeds, PDFs and media without a native player). */
+function openInBrowser(url: string | undefined) {
+  if (url && /^https:/i.test(url)) void WebBrowser.openBrowserAsync(url);
+  else if (url && /^(http:|mailto:)/i.test(url)) void Linking.openURL(url);
+}
+
+function useFileLink(b: DocsBlock, token: string | null) {
+  // Connected pages carry the platform's link instead of an upload.
+  const file = useDocsFileUrl(b.props.url ? null : b.props.file_id, token);
+  return { url: b.props.url || file.data?.url || null, isError: !b.props.url && file.isError };
+}
+
+function Caption({ b }: { b: DocsBlock }) {
+  const caption = docsPlain(b.props.caption);
+  return caption ? (
+    <Text role="label" tone="muted">
+      {caption}
+    </Text>
+  ) : null;
+}
+
+function alignOf(a: string | undefined): "flex-start" | "center" | "flex-end" {
+  return a === "left" ? "flex-start" : a === "right" ? "flex-end" : "center";
+}
+
 function ImageBlock({ b, token }: { b: DocsBlock; token: string | null }) {
   const theme = useTheme();
-  // Connected pages carry the platform's image link instead of an upload.
-  const file = useDocsFileUrl(b.props.url ? null : b.props.file_id, token);
-  const src = b.props.url || file.data?.url;
+  const { url: src, isError } = useFileLink(b, token);
   const [ratio, setRatio] = useState(4 / 3);
   const caption = docsPlain(b.props.caption);
   return (
-    <View style={{ gap: theme.space[1], width: `${b.props.width ?? 100}%` }}>
-      {src ? (
-        <Image
-          source={{ uri: src }}
-          accessibilityLabel={caption || b.props.name || "Image"}
-          contentFit="cover"
-          onLoad={(e) => e.source.width && e.source.height && setRatio(e.source.width / e.source.height)}
-          style={{ width: "100%", aspectRatio: ratio, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border }}
-        />
-      ) : file.isError ? (
-        <Text role="label" tone="muted">
-          This image isn't available.
-        </Text>
-      ) : (
-        <Skeleton height={180} />
-      )}
-      {caption ? (
-        <Text role="label" tone="muted">
-          {caption}
-        </Text>
-      ) : null}
+    <View style={{ gap: theme.space[1], alignItems: alignOf(b.props.align) }}>
+      <View style={{ width: `${b.props.width ?? 100}%` }}>
+        {src ? (
+          <Image
+            source={{ uri: src }}
+            accessibilityLabel={b.props.alt || caption || b.props.name || "Image"}
+            contentFit="cover"
+            onLoad={(e) => e.source.width && e.source.height && setRatio(e.source.width / e.source.height)}
+            style={{ width: "100%", aspectRatio: ratio, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border }}
+          />
+        ) : isError ? (
+          <Text role="label" tone="muted">
+            This image isn&apos;t available.
+          </Text>
+        ) : (
+          <Skeleton height={180} />
+        )}
+      </View>
+      <Caption b={b} />
     </View>
   );
 }
 
+/** Video, audio, PDF and other files through the core preview kit (players and PDFs open in the in-app browser). */
 function FileBlock({ b, token }: { b: DocsBlock; token: string | null }) {
   const theme = useTheme();
-  const [want, setWant] = useState(false);
-  const file = useDocsFileUrl(want && !b.props.url ? b.props.file_id : null, token);
-  const link = b.props.url || file.data?.url;
-  useEffect(() => {
-    if (want && link) {
-      void Linking.openURL(link);
-      setWant(false);
-    }
-  }, [want, link]);
+  const { url, isError } = useFileLink(b, token);
+  return (
+    <View style={{ gap: theme.space[1] }}>
+      {url ? (
+        <FilePreview compact url={url} name={b.props.name ?? "File"} mime={b.props.content_type ?? null} size={b.props.size ?? null} onDownload={() => openInBrowser(url)} />
+      ) : isError ? (
+        <Text role="label" tone="muted">
+          This file isn&apos;t available.
+        </Text>
+      ) : (
+        <Skeleton height={56} />
+      )}
+      <Caption b={b} />
+    </View>
+  );
+}
+
+function CardRow({ icon, title, subtitle, onPress, onLongPress }: { icon: ReactNode; title: string; subtitle?: string; onPress: () => void; onLongPress?: () => void }) {
+  const theme = useTheme();
+  const c = theme.colors;
   return (
     <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Download ${b.props.name ?? "file"}`}
-      onPress={() => setWant(true)}
-      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: theme.space[3], minHeight: theme.tap.base, paddingHorizontal: theme.space[3], borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: pressed ? theme.colors.sunken : theme.colors.surface })}
+      accessibilityRole="link"
+      onPress={onPress}
+      onLongPress={onLongPress}
+      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: theme.space[3], minHeight: theme.tap.base, paddingHorizontal: theme.space[3], paddingVertical: theme.space[2], borderRadius: theme.radius.md, borderWidth: 1, borderColor: c.border, backgroundColor: pressed ? c.sunken : c.surface })}
     >
-      <FileText size={20} color={theme.colors.textMuted} />
-      <Text role="body" numberOfLines={1} style={{ flex: 1 }}>
-        {b.props.name ?? "File"}
-      </Text>
-      <Download size={18} color={theme.colors.textMuted} />
+      {icon}
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text role="body" numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text role="caption" tone="muted" numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
     </Pressable>
+  );
+}
+
+function host(url: string | undefined): string {
+  return (/^https?:\/\/([^/?#]+)/i.exec(url ?? "")?.[1] ?? url ?? "").replace(/^www\./, "");
+}
+
+function BookmarkBlock({ b, token, onLongPress }: { b: DocsBlock; token: string | null; onLongPress?: () => void }) {
+  const theme = useTheme();
+  const preview = useDocsLinkPreview(b.props.preview_id, token);
+  const p = preview.data;
+  const icon = p?.icon_url ? <Image source={{ uri: p.icon_url }} style={{ width: 20, height: 20, borderRadius: theme.radius.xs }} accessibilityIgnoresInvertColors /> : <Globe size={20} color={theme.colors.textMuted} />;
+  return (
+    <View style={{ gap: theme.space[1] }}>
+      <CardRow icon={icon} title={b.props.title || p?.title || host(b.props.url)} subtitle={[b.props.description || p?.description, b.props.site_name || p?.site_name || host(b.props.url)].filter(Boolean).join(" · ")} onPress={() => openInBrowser(b.props.url)} {...(onLongPress ? { onLongPress } : {})} />
+      <Caption b={b} />
+    </View>
   );
 }
 
@@ -155,7 +218,9 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
   const c = theme.colors;
   const s = theme.space;
   const [open, setOpen] = useState(false);
+  const swatch = useSwatchStyle();
   const kids = props.children.get(b.id) ?? [];
+  const folds = docsFolds(b.type, b.props);
   const viewers = props.viewersByBlock?.get(b.id);
   const textual = docsIsTextBlock(b.type);
   const editable = props.editable && !props.readOnly?.has(b.id);
@@ -181,7 +246,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       accessibilityHint={editable ? "Edit. Long press for block actions." : undefined}
     >
       {docsPlain(b.props.text) ? (
-        <RichText spans={b.props.text ?? []} refs={props.refs} role={role} {...(props.pageHref ? { pageHref: props.pageHref } : {})} style={checked ? { color: c.textMuted, textDecorationLine: "line-through" } : undefined} />
+        <RichText spans={b.props.text ?? []} refs={props.refs} role={role} {...(props.pageHref ? { pageHref: props.pageHref } : {})} style={checked ? { color: c.textMuted, textDecorationLine: "line-through" } : swatch(b.props.color)?.color ? { color: swatch(b.props.color)!.color! } : undefined} />
       ) : (
         <Text role={role} tone="subtle">
           {editable ? PLACEHOLDER[b.type as DocsTextBlockType] : " "}
@@ -190,12 +255,24 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
     </Pressable>
   );
   let body: ReactNode;
+  const chevron = (
+    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={open ? "Collapse" : "Expand"} onPress={() => setOpen((o) => !o)} hitSlop={12} style={{ width: s[6], height: 32, alignItems: "center", justifyContent: "center" }}>
+      <ChevronRight size={16} color={c.textMuted} style={{ transform: [{ rotate: open ? "90deg" : "0deg" }] }} />
+    </Pressable>
+  );
+  const longPress = () => props.onBlockMenu?.(b);
   switch (b.type) {
     case "heading_1":
     case "heading_2":
     case "heading_3":
+    case "heading_4":
     case "paragraph":
-      body = <View style={{ flexDirection: "row", paddingTop: b.type === "heading_1" ? s[5] : b.type === "heading_2" ? s[4] : b.type === "heading_3" ? s[3] : 0 }}>{text}</View>;
+      body = (
+        <View style={{ flexDirection: "row", alignItems: "flex-start", paddingTop: b.type === "heading_1" ? s[5] : b.type === "heading_2" ? s[4] : b.type === "heading_3" ? s[3] : b.type === "heading_4" ? s[2] : 0 }}>
+          {folds ? chevron : null}
+          {text}
+        </View>
+      );
       break;
     case "bulleted_list":
       body = (
@@ -240,9 +317,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
     case "toggle":
       body = (
         <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={open ? "Collapse" : "Expand"} onPress={() => setOpen((o) => !o)} hitSlop={12} style={{ width: s[6], height: 32, alignItems: "center", justifyContent: "center" }}>
-            <ChevronRight size={16} color={c.textMuted} style={{ transform: [{ rotate: open ? "90deg" : "0deg" }] }} />
-          </Pressable>
+          {chevron}
           {text}
         </View>
       );
@@ -252,7 +327,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       break;
     case "callout":
       body = (
-        <View style={{ flexDirection: "row", gap: s[2], backgroundColor: c.sunken, borderRadius: theme.radius.md, paddingHorizontal: s[3], paddingVertical: s[2] }}>
+        <View style={[{ flexDirection: "row", gap: s[2], backgroundColor: c.sunken, borderRadius: theme.radius.md, paddingHorizontal: s[3], paddingVertical: s[2] }, swatch(b.props.color)]}>
           <Text role="bodyLg">{b.props.icon ?? "💡"}</Text>
           {text}
         </View>
@@ -260,13 +335,110 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       break;
     case "code":
       body = (
-        <Pressable onLongPress={() => props.onBlockMenu?.(b)} disabled={!editable}>
-          <ScrollView horizontal style={{ backgroundColor: c.sunken, borderRadius: theme.radius.md }} contentContainerStyle={{ padding: s[3] }}>
-            <Text role="label" style={{ fontFamily: MONO }}>
-              {b.props.code}
+        <Pressable onLongPress={longPress} disabled={!editable} style={{ gap: s[1] }}>
+          {b.props.language && b.props.language !== "plain" ? (
+            <Text role="caption" tone="muted">
+              {b.props.language === "mermaid" ? "Mermaid diagram (drawn on the web)" : b.props.language}
             </Text>
-          </ScrollView>
+          ) : null}
+          {b.props.wrap ? (
+            <View style={{ backgroundColor: c.sunken, borderRadius: theme.radius.md, padding: s[3] }}>
+              <Text role="label" style={{ fontFamily: MONO }}>
+                {b.props.code}
+              </Text>
+            </View>
+          ) : (
+            <ScrollView horizontal style={{ backgroundColor: c.sunken, borderRadius: theme.radius.md }} contentContainerStyle={{ padding: s[3] }}>
+              <Text role="label" style={{ fontFamily: MONO }}>
+                {b.props.code}
+              </Text>
+            </ScrollView>
+          )}
+          <Caption b={b} />
         </Pressable>
+      );
+      break;
+    case "equation":
+      // TeX source styled as math; equations are drawn with KaTeX on the web.
+      body = (
+        <Pressable onLongPress={longPress} accessibilityLabel={`Equation: ${b.props.expression ?? ""}`} style={{ flexDirection: "row", gap: s[2], alignItems: "flex-start", backgroundColor: c.sunken, borderRadius: theme.radius.md, padding: s[3] }}>
+          <Sigma size={16} color={c.textMuted} />
+          <Text role="body" style={{ fontFamily: MONO, flex: 1 }}>
+            {b.props.expression || " "}
+          </Text>
+        </Pressable>
+      );
+      break;
+    case "table_of_contents": {
+      const heads = [...props.children.values()].flat().filter((x) => /^heading_/.test(x.type) && docsPlain(x.props.text).trim());
+      body = (
+        <View style={{ gap: s[1] }}>
+          <View style={{ flexDirection: "row", gap: s[2], alignItems: "center" }}>
+            <ListTree size={16} color={c.textMuted} />
+            <Text role="label" tone="muted">
+              Contents
+            </Text>
+          </View>
+          {heads.map((h) => (
+            <Text key={h.id} role="label" style={{ paddingLeft: (Number(h.type.slice(-1)) - 1) * s[4], textDecorationLine: "underline", color: c.textMuted }}>
+              {docsPlain(h.props.text)}
+            </Text>
+          ))}
+        </View>
+      );
+      break;
+    }
+    case "breadcrumb":
+      body = null;
+      break;
+    case "video":
+    case "audio":
+    case "pdf":
+      body = <FileBlock b={b} token={props.token ?? null} />;
+      break;
+    case "embed":
+      body = (
+        <View style={{ gap: s[1] }}>
+          <CardRow icon={<AppWindow size={20} color={c.textMuted} />} title={`${docsEmbedName(b.props.provider)}`} subtitle={host(b.props.url)} onPress={() => openInBrowser(b.props.url)} onLongPress={longPress} />
+          <Caption b={b} />
+        </View>
+      );
+      break;
+    case "button": {
+      const link = (b.props.actions ?? []).find((a) => a.type === "link");
+      body = (
+        <View style={{ flexDirection: "row" }}>
+          <Button variant="secondary" size="md" disabled={!link} onPress={() => link && link.type === "link" && openInBrowser(link.url)} onLongPress={longPress}>
+            {b.props.label || "Button"}
+          </Button>
+        </View>
+      );
+      break;
+    }
+    case "column_list":
+      // Columns stack on phones, in order.
+      body = (
+        <View style={{ gap: s[3] }}>
+          {kids.map((col) => (
+            <View key={col.id} style={{ gap: s[1] }}>
+              <BlockChildren parent={col.id} props={props} depth={depth + 2} />
+            </View>
+          ))}
+        </View>
+      );
+      break;
+    case "synced_block":
+      body = b.props.source_id ? (
+        <View style={{ flexDirection: "row", gap: s[2], alignItems: "center", borderWidth: 1, borderStyle: "dashed", borderColor: c.border, borderRadius: theme.radius.md, padding: s[3] }}>
+          <RefreshCw size={16} color={c.accentStrong} />
+          <Text role="label" tone="muted" style={{ flex: 1 }}>
+            Synced from another page. Open it on the web to see and edit it.
+          </Text>
+        </View>
+      ) : (
+        <View style={{ borderWidth: 1, borderColor: c.accent, borderRadius: theme.radius.md, padding: s[2], gap: s[1] }}>
+          <BlockChildren parent={b.id} props={props} depth={depth + 1} />
+        </View>
       );
       break;
     case "divider":
@@ -283,20 +455,9 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       body = <FileBlock b={b} token={props.token ?? null} />;
       break;
     case "bookmark":
-      body = (
-        <Pressable
-          accessibilityRole="link"
-          onPress={() => b.props.url && /^https?:/i.test(b.props.url) && void Linking.openURL(b.props.url)}
-          onLongPress={() => props.onBlockMenu?.(b)}
-          style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: s[3], minHeight: theme.tap.base, paddingHorizontal: s[3], borderRadius: theme.radius.md, borderWidth: 1, borderColor: c.border, backgroundColor: pressed ? c.sunken : c.surface })}
-        >
-          <Globe size={20} color={c.textMuted} />
-          <Text role="body" numberOfLines={1} style={{ flex: 1 }}>
-            {b.props.title || b.props.url}
-          </Text>
-        </Pressable>
-      );
+      body = <BookmarkBlock b={b} token={props.token ?? null} onLongPress={longPress} />;
       break;
+    case "link_to_page":
     case "page": {
       const ref = props.refs.pages[b.props.page_id ?? ""];
       const href = b.props.page_id ? (props.pageHref ? props.pageHref(b.props.page_id) : `/docs/${b.props.page_id}`) : null;
@@ -310,6 +471,7 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
           style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: s[2], minHeight: theme.tap.base, backgroundColor: pressed ? c.sunken : "transparent" })}
         >
           {noAccess ? <Lock size={16} color={c.textSubtle} /> : ref?.icon ? <Text role="body">{ref.icon}</Text> : <FileText size={18} color={c.textMuted} />}
+          {b.type === "link_to_page" && !noAccess ? <ArrowUpRight size={14} color={c.textMuted} /> : null}
           <Text role="body" tone={noAccess ? "subtle" : "default"} style={noAccess ? undefined : { textDecorationLine: "underline" }}>
             {noAccess ? "No access" : docsTitle(ref?.title)}
           </Text>
@@ -338,23 +500,25 @@ function Row({ b, props, depth, number }: { b: DocsBlock; props: BlockListProps;
       );
       break;
     case "database":
-      body = b.props.database_id && props.renderDatabase ? props.renderDatabase(b.props.database_id) : null;
+      body = b.props.database_id && props.renderDatabase ? props.renderDatabase(b.props.database_id, b.id) : null;
       break;
     case "connected_page":
       body = <ConnectedPageCard b={b} orgId={props.orgId ?? null} token={props.token ?? null} />;
       break;
   }
+  const color = b.type !== "callout" ? swatch(b.props.color) : null;
+  const ownKids = b.type === "column_list" || b.type === "synced_block";
   return (
     <View style={{ gap: s[0.5] }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: s[1] }}>
-        <View style={{ flex: 1 }}>{body}</View>
+        <View style={[{ flex: 1 }, color?.backgroundColor ? { backgroundColor: color.backgroundColor, borderRadius: theme.radius.sm, paddingHorizontal: s[1] } : null]}>{body}</View>
         {viewers?.length ? (
           <View accessibilityLabel={`${viewers.map((v) => v.user.name).join(", ")} editing`} style={{ paddingTop: s[1] }}>
             <Avatar name={viewers[0]!.user.name} src={viewers[0]!.user.avatar_url} size="xs" />
           </View>
         ) : null}
       </View>
-      {kids.length && (b.type !== "toggle" || open) ? (
+      {kids.length && !ownKids && (!folds || open) ? (
         <View style={{ paddingLeft: s[5] }}>
           <BlockChildren parent={b.id} props={props} depth={depth + 1} />
         </View>

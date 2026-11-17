@@ -72,12 +72,38 @@ export function channelsEffectiveNotify(c: Pick<ChannelsSidebarChannel, "kind" |
   return isChannelsDirect(c) ? "all" : "mentions";
 }
 
-/** Sidebar sections, like Slack: starred, channels, direct messages. */
-export function channelsSections(list: readonly ChannelsSidebarChannel[]): { starred: ChannelsSidebarChannel[]; channels: ChannelsSidebarChannel[]; direct: ChannelsSidebarChannel[] } {
-  const starred = list.filter((c) => c.starred);
-  const channels = list.filter((c) => !c.starred && !isChannelsDirect(c)).sort((a, b) => a.name.localeCompare(b.name));
-  const direct = list.filter((c) => !c.starred && isChannelsDirect(c)).sort((a, b) => (a.last_message_at < b.last_message_at ? 1 : -1));
-  return { starred, channels, direct };
+/** Sidebar sections, like Slack: starred, your own sections, channels, direct messages. */
+export function channelsSections(
+  list: readonly ChannelsSidebarChannel[],
+  sort: "alpha" | "recent" = "alpha",
+  sections: readonly { id: string }[] = [],
+): { starred: ChannelsSidebarChannel[]; custom: Record<string, ChannelsSidebarChannel[]>; channels: ChannelsSidebarChannel[]; direct: ChannelsSidebarChannel[] } {
+  const recent = (a: ChannelsSidebarChannel, b: ChannelsSidebarChannel) => (a.last_message_at < b.last_message_at ? 1 : a.last_message_at > b.last_message_at ? -1 : 0);
+  const order = sort === "recent" ? recent : (a: ChannelsSidebarChannel, b: ChannelsSidebarChannel) => a.name.localeCompare(b.name);
+  const known = new Set(sections.map((x) => x.id));
+  const custom: Record<string, ChannelsSidebarChannel[]> = {};
+  for (const x of sections) custom[x.id] = [];
+  const rest: ChannelsSidebarChannel[] = [];
+  for (const c of list) {
+    if (c.starred) continue;
+    if (c.section_id && known.has(c.section_id)) custom[c.section_id]?.push(c);
+    else rest.push(c);
+  }
+  for (const id of Object.keys(custom)) custom[id]?.sort(order);
+  const starred = list.filter((c) => c.starred).sort(order);
+  const channels = rest.filter((c) => !isChannelsDirect(c)).sort(order);
+  const direct = rest.filter((c) => isChannelsDirect(c)).sort(recent);
+  return { starred, custom, channels, direct };
+}
+
+/** The sidebar's conversations in the order shown (for ⌥↑/↓ and ⌥⇧↑/↓). */
+export function channelsSidebarOrder(
+  list: readonly ChannelsSidebarChannel[],
+  sort: "alpha" | "recent" = "alpha",
+  sections: readonly { id: string; collapsed?: boolean }[] = [],
+): ChannelsSidebarChannel[] {
+  const g = channelsSections(list, sort, sections);
+  return [...g.starred, ...sections.flatMap((x) => g.custom[x.id] ?? []), ...g.channels, ...g.direct];
 }
 
 /** Clean a channel name as you type: "Gear Swap" → "gear-swap". */
@@ -119,18 +145,21 @@ export const CHANNELS_FILE_TYPES: Record<string, string> = {
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 
-/** `accept` for a file input. */
-export const CHANNELS_FILE_ACCEPT = Object.keys(CHANNELS_FILE_TYPES)
-  .map((ext) => `.${ext}`)
-  .join(",");
+/** `accept` for a file input: any file (unknown types are stored as downloads). */
+export const CHANNELS_FILE_ACCEPT = "";
 
-/** The content type to upload a file as, or null when channels don't accept it. */
-export function channelsContentType(fileName: string, reported?: string | null): string | null {
+/**
+ * The content type to upload a file as: the known type for its extension, else what the
+ * device reports (well formed), else application/octet-stream. Channels take any file;
+ * types the server doesn't know are always served as downloads.
+ */
+export function channelsContentType(fileName: string, reported?: string | null): string {
   const ext = /\.([a-z0-9]+)$/i.exec(fileName)?.[1]?.toLowerCase();
   const byExt = ext ? CHANNELS_FILE_TYPES[ext] : undefined;
   if (byExt) return byExt;
-  if (reported && Object.values(CHANNELS_FILE_TYPES).includes(reported)) return reported;
-  return null;
+  const r = (reported ?? "").trim().toLowerCase();
+  if (/^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/.test(r)) return r;
+  return "application/octet-stream";
 }
 
 export function channelsAttachmentKind(contentType: string): ChannelsAttachmentKind {
@@ -162,6 +191,15 @@ export function channelsGroupsWith(prev: ChannelsMessage | undefined, next: Chan
 }
 
 // ───────────────────────────────────────────────────────────── time ──
+
+/** The device's IANA time zone (sent with reminders, scheduled messages and searches). */
+export function channelsTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const weekdayFmt = new Intl.DateTimeFormat(undefined, { weekday: "short" });
@@ -199,6 +237,59 @@ export function channelsDayLabel(iso: string, now = new Date()): string {
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
   return longDateFmt.format(d);
+}
+
+/** Reminders and scheduled messages: "today at 4:05 PM", "tomorrow at 9:00 AM", "Fri, Nov 6 at 9:00 AM". */
+export function channelsWhen(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  const days = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  const time = timeFmt.format(d);
+  if (days === 0) return `today at ${time}`;
+  if (days === 1) return `tomorrow at ${time}`;
+  if (days === -1) return `yesterday at ${time}`;
+  return `${weekdayFmt.format(d)}, ${shortDateFmt.format(d)} at ${time}`;
+}
+
+/** Quick choices for "Remind me" and "Send later" (the server reads `when`). */
+export const CHANNELS_REMIND_OPTIONS: readonly { label: string; when: string }[] = [
+  { label: "In 20 minutes", when: "in 20 minutes" },
+  { label: "In 1 hour", when: "in 1 hour" },
+  { label: "In 3 hours", when: "in 3 hours" },
+  { label: "Tomorrow", when: "tomorrow" },
+  { label: "Next week", when: "next week" },
+];
+
+export const CHANNELS_SCHEDULE_OPTIONS: readonly { label: string; when: string }[] = [
+  { label: "In 1 hour", when: "in 1 hour" },
+  { label: "Tomorrow at 9:00 AM", when: "tomorrow at 9am" },
+  { label: "Next Monday at 9:00 AM", when: "next week" },
+];
+
+/** A `<input type="datetime-local">` value (local time) for a date. */
+export function channelsLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** "3:40 PM local time" for a person in another zone (null when unknown or same as yours). */
+export function channelsLocalTime(timezone: string, now = new Date()): string | null {
+  if (!timezone) return null;
+  try {
+    return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: timezone }).format(now);
+  } catch {
+    return null;
+  }
+}
+
+/** Names of people seen in a list of messages (reaction and poll tooltips). */
+export function channelsNames(messages: readonly ChannelsMessage[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const m of messages) {
+    if (m.sender) names.set(m.sender.id, m.sender.display_name);
+    for (const u of m.mentions) names.set(u.id, u.display_name);
+    for (const u of m.reply_users) names.set(u.id, u.display_name);
+  }
+  return names;
 }
 
 /** "3 replies", "1 reply". */

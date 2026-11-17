@@ -13,12 +13,71 @@ import type {
   CrmRecord,
   CrmRecordAccess,
   CrmTagTone,
+  CrmLeadStatus,
+  CrmTicketPriority,
+  CrmTicketChannel,
+  CrmForecastCategory,
 } from "./types";
+import type { CrmBillingPeriod, CrmQuoteStatus } from "./types-depth";
 
 export const CRM_TYPE_LABEL: Record<CrmObjectType, { one: string; many: string; One: string; Many: string }> = {
   company: { one: "company", many: "companies", One: "Company", Many: "Companies" },
   contact: { one: "contact", many: "contacts", One: "Contact", Many: "Contacts" },
   deal: { one: "deal", many: "deals", One: "Deal", Many: "Deals" },
+  ticket: { one: "ticket", many: "tickets", One: "Ticket", Many: "Tickets" },
+};
+
+export const CRM_LEAD_STATUS_LABEL: Record<CrmLeadStatus, string> = {
+  new: "New",
+  open: "Open",
+  in_progress: "In progress",
+  open_deal: "Open deal",
+  unqualified: "Unqualified",
+  attempted_to_contact: "Attempted to contact",
+  connected: "Connected",
+  bad_timing: "Bad timing",
+};
+
+export const CRM_TICKET_PRIORITY_LABEL: Record<CrmTicketPriority, string> = { low: "Low", medium: "Medium", high: "High", urgent: "Urgent" };
+
+export const CRM_TICKET_CHANNEL_LABEL: Record<CrmTicketChannel, string> = { email: "Email", phone: "Phone", chat: "Chat", form: "Form", other: "Other" };
+
+export const CRM_FORECAST_LABEL: Record<CrmForecastCategory, string> = {
+  pipeline: "Pipeline",
+  best_case: "Best case",
+  commit: "Commit",
+  closed: "Closed won",
+  omitted: "Omitted",
+};
+
+export const CRM_BILLING_PERIOD_LABEL: Record<CrmBillingPeriod, { every: string; per: string }> = {
+  monthly: { every: "Monthly", per: "/ month" },
+  quarterly: { every: "Quarterly", per: "/ quarter" },
+  semiannual: { every: "Every 6 months", per: "/ 6 months" },
+  annual: { every: "Yearly", per: "/ year" },
+};
+
+/** Basis points as a percentage: 825 → "8.25 %". */
+export function crmPercent(bp: number): string {
+  const v = bp / 100;
+  return `${Number.isInteger(v) ? v : v.toFixed(2).replace(/0+$/, "")} %`;
+}
+
+/** Percent text ("8.25") to basis points (825), or null when it isn't 0–100. */
+export function crmParsePercent(text: string): number | null {
+  const t = text.trim().replace(",", ".").replace(/\s*%$/, "");
+  if (t === "") return 0;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return Math.round(n * 100);
+}
+
+export const CRM_QUOTE_STATUS_LABEL: Record<CrmQuoteStatus | "expired", string> = {
+  draft: "Draft",
+  published: "Published",
+  accepted: "Accepted",
+  declined: "Declined",
+  expired: "Expired",
 };
 
 export const CRM_LIFECYCLE_LABEL: Record<CrmLifecycleStage, string> = {

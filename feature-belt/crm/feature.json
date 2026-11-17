@@ -1,8 +1,8 @@
 {
   "name": "crm",
   "title": "CRM",
-  "version": "1.2.0",
-  "summary": "Companies, contacts and deals per org with pipelines, a deals board, custom properties, tags, a timeline of activities and tasks with mentions and reminders, saved views, duplicates and merge, CSV import and export, and a dashboard; every record is shared through access; teams on HubSpot or Salesforce work their CRM here live through their own connection.",
+  "version": "1.3.2",
+  "summary": "Companies, contacts, deals and support tickets per org with pipelines, boards, custom properties, a timeline of activities and tasks, saved views, duplicates and merge, CSV import and export; products, line items and quotes buyers accept on a public link; email sent and logged through people's own Gmail or Outlook with templates; meetings from the calendar; workflows, lead forms, lead scoring, reports, dashboards, a forecast and goals; every record and number is shared through access; teams on HubSpot or Salesforce work their CRM here live through their own connection.",
   "requires": [
     "access",
     "orgs",
@@ -79,6 +79,21 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "home",
       "insert": "crmHome,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/q/(.*)\","
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/forms/(.*)\","
+    },
+    {
+      "file": "web/next.config.ts",
+      "anchor": "headers",
+      "insert": "{ source: \"/forms/:token\", headers: [{ key: \"Content-Security-Policy\", value: \"frame-ancestors *\" }] },"
     }
   ],
   "stitch": [
@@ -88,6 +103,10 @@
     "Adjust the default pipeline (Qualified, Meeting booked, Proposal sent, Negotiation, Won, Lost) and the seeded custom properties to the product's sales motion; bootstrap creates the default pipeline once per org.",
     "Review the copy of record access modes (CRM_RECORD_ACCESS in shared/format.ts) and the lifecycle stages if the team doesn't use HubSpot's terms.",
     "If the agents feature is installed, its per-resource scopes apply to CRM records through access (crm.team and crm.workspace are their parents); nothing to wire. Without it, agents get the user's own level capped at edit.",
-    "Pick each workspace's CRM in CRM settings → Connected CRMs (app, connected or both; default app) and which platforms people may connect. Connecting accounts needs the connectors feature (2.0) with HubSpot/Salesforce OAuth apps registered for this deployment; without it the CRM works as before and offers no connected sources."
+    "Pick each workspace's CRM in CRM settings → Connected CRMs (app, connected or both; default app) and which platforms people may connect. Connecting accounts needs the connectors feature (2.0) with HubSpot/Salesforce OAuth apps registered for this deployment; without it the CRM works as before and offers no connected sources.",
+    "Calendar (optional): call crm.SetMeetingSource(fn) with the caller's events that include any of a contact's addresses in a time range, and crm.SetBookingLinks(fn) with the caller's booking pages. Without them \"Log meeting\" and the {{booking_link}} merge field are hidden; everything else works.",
+    "Link cards (optional): register crm.Unfurl(ctx, viewer, path) (the package-level form of (*crm.Service).Unfurl) with a messaging feature's link-card seam (channels: RegisterUnfurler(\"/crm/\", …)) and map crm.LinkCard onto its card type; it applies the record route's checks and returns nil when the viewer can't open the record.",
+    "Email: the CRM sends and reads mail only through connections the connectors feature offers with its capabilities (crm.google.mail_read/mail_send, crm.microsoft.mail_read/mail_send). Register Gmail (gmail.readonly, gmail.send) and Microsoft Graph (Mail.Read, Mail.Send, Mail.ReadWrite) scopes on the deployment's OAuth apps; Gmail's read scope is restricted and needs Google's verification and security assessment before external users can use \"Log to CRM\". Google connections may list a \"gmail\" endpoint (else it's derived from \"drive\").",
+    "Public quote and form pages: the wire lines add /q/(.*) and /forms/(.*) to the web proxy's public paths and let /forms/:token be framed by other sites for embeds. Decide who holds crm.publish_quotes (members by default), crm.manage_forms and crm.manage_workflows (admins)."
   ]
 }

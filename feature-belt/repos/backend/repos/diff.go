@@ -58,6 +58,8 @@ type DiffLimits struct {
 	MaxFiles     int   // files listed
 	MaxFileBytes int   // patch text per file before it's truncated
 	MaxBytes     int64 // patch text in total
+	// IgnoreWhitespace hides whitespace-only changes (git diff -w).
+	IgnoreWhitespace bool
 }
 
 var defaultDiffLimits = DiffLimits{MaxFiles: 300, MaxFileBytes: 400 << 10, MaxBytes: 6 << 20}
@@ -68,7 +70,11 @@ func (g *Git) DiffCommits(ctx context.Context, id uuid.UUID, from, to string, li
 	if from == "" || from == ZeroOID {
 		from = emptyTree
 	}
-	common := []string{"--no-color", "--find-renames", "--no-ext-diff", "--no-textconv", "--end-of-options", from, to, "--"}
+	common := []string{"--no-color", "--find-renames", "--no-ext-diff", "--no-textconv"}
+	if lim.IgnoreWhitespace {
+		common = append(common, "--ignore-all-space")
+	}
+	common = append(common, "--end-of-options", from, to, "--")
 	common = append(common, paths...)
 
 	// 1. The file list with stats; -z keeps any name intact.
@@ -241,4 +247,20 @@ func parseHunkHeader(s string) (oldStart, oldLines, newStart, newLines int, ctx 
 		newStart, newLines = parse(parts[1])
 	}
 	return
+}
+
+// ChangedPaths lists the files that differ between two commits (new names
+// for renames), at most max.
+func (g *Git) ChangedPaths(ctx context.Context, id uuid.UUID, from, to string, max int) ([]string, error) {
+	out, err := g.output(ctx, id, "diff", "--name-only", "-z", "--no-renames", "--end-of-options", from, to)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, p := range bytes.Split(out, []byte{0}) {
+		if len(p) > 0 && len(paths) < max {
+			paths = append(paths, string(p))
+		}
+	}
+	return paths, nil
 }

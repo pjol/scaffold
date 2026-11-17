@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"scaffoldapp/backend/internal/access"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 )
@@ -19,6 +20,11 @@ type viewerRow struct {
 	response      *string
 	attendeeCount int
 	bookingID     *uuid.UUID
+	roomCount     int
+	// viewCalendar is the calendar the viewer sees it on (invitations: their
+	// primary); level < Comment redacts it (a calendar shared at free/busy).
+	viewCalendar *uuid.UUID
+	redact       bool
 }
 
 // occurrences expands every event on userID's calendar (events they own
@@ -28,7 +34,8 @@ func (s *Service) occurrences(ctx context.Context, q db.Querier, userID uuid.UUI
 	rows, err := q.Query(ctx, `
 		SELECT `+eventCols+`, (e.owner_id = $1), a.response,
 		       (SELECT count(*) FROM calendar_attendees x WHERE x.event_id = e.id)::int,
-		       (SELECT b.id FROM calendar_bookings b WHERE b.event_id = e.id AND b.status = 'confirmed' LIMIT 1)
+		       (SELECT b.id FROM calendar_bookings b WHERE b.event_id = e.id AND b.status = 'confirmed' LIMIT 1),
+		       (SELECT count(*) FROM calendar_event_rooms r WHERE r.event_id = e.id)::int
 		FROM calendar_events e
 		JOIN users u ON u.id = e.owner_id
 		LEFT JOIN calendar_attendees a ON a.event_id = e.id AND a.user_id = $1
@@ -43,10 +50,7 @@ func (s *Service) occurrences(ctx context.Context, q db.Querier, userID uuid.UUI
 	var list []viewerRow
 	for rows.Next() {
 		var v viewerRow
-		err := rows.Scan(&v.ID, &v.OwnerID, &v.RecurringEventID, &v.OriginalStart, &v.Title, &v.Description, &v.Location,
-			&v.ConferenceURL, &v.ConferenceID, &v.StartsAt, &v.EndsAt, &v.Timezone, &v.AllDay, &v.RRule, &v.SeriesUntil,
-			&v.Status, &v.Visibility, &v.ShowAs, &v.Color, &v.Reminders, &v.Sequence, &v.CreatedAt, &v.UpdatedAt,
-			&v.OwnerName, &v.OwnerAvatar, &v.isOwner, &v.response, &v.attendeeCount, &v.bookingID)
+		err := rows.Scan(append(v.dest(), &v.isOwner, &v.response, &v.attendeeCount, &v.bookingID, &v.roomCount)...)
 		if err != nil {
 			rows.Close()
 			return nil, err
@@ -57,7 +61,22 @@ func (s *Service) occurrences(ctx context.Context, q db.Querier, userID uuid.UUI
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	primary, err := primaryCalendarID(ctx, q, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].viewCalendar = primary
+		if list[i].isOwner && list[i].CalendarID != nil {
+			list[i].viewCalendar = list[i].CalendarID
+		}
+	}
+	return s.expand(ctx, q, list, from, to, limit)
+}
 
+// expand turns single events and series masters into occurrences in
+// [from, to) (exceptions applied), sorted by start, at most limit.
+func (s *Service) expand(ctx context.Context, q db.Querier, list []viewerRow, from, to time.Time, limit int) ([]Occurrence, error) {
 	var masterIDs []uuid.UUID
 	masters := map[uuid.UUID]viewerRow{}
 	for _, v := range list {
@@ -153,14 +172,31 @@ func occurrenceOf(v viewerRow, row eventRow, occ *time.Time) Occurrence {
 		Owner:         Person{ID: v.OwnerID, DisplayName: v.OwnerName, AvatarURL: v.OwnerAvatar},
 		AttendeeCount: v.attendeeCount,
 		BookingID:     v.bookingID,
+		CalendarID:    v.viewCalendar,
+		EventType:     row.EventType,
+		RoomCount:     v.roomCount,
+	}
+	if o.EventType == "" {
+		o.EventType = "default"
+	}
+	if v.redact {
+		// A calendar shared at free/busy: times, and the title only when the
+		// owner shows it to colleagues.
+		o.Redacted, o.Location, o.ConferenceURL, o.AttendeeCount, o.BookingID, o.RoomCount = true, "", nil, 0, nil, 0
+		if row.Visibility != "details" {
+			o.Title = "Busy"
+		}
 	}
 	if occ != nil {
 		t := occ.UTC()
 		o.OccurrenceStart = &t
 	}
-	if v.isOwner {
+	switch {
+	case v.isOwner:
 		o.Role = "owner"
 		o.MyResponse = nil
+	case v.response == nil:
+		o.Role = "calendar" // seen through a shared calendar
 	}
 	if row.AllDay {
 		o.StartDate, o.EndDate = allDayDates(row.StartsAt, row.EndsAt, row.loc())
@@ -168,34 +204,53 @@ func occurrenceOf(v viewerRow, row eventRow, occ *time.Time) Occurrence {
 	return o
 }
 
-// access is the viewer's relation to a single event or series master.
-type access struct {
+// eventAccess is the viewer's relation to a single event or series master:
+// its owner, a guest, and/or someone the event's calendar is shared with
+// (level: view = free/busy, comment = details, edit = make changes).
+type eventAccess struct {
 	isOwner  bool
 	attendee *Attendee
+	level    access.Level
 }
 
-func (a access) canView() bool { return a.isOwner || a.attendee != nil }
+func (a eventAccess) canView() bool {
+	return a.isOwner || a.attendee != nil || a.level >= access.Comment
+}
 
-// loadAccess finds the viewer's attendee row on the event (single or master).
-func loadAccess(ctx context.Context, q db.Querier, e eventRow, viewer uuid.UUID) (access, error) {
-	a := access{isOwner: e.OwnerID == viewer}
+// canEdit: the owner, or someone who may make changes to its calendar.
+func (a eventAccess) canEdit() bool { return a.isOwner || a.level >= access.Edit }
+
+// loadAccess finds the viewer's attendee row on the event (single or master)
+// and, when they neither own nor attend it, their level on its calendar.
+func loadAccess(ctx context.Context, q db.Querier, e eventRow, viewer uuid.UUID) (eventAccess, error) {
+	a := eventAccess{isOwner: e.OwnerID == viewer}
 	var at Attendee
 	err := q.QueryRow(ctx, `
-		SELECT a.id, a.user_id, a.email, COALESCE(u.display_name, a.name), u.avatar_url, a.response, a.responded_at
+		SELECT a.id, a.user_id, a.email, COALESCE(u.display_name, a.name), u.avatar_url, a.response, a.responded_at, a.note,
+		       a.proposed_start, a.proposed_end
 		FROM calendar_attendees a LEFT JOIN users u ON u.id = a.user_id
 		WHERE a.event_id = $1 AND a.user_id = $2`, e.ID, viewer).
-		Scan(&at.ID, &at.UserID, &at.Email, &at.Name, &at.AvatarURL, &at.Response, &at.RespondedAt)
+		Scan(&at.ID, &at.UserID, &at.Email, &at.Name, &at.AvatarURL, &at.Response, &at.RespondedAt, &at.Note,
+			&at.ProposedStart, &at.ProposedEnd)
 	if err == nil {
 		a.attendee = &at
 	} else if !db.IsNoRows(err) {
 		return a, err
+	}
+	if !a.isOwner && e.CalendarID != nil {
+		lvl, err := calendarLevel(ctx, q, viewer, *e.CalendarID)
+		if err != nil {
+			return a, err
+		}
+		a.level = lvl
 	}
 	return a, nil
 }
 
 func listAttendees(ctx context.Context, q db.Querier, eventID uuid.UUID) ([]Attendee, error) {
 	rows, err := q.Query(ctx, `
-		SELECT a.id, a.user_id, a.email, COALESCE(u.display_name, a.name), u.avatar_url, a.response, a.responded_at
+		SELECT a.id, a.user_id, a.email, COALESCE(u.display_name, a.name), u.avatar_url, a.response, a.responded_at, a.note,
+		       a.proposed_start, a.proposed_end
 		FROM calendar_attendees a LEFT JOIN users u ON u.id = a.user_id
 		WHERE a.event_id = $1 ORDER BY a.created_at, a.id`, eventID)
 	if err != nil {
@@ -205,7 +260,8 @@ func listAttendees(ctx context.Context, q db.Querier, eventID uuid.UUID) ([]Atte
 	out := []Attendee{}
 	for rows.Next() {
 		var a Attendee
-		if err := rows.Scan(&a.ID, &a.UserID, &a.Email, &a.Name, &a.AvatarURL, &a.Response, &a.RespondedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Email, &a.Name, &a.AvatarURL, &a.Response, &a.RespondedAt, &a.Note,
+			&a.ProposedStart, &a.ProposedEnd); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -219,7 +275,7 @@ type resolved struct {
 	base      eventRow // single event or series master
 	occ       *time.Time
 	exception *eventRow // edited or cancelled occurrence
-	acc       access
+	acc       eventAccess
 }
 
 // instance is the occurrence's effective row (exception fields or the
@@ -240,6 +296,26 @@ func (r resolved) instance() eventRow {
 // for series, pins the occurrence (occ, or the exception's, or the first).
 // Missing, cancelled or not-visible targets are 404.
 func (s *Service) resolve(ctx context.Context, q db.Querier, viewer, id uuid.UUID, occ *time.Time) (resolved, error) {
+	r, err := locateEvent(ctx, q, id, occ)
+	if err != nil {
+		return resolved{}, err
+	}
+	if r.acc, err = loadAccess(ctx, q, r.base, viewer); err != nil {
+		return resolved{}, err
+	}
+	if !r.acc.canView() || r.base.Status != "confirmed" {
+		return resolved{}, errEventNotFound
+	}
+	if r.exception != nil && r.exception.Status == "cancelled" {
+		return resolved{}, httpx.NotFound("That occurrence was deleted.")
+	}
+	return r, nil
+}
+
+// locateEvent finds id's series master (or single event), the occurrence
+// and its exception row, without checking who may see it (resolve and
+// EventRef do that).
+func locateEvent(ctx context.Context, q db.Querier, id uuid.UUID, occ *time.Time) (resolved, error) {
 	row, err := loadEventRow(ctx, q, id)
 	if err != nil {
 		return resolved{}, err
@@ -275,15 +351,6 @@ func (s *Service) resolve(ctx context.Context, q db.Querier, viewer, id uuid.UUI
 			}
 		}
 	}
-	if r.acc, err = loadAccess(ctx, q, r.base, viewer); err != nil {
-		return resolved{}, err
-	}
-	if !r.acc.canView() || r.base.Status != "confirmed" {
-		return resolved{}, errEventNotFound
-	}
-	if r.exception != nil && r.exception.Status == "cancelled" {
-		return resolved{}, httpx.NotFound("That occurrence was deleted.")
-	}
 	return r, nil
 }
 
@@ -298,20 +365,44 @@ func (s *Service) detail(ctx context.Context, q db.Querier, viewer uuid.UUID, r 
 	if err := q.QueryRow(ctx, `SELECT id FROM calendar_bookings WHERE event_id = $1 AND status = 'confirmed' LIMIT 1`, r.base.ID).Scan(&b); err == nil {
 		bookingID = &b
 	}
-	v := viewerRow{eventRow: r.base, isOwner: r.acc.isOwner, attendeeCount: len(attendees), bookingID: bookingID}
+	v := viewerRow{eventRow: r.base, isOwner: r.acc.isOwner, attendeeCount: len(attendees), bookingID: bookingID, viewCalendar: r.base.CalendarID}
+	rooms, err := eventRooms(ctx, q, r.base.ID)
+	if err != nil {
+		return EventDetail{}, err
+	}
+	v.roomCount = len(rooms)
+	if r.acc.attendee != nil {
+		if p, err := primaryCalendarID(ctx, q, viewer); err == nil && p != nil {
+			v.viewCalendar = p
+		}
+	}
 	if r.acc.attendee != nil {
 		resp := r.acc.attendee.Response
 		v.response = &resp
 	}
 	inst := r.instance()
 	d := EventDetail{
-		Occurrence:  occurrenceOf(v, inst, r.occ),
-		Description: inst.Description,
-		Attendees:   attendees,
-		Reminders:   inst.reminders(),
-		CanEdit:     r.acc.isOwner,
-		CreatedAt:   inst.CreatedAt,
-		UpdatedAt:   inst.UpdatedAt,
+		Occurrence:     occurrenceOf(v, inst, r.occ),
+		Description:    inst.Description,
+		Attendees:      attendees,
+		Reminders:      inst.reminders(),
+		CanEdit:        r.acc.canEdit(),
+		CreatedAt:      inst.CreatedAt,
+		UpdatedAt:      inst.UpdatedAt,
+		AutoDecline:    r.base.AutoDecline,
+		DeclineMessage: r.base.DeclineMessage,
+		Rooms:          rooms,
+	}
+	if r.base.CalendarID != nil && (r.acc.isOwner || r.acc.level > access.None) {
+		if c, err := calendarRefOf(ctx, q, *r.base.CalendarID); err == nil {
+			d.Calendar = &c
+		}
+	}
+	if !r.acc.isOwner && r.acc.attendee == nil && !r.acc.canEdit() {
+		// Details through a shared calendar: no guest notes or proposals.
+		for i := range d.Attendees {
+			d.Attendees[i].Note, d.Attendees[i].ProposedStart, d.Attendees[i].ProposedEnd = "", nil, nil
+		}
 	}
 	d.Modified = r.exception != nil
 	if rule, ok := r.base.rule(); ok {
@@ -320,6 +411,14 @@ func (s *Service) detail(ctx context.Context, q db.Querier, viewer uuid.UUID, r 
 	}
 	if !r.acc.isOwner {
 		d.Reminders = []int{}
+	}
+	if r.acc.attendee != nil && !r.acc.canEdit() {
+		// Guests see their own note and proposal, not other guests'.
+		for i := range d.Attendees {
+			if d.Attendees[i].ID != r.acc.attendee.ID {
+				d.Attendees[i].Note, d.Attendees[i].ProposedStart, d.Attendees[i].ProposedEnd = "", nil, nil
+			}
+		}
 	}
 	return d, nil
 }

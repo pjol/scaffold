@@ -53,6 +53,17 @@ var customTypes = []string{"text", "number", "date", "select", "multi_select", "
 
 var propKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
+var leadStatusOptions = []Option{
+	{"new", "New"}, {"open", "Open"}, {"in_progress", "In progress"}, {"open_deal", "Open deal"}, {"unqualified", "Unqualified"},
+	{"attempted_to_contact", "Attempted to contact"}, {"connected", "Connected"}, {"bad_timing", "Bad timing"},
+}
+
+var priorityOptions = []Option{{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}, {"urgent", "Urgent"}}
+
+var channelOptions = []Option{{"email", "Email"}, {"phone", "Phone"}, {"chat", "Chat"}, {"form", "Form"}, {"other", "Other"}}
+
+var forecastOptions = []Option{{"pipeline", "Pipeline"}, {"best_case", "Best case"}, {"commit", "Commit"}, {"closed", "Closed won"}, {"omitted", "Omitted"}}
+
 var lifecycleOptions = []Option{
 	{"subscriber", "Subscriber"}, {"lead", "Lead"}, {"mql", "Marketing qualified lead"}, {"sql", "Sales qualified lead"},
 	{"opportunity", "Opportunity"}, {"customer", "Customer"}, {"evangelist", "Evangelist"}, {"other", "Other"},
@@ -130,8 +141,32 @@ func builtinProps(o objectType) []Property {
 					p.sortExpr = "array_position(ARRAY['subscriber','lead','mql','sql','opportunity','customer','evangelist','other'], r.lifecycle_stage)"
 					p.sortType = "numeric"
 				}),
+			bp("lead_status", "Lead status", "select", col("lead_status", "text"), options(leadStatusOptions),
+				func(p *Property) {
+					p.sortExpr = "array_position(ARRAY['new','open','in_progress','open_deal','unqualified','attempted_to_contact','connected','bad_timing'], r.lead_status)"
+					p.sortType = "numeric"
+				}),
+			bp("score", "Lead score", "number", expr("r.score", "r.score", "numeric")),
 			bp("city", "City", "text", col("city", "text")),
 			bp("country", "Country", "text", col("country", "text")),
+		}
+	case objTicket:
+		list = []Property{
+			bp("name", "Subject", "text", col("name", "text"), required),
+			bp("description", "Description", "long_text", col("description", "text"), noSort),
+			bp("priority", "Priority", "select", col("priority", "text"), options(priorityOptions), func(p *Property) {
+				p.sortExpr = "array_position(ARRAY['low','medium','high','urgent'], r.priority)"
+				p.sortType = "numeric"
+			}),
+			bp("category", "Category", "text", col("category", "text")),
+			bp("channel", "Source", "select", col("channel", "text"), options(channelOptions)),
+			bp("pipeline", "Pipeline", "pipeline", expr("r.pipeline_id", "lower(pl.name)", "text")),
+			bp("stage", "Status", "stage", expr("r.stage_id", "st.position", "numeric"), editable, noImport),
+			bp("company", "Company", "company", expr("r.company_id", "(SELECT lower(co.name) FROM crm_companies co WHERE co.id = r.company_id)", "text"), editable, noImport),
+			bp("deal", "Deal", "deal", expr("r.deal_id", "(SELECT lower(d.name) FROM crm_deals d WHERE d.id = r.deal_id)", "text"), editable, noImport),
+			bp("stage_entered_at", "Entered status", "datetime", expr("r.stage_entered_at", "r.stage_entered_at", "timestamptz")),
+			bp("first_response_at", "First response", "datetime", expr("r.first_response_at", "r.first_response_at", "timestamptz")),
+			bp("closed_at", "Closed", "datetime", expr("r.closed_at", "r.closed_at", "timestamptz")),
 		}
 	case objDeal:
 		list = []Property{
@@ -146,6 +181,7 @@ func builtinProps(o objectType) []Property {
 			bp("company", "Company", "company", expr("r.company_id", "(SELECT lower(co.name) FROM crm_companies co WHERE co.id = r.company_id)", "text"), editable),
 			bp("stage_entered_at", "Entered stage", "datetime", expr("r.stage_entered_at", "r.stage_entered_at", "timestamptz")),
 			bp("closed_at", "Closed", "datetime", expr("r.closed_at", "r.closed_at", "timestamptz")),
+			bp("forecast_category", "Forecast category", "select", expr(forecastExpr, forecastExpr, "text"), options(forecastOptions), editable, noImport),
 		}
 	}
 	list = append(list, commonProps()...)

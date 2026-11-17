@@ -185,14 +185,14 @@ function OpenPullForm({ cmp, startOpen }: { cmp: ReposComparison; startOpen: boo
 }
 
 /** Choose reviewers among people who can open the repository. */
-export function ReviewerPicker({ repoId, value, onChange, exclude = [] }: { repoId: string; value: ReposPerson[]; onChange: (v: ReposPerson[]) => void; exclude?: string[] }) {
+export function ReviewerPicker({ repoId, value, onChange, exclude = [], title = "Reviewers" }: { repoId: string; value: ReposPerson[]; onChange: (v: ReposPerson[]) => void; exclude?: string[]; title?: string }) {
   const [q, setQ] = useState("");
   const people = useReposPeople(repoId, q);
   const chosen = new Set(value.map((p) => p.id));
   const options = (people.data?.items ?? []).filter((p) => !exclude.includes(p.id));
   return (
     <div className="flex flex-col gap-3">
-      <h3 className="type-label font-semibold text-fg">Reviewers</h3>
+      <h3 className="type-label font-semibold text-fg">{title}</h3>
       <Input aria-label="Find people" placeholder="Find people" leadingIcon={<Search aria-hidden />} value={q} onChange={(e) => setQ(e.target.value)} />
       <ul className="flex max-h-56 flex-col overflow-y-auto">
         {options.map((p) => (

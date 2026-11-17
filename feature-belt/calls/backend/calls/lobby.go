@@ -443,6 +443,9 @@ func (s *Service) publicMeeting(w http.ResponseWriter, r *http.Request) error {
 		title := m.Title
 		host := userRef(m.HostID, m.HostName, m.HostAvatar, m.HostStatus).DisplayName
 		out.Title, out.HostName = &title, &host
+		if out.Recording, err = recordingNow(r.Context(), s.d.Pool, m.ID); err != nil {
+			return err
+		}
 	}
 	httpx.OK(w, out)
 	return nil

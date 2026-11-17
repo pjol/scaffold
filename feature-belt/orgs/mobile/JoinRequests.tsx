@@ -25,7 +25,7 @@ export function JoinRequests({ org }: { org: Org }) {
           return (
             <View key={j.id} style={{ gap: s[2], paddingBottom: s[3] }}>
               <ListRow title={name} info={j.email} leading={<Avatar name={name} src={j.avatar_url} size="md" />} />
-              <View style={{ flexDirection: "row", gap: s[2], paddingHorizontal: s[4] }}>
+              <View style={{ flexDirection: "row", gap: s[2] }}>
                 <Button
                   variant="ghost"
                   size="md"

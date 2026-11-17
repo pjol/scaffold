@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,11 +26,33 @@ import (
 type Cover struct {
 	FileID   *uuid.UUID `json:"file_id,omitempty"`
 	Color    string     `json:"color,omitempty"`
+	Gallery  string     `json:"gallery,omitempty"` // a built-in cover (gradients drawn from the palette)
 	Position int        `json:"position"`
 }
 
-// coverColors are the palette roles a colour cover may use.
+// coverColors are the palette roles a colour cover (or a lucide icon) may use.
 var coverColors = map[string]bool{"neutral": true, "primary": true, "accent": true, "success": true, "warning": true, "danger": true, "info": true}
+
+// coverGallery names the built-in covers; clients draw each from two palette
+// roles (shared/pages.ts DOCS_COVER_GALLERY), so they follow the theme.
+var coverGallery = map[string]bool{
+	"dawn": true, "lagoon": true, "dusk": true, "meadow": true, "ember": true, "glacier": true,
+	"orchid": true, "slate": true, "citrus": true, "tide": true, "aurora": true, "sand": true,
+}
+
+// CustomIcon is a page icon other than an emoji: an icon from the app's set
+// (lucide names) tinted with a palette role, or an image uploaded to the page.
+type CustomIcon struct {
+	Type   string     `json:"type"` // lucide | image
+	Name   string     `json:"name,omitempty"`
+	Color  string     `json:"color,omitempty"`
+	FileID *uuid.UUID `json:"file_id,omitempty"`
+}
+
+var iconNameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// pageFonts are the page typefaces: the app's, a serif and a monospace.
+var pageFonts = map[string]bool{"default": true, "serif": true, "mono": true}
 
 // Page is a page, database or database row as the API returns it.
 type Page struct {
@@ -53,6 +77,15 @@ type Page struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt *time.Time     `json:"deleted_at"`
 	MyLevel   access.Level   `json:"my_level"`
+	// Page chrome and status (docs 1.2.0).
+	CustomIcon    *CustomIcon `json:"custom_icon"`
+	Font          string      `json:"font"`
+	SmallText     bool        `json:"small_text"`
+	IsTemplate    bool        `json:"is_template"`
+	Verified      bool        `json:"verified"` // verified and not expired
+	VerifiedBy    *uuid.UUID  `json:"verified_by"`
+	VerifiedAt    *time.Time  `json:"verified_at"`
+	VerifiedUntil *time.Time  `json:"verified_until"`
 }
 
 // PageSummary is a page in a list (sidebar, search, trash, backlinks).
@@ -69,22 +102,36 @@ type PageSummary struct {
 	UpdatedAt   time.Time    `json:"updated_at"`
 	DeletedAt   *time.Time   `json:"deleted_at,omitempty"`
 	Snippet     string       `json:"snippet,omitempty"`
+	// CustomIcon is filled by the lists that select it (sidebar, children,
+	// recent, quick find); search hits carry the emoji only.
+	CustomIcon *CustomIcon `json:"custom_icon,omitempty"`
+	// Trash lists only: who trashed it and the page it was in (when the
+	// caller can open that page).
+	DeletedBy   *RefUser   `json:"deleted_by,omitempty"`
+	ParentTitle *string    `json:"parent_title,omitempty"`
+	trash       *trashInfo `json:"-"`
 }
 
 const pageCols = `p.id, p.org_id, p.parent_id, p.kind, p.is_row, p.inline, p.title, p.icon, p.cover, p.position, p.full_width,
-	p.locked, p.props, p.schema, p.version, p.created_by, p.updated_by, p.created_at, p.updated_at, p.deleted_at`
+	p.locked, p.props, p.schema, p.version, p.created_by, p.updated_by, p.created_at, p.updated_at, p.deleted_at,
+	p.custom_icon, p.font, p.small_text, p.is_template, p.verified_by, p.verified_at, p.verified_until`
 
 func scanPage(row pgx.Row) (*Page, error) {
 	var p Page
-	var cover, props, schema []byte
+	var cover, props, schema, customIcon []byte
 	err := row.Scan(&p.ID, &p.OrgID, &p.ParentID, &p.Kind, &p.IsRow, &p.Inline, &p.Title, &p.Icon, &cover, &p.Position, &p.FullWidth,
-		&p.Locked, &props, &schema, &p.Version, &p.CreatedBy, &p.UpdatedBy, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt)
+		&p.Locked, &props, &schema, &p.Version, &p.CreatedBy, &p.UpdatedBy, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&customIcon, &p.Font, &p.SmallText, &p.IsTemplate, &p.VerifiedBy, &p.VerifiedAt, &p.VerifiedUntil)
 	if err != nil {
 		return nil, err
 	}
 	if len(cover) > 0 {
 		_ = json.Unmarshal(cover, &p.Cover)
 	}
+	if len(customIcon) > 0 {
+		_ = json.Unmarshal(customIcon, &p.CustomIcon)
+	}
+	p.Verified = p.VerifiedAt != nil && (p.VerifiedUntil == nil || p.VerifiedUntil.After(time.Now()))
 	p.Props = map[string]any{}
 	_ = json.Unmarshal(props, &p.Props)
 	if len(schema) > 0 {
@@ -177,60 +224,155 @@ func scanSummaries(rows pgx.Rows, extra func(*PageSummary) []any) ([]PageSummary
 
 // Sidebar is the workspace tree's top level for the caller.
 type Sidebar struct {
-	Favorites       []PageSummary `json:"favorites"`
-	Shared          []PageSummary `json:"shared"`
-	Private         []PageSummary `json:"private"`
-	CanCreateShared bool          `json:"can_create_shared"`
+	Favorites        []PageSummary    `json:"favorites"`
+	Teamspaces       []Teamspace      `json:"teamspaces"`
+	HiddenTeamspaces []access.TeamRef `json:"hidden_teamspaces"`
+	Shared           []PageSummary    `json:"shared"`
+	Private          []PageSummary    `json:"private"`
+	CanCreateShared  bool             `json:"can_create_shared"`
+}
+
+// Teamspace is a team the caller is on with the top-level pages shared with
+// it (the pages a team works in). Pages shared with several of the caller's
+// teams show under the first by name.
+type Teamspace struct {
+	Team  access.TeamRef `json:"team"`
+	Pages []PageSummary  `json:"pages"`
+}
+
+func decodeCustomIcon(raw []byte) *CustomIcon {
+	if len(raw) == 0 {
+		return nil
+	}
+	var c CustomIcon
+	if json.Unmarshal(raw, &c) != nil || c.Type == "" {
+		return nil
+	}
+	return &c
+}
+
+// summaries scans rows of summaryCols, level, has_children, custom_icon
+// (and extra columns after them).
+func summaries(rows pgx.Rows, extra func(*PageSummary) []any) ([]PageSummary, error) {
+	var icons [][]byte
+	list, err := scanSummaries(rows, func(ps *PageSummary) []any {
+		icons = append(icons, nil)
+		dest := []any{&ps.HasChildren, &icons[len(icons)-1]}
+		if extra != nil {
+			dest = append(dest, extra(ps)...)
+		}
+		return dest
+	})
+	for i := range list {
+		list[i].CustomIcon = decodeCustomIcon(icons[i])
+	}
+	return list, err
 }
 
 // sidebar: GET /docs/orgs/{orgID}/sidebar. Roots are the pages the caller
 // can open whose parent they can't (top-level pages, and pages shared with
 // them deep inside someone else's tree). Private = top-level pages they own
-// that have no grants at all; everything else is Shared.
+// that have no grants at all; a root shared with one of the caller's teams
+// goes under that teamspace (unless they hid it); everything else is
+// Shared. Workspace templates stay out of the tree.
 func (s *Service) sidebar(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
 	m, _ := orgs.FromContext(ctx)
 	agent := access.ViaAgent(ctx)
+	teams, err := access.TeamsOf(ctx, s.d.Pool, m.OrgID, me)
+	if err != nil {
+		return err
+	}
+	hidden := map[uuid.UUID]bool{}
+	if len(teams) > 0 {
+		rows, err := s.d.Pool.Query(ctx, `SELECT team_id FROM docs_teamspace_prefs WHERE user_id = $1 AND hidden`, me)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			hidden[id] = true
+		}
+	}
+	teamIDs := make([]uuid.UUID, 0, len(teams))
+	for _, t := range teams {
+		teamIDs = append(teamIDs, t.ID)
+	}
 	rows, err := s.d.Pool.Query(ctx, `
 		WITH v AS MATERIALIZED (SELECT id, level FROM access_visible($1, 'docs.page', $3))
-		SELECT `+summaryCols+`, v.level, `+hasChildrenSQL+`,
+		SELECT `+summaryCols+`, v.level, `+hasChildrenSQL+`, p.custom_icon,
 		       COALESCE(p.parent_id IS NULL AND ar.owner_id = $1
-		        AND NOT EXISTS (SELECT 1 FROM access_grants g WHERE g.resource_kind = 'docs.page' AND g.resource_id = p.id), false)
+		        AND NOT EXISTS (SELECT 1 FROM access_grants g WHERE g.resource_kind = 'docs.page' AND g.resource_id = p.id), false),
+		       COALESCE((SELECT array_agg(g.subject_id) FROM access_grants g WHERE g.resource_kind = 'docs.page' AND g.resource_id = p.id
+		        AND g.subject_type = 'team' AND g.subject_id = ANY ($4)), '{}')
 		FROM docs_pages p
 		JOIN v ON v.id = p.id
 		JOIN access_resources ar ON ar.kind = 'docs.page' AND ar.id = p.id
-		WHERE p.org_id = $2 AND p.deleted_at IS NULL AND NOT p.is_row
+		WHERE p.org_id = $2 AND p.deleted_at IS NULL AND NOT p.is_row AND NOT p.is_template
 		  AND (p.parent_id IS NULL OR NOT EXISTS (SELECT 1 FROM v vp WHERE vp.id = p.parent_id))
-		ORDER BY p.position, p.id LIMIT 500`, me, m.OrgID, agent)
+		ORDER BY p.position, p.id LIMIT 500`, me, m.OrgID, agent, teamIDs)
 	if err != nil {
 		return err
 	}
 	var private []bool
-	all, err := scanSummaries(rows, func(ps *PageSummary) []any {
+	var granted [][]uuid.UUID
+	all, err := summaries(rows, func(ps *PageSummary) []any {
 		private = append(private, false)
-		return []any{&ps.HasChildren, &private[len(private)-1]}
+		granted = append(granted, nil)
+		return []any{&private[len(private)-1], &granted[len(granted)-1]}
 	})
 	if err != nil {
 		return err
 	}
-	out := Sidebar{Favorites: []PageSummary{}, Shared: []PageSummary{}, Private: []PageSummary{}}
+	out := Sidebar{Favorites: []PageSummary{}, Teamspaces: []Teamspace{}, HiddenTeamspaces: []access.TeamRef{}, Shared: []PageSummary{}, Private: []PageSummary{}}
+	byTeam := map[uuid.UUID][]PageSummary{}
 	for i, ps := range all {
-		if private[i] {
+		switch {
+		case private[i]:
 			out.Private = append(out.Private, ps)
-		} else {
+		case len(granted[i]) > 0:
+			// The first of the caller's teams (by name) it is shared with.
+			placed := false
+			for _, t := range teams {
+				if slices.Contains(granted[i], t.ID) {
+					if !hidden[t.ID] {
+						byTeam[t.ID] = append(byTeam[t.ID], ps)
+					}
+					placed = true
+					break
+				}
+			}
+			if !placed {
+				out.Shared = append(out.Shared, ps)
+			}
+		default:
 			out.Shared = append(out.Shared, ps)
 		}
 	}
+	for _, t := range teams {
+		if hidden[t.ID] {
+			out.HiddenTeamspaces = append(out.HiddenTeamspaces, t)
+			continue
+		}
+		pages := byTeam[t.ID]
+		if pages == nil {
+			pages = []PageSummary{}
+		}
+		out.Teamspaces = append(out.Teamspaces, Teamspace{Team: t, Pages: pages})
+	}
 	rows, err = s.d.Pool.Query(ctx, `
-		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), `+hasChildrenSQL+`
+		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), `+hasChildrenSQL+`, p.custom_icon
 		FROM docs_favorites f JOIN docs_pages p ON p.id = f.page_id
 		WHERE f.user_id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL AND access_level($1, 'docs.page', p.id, $3) >= 1
 		ORDER BY f.created_at, p.id LIMIT 100`, me, m.OrgID, agent)
 	if err != nil {
 		return err
 	}
-	if out.Favorites, err = scanSummaries(rows, func(ps *PageSummary) []any { return []any{&ps.HasChildren} }); err != nil {
+	if out.Favorites, err = summaries(rows, nil); err != nil {
 		return err
 	}
 	if out.CanCreateShared, err = access.Allowed(ctx, s.d.Pool, m.OrgID, me, PermCreateShared); err != nil {
@@ -261,14 +403,14 @@ func (s *Service) children(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Service) childPages(ctx context.Context, q db.Querier, me, id uuid.UUID) ([]PageSummary, error) {
 	rows, err := q.Query(ctx, `
-		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), `+hasChildrenSQL+`
+		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), `+hasChildrenSQL+`, p.custom_icon
 		FROM docs_pages p
 		WHERE p.parent_id = $2 AND NOT p.is_row AND p.deleted_at IS NULL AND access_level($1, 'docs.page', p.id, $3) >= 1
 		ORDER BY p.position, p.id LIMIT 500`, me, id, access.ViaAgent(ctx))
 	if err != nil {
 		return nil, err
 	}
-	return scanSummaries(rows, func(ps *PageSummary) []any { return []any{&ps.HasChildren} })
+	return summaries(rows, nil)
 }
 
 // recent: GET /docs/orgs/{orgID}/recent: the last 30 pages the caller opened.
@@ -277,14 +419,14 @@ func (s *Service) recent(w http.ResponseWriter, r *http.Request) error {
 	me := auth.MustFromContext(ctx).UserID
 	m, _ := orgs.FromContext(ctx)
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), false
+		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), false, p.custom_icon
 		FROM docs_visits v JOIN docs_pages p ON p.id = v.page_id
-		WHERE v.user_id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL AND access_level($1, 'docs.page', p.id, $3) >= 1
+		WHERE v.user_id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL AND NOT p.is_template AND access_level($1, 'docs.page', p.id, $3) >= 1
 		ORDER BY v.visited_at DESC, p.id LIMIT 30`, me, m.OrgID, access.ViaAgent(ctx))
 	if err != nil {
 		return err
 	}
-	list, err := scanSummaries(rows, func(ps *PageSummary) []any { return []any{&ps.HasChildren} })
+	list, err := summaries(rows, nil)
 	if err != nil {
 		return err
 	}
@@ -297,8 +439,9 @@ type trashCursor struct {
 	ID uuid.UUID `json:"id"`
 }
 
-// trash: GET /docs/orgs/{orgID}/trash?q=&cursor=: pages the caller can
-// edit that were trashed (the page each trashing started from).
+// trash: GET /docs/orgs/{orgID}/trash?q=&by=me&kind=&in=&cursor=: pages
+// the caller can edit that were trashed (the page each trashing started
+// from), newest first, with who trashed them and where they were.
 func (s *Service) trash(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
@@ -308,25 +451,65 @@ func (s *Service) trash(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeCursor(pp.Cursor, &c); err != nil {
 		return err
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	qp := r.URL.Query()
+	q := strings.TrimSpace(qp.Get("q"))
+	kind := qp.Get("kind")
+	if kind != "" && kind != "page" && kind != "database" {
+		return httpx.BadRequest("kind must be page or database.")
+	}
+	var by *uuid.UUID
+	if qp.Get("by") == "me" {
+		by = &me
+	}
+	var in *uuid.UUID
+	if raw := qp.Get("in"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return httpx.BadRequest("in must be a page id.")
+		}
+		in = &id
+	}
 	rows, err := s.d.Pool.Query(ctx, `
-		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), false
+		SELECT `+summaryCols+`, access_level($1, 'docs.page', p.id, $3), false, p.custom_icon,
+		       p.deleted_by, du.display_name,
+		       CASE WHEN pp.id IS NOT NULL AND access_level($1, 'docs.page', pp.id, $3) >= 1 THEN pp.title END
 		FROM docs_pages p
+		LEFT JOIN users du ON du.id = p.deleted_by AND du.status <> 'deleted'
+		LEFT JOIN docs_pages pp ON pp.id = p.parent_id
 		WHERE p.org_id = $2 AND p.deleted_at IS NOT NULL AND p.trash_root_id = p.id
 		  AND ($4 = '' OR p.title ILIKE '%' || $4 || '%')
 		  AND ($5::timestamptz IS NULL OR (p.deleted_at, p.id) < ($5, $6))
+		  AND ($8::uuid IS NULL OR p.deleted_by = $8)
+		  AND ($9 = '' OR p.kind = $9)
+		  AND ($10::uuid IS NULL OR p.parent_id = $10)
 		  AND access_level($1, 'docs.page', p.id, $3) >= 3
 		ORDER BY p.deleted_at DESC, p.id DESC LIMIT $7`,
-		me, m.OrgID, access.ViaAgent(ctx), likeEscape(q), nullTime(c.T), c.ID, pp.Limit+1)
+		me, m.OrgID, access.ViaAgent(ctx), likeEscape(q), nullTime(c.T), c.ID, pp.Limit+1, by, kind, in)
 	if err != nil {
 		return err
 	}
-	list, err := scanSummaries(rows, func(ps *PageSummary) []any { return []any{&ps.HasChildren} })
+	list, err := summaries(rows, func(ps *PageSummary) []any {
+		ps.trash = &trashInfo{}
+		return []any{&ps.trash.byID, &ps.trash.byName, &ps.ParentTitle}
+	})
 	if err != nil {
 		return err
+	}
+	for i := range list {
+		if t := list[i].trash; t != nil && t.byID != nil && t.byName != nil {
+			list[i].DeletedBy = &RefUser{ID: *t.byID, Name: *t.byName}
+		}
+		if list[i].ParentTitle != nil {
+			list[i].ParentTitle = ptr(displayTitle(*list[i].ParentTitle))
+		}
 	}
 	httpx.OK(w, httpx.NewPage(list, pp.Limit, func(ps PageSummary) any { return trashCursor{T: *ps.DeletedAt, ID: ps.ID} }))
 	return nil
+}
+
+type trashInfo struct {
+	byID   *uuid.UUID
+	byName *string
 }
 
 // ---- one page --------------------------------------------------------------------
@@ -379,6 +562,7 @@ type PageDetail struct {
 	Favorite      bool           `json:"favorite"`
 	CommentCounts map[string]int `json:"comment_counts"` // open threads per block id; "" = the page
 	Published     bool           `json:"published"`
+	Following     bool           `json:"following"` // the caller gets edits and comments (follow.go)
 }
 
 // getPage: GET /docs/pages/{id}: everything needed to render and edit it.
@@ -397,11 +581,13 @@ func (s *Service) getPage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if p.DeletedAt == nil {
+	// ?preview=1 (hover cards) reads without counting a visit or a view.
+	if p.DeletedAt == nil && r.URL.Query().Get("preview") != "1" {
 		_, _ = s.d.Pool.Exec(ctx, `
 			INSERT INTO docs_visits (user_id, page_id) VALUES ($1, $2)
 			ON CONFLICT (user_id, page_id) DO UPDATE SET visited_at = now()
 			WHERE docs_visits.visited_at < now() - interval '1 minute'`, me, id)
+		s.recordView(ctx, me, id)
 	}
 	httpx.OK(w, out)
 	return nil
@@ -443,7 +629,19 @@ func (s *Service) pageDetail(ctx context.Context, me uuid.UUID, p *Page, member 
 	if p.IsRow && out.Database != nil {
 		userIDs = append(userIDs, personValues(out.Database.Schema, p.Props)...)
 	}
+	if member {
+		// Page info: who created, last edited and verified it.
+		for _, u := range []*uuid.UUID{p.CreatedBy, p.UpdatedBy, p.VerifiedBy} {
+			if u != nil {
+				userIDs = append(userIDs, *u)
+			}
+		}
+	}
 	if out.Refs, err = s.resolveRefs(ctx, me, member, userIDs, pageIDs); err != nil {
+		return nil, err
+	}
+	// A row's formulas, rollups and related rows, and computed properties' settings (databases.go).
+	if err := s.databaseDetail(ctx, me, member, out); err != nil {
 		return nil, err
 	}
 	if !member {
@@ -452,7 +650,8 @@ func (s *Service) pageDetail(ctx context.Context, me uuid.UUID, p *Page, member 
 	if out.Path, err = s.path(ctx, me, p); err != nil {
 		return nil, err
 	}
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM docs_favorites WHERE user_id = $1 AND page_id = $2)`, me, p.ID).Scan(&out.Favorite); err != nil {
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM docs_favorites WHERE user_id = $1 AND page_id = $2),
+		COALESCE((SELECT following FROM docs_follows WHERE user_id = $1 AND page_id = $2), false)`, me, p.ID).Scan(&out.Favorite, &out.Following); err != nil {
 		return nil, err
 	}
 	rows, err := q.Query(ctx, `
@@ -603,6 +802,9 @@ type createPageReq struct {
 	Shared   bool       `json:"shared"`   // top level: everyone in the org can edit it
 	AfterID  *uuid.UUID `json:"after_id"` // the sibling to follow; nil = last
 	Inline   bool       `json:"inline"`   // a database shown as a block on its parent
+	// TeamID (top level only): a page in that teamspace, which the team can
+	// edit. The caller must be on the team; agents can't (it shares).
+	TeamID *uuid.UUID `json:"team_id"`
 }
 
 // createPage: POST /docs/orgs/{orgID}/pages. Inside a page you can edit, or
@@ -663,6 +865,23 @@ func (s *Service) create(ctx context.Context, me, orgID uuid.UUID, req createPag
 		return nil, err
 	}
 	general := access.None
+	if req.TeamID != nil {
+		if req.ParentID != nil {
+			return nil, httpx.BadRequest("Pages inside another page follow its sharing. Leave team_id out.")
+		}
+		if access.ViaAgent(ctx) {
+			return nil, httpx.Forbidden("AI agents can't share pages with teams.")
+		}
+		var on bool
+		if err := s.d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM access_team_members tm JOIN access_teams t ON t.id = tm.team_id
+			WHERE tm.team_id = $1 AND tm.user_id = $2 AND t.org_id = $3)`, *req.TeamID, me, orgID).Scan(&on); err != nil {
+			return nil, err
+		}
+		if !on {
+			return nil, httpx.Forbidden("Only people on a team can add pages to its teamspace.")
+		}
+		req.Shared = false
+	}
 	if req.ParentID != nil {
 		parent, err := requirePage(ctx, s.d.Pool, me, *req.ParentID, access.Edit)
 		if err != nil {
@@ -716,6 +935,14 @@ func (s *Service) create(ctx context.Context, me, orgID uuid.UUID, req createPag
 			res.Parent = &access.Ref{Kind: Kind, ID: *req.ParentID}
 		}
 		if err := access.CreateResource(ctx, tx, res); err != nil {
+			return err
+		}
+		if req.TeamID != nil {
+			if err := access.AddGrant(ctx, tx, access.Ref{Kind: Kind, ID: id}, access.SubjectRef{Type: "team", ID: *req.TeamID}, access.Edit, me); err != nil {
+				return err
+			}
+		}
+		if err := autoFollow(ctx, tx, me, id); err != nil {
 			return err
 		}
 		if req.Kind == "database" {
@@ -783,11 +1010,14 @@ func permissionRequired(key string) *httpx.Error {
 // ---- update ----------------------------------------------------------------------
 
 type updatePageReq struct {
-	Title     *string         `json:"title"`
-	Icon      json.RawMessage `json:"icon"`  // string, or null to clear
-	Cover     json.RawMessage `json:"cover"` // Cover, or null to clear
-	FullWidth *bool           `json:"full_width"`
-	Locked    *bool           `json:"locked"`
+	Title      *string         `json:"title"`
+	Icon       json.RawMessage `json:"icon"`        // string, or null to clear
+	CustomIcon json.RawMessage `json:"custom_icon"` // CustomIcon (clears icon), or null to clear
+	Cover      json.RawMessage `json:"cover"`       // Cover, or null to clear
+	FullWidth  *bool           `json:"full_width"`
+	Locked     *bool           `json:"locked"`
+	Font       *string         `json:"font"`
+	SmallText  *bool           `json:"small_text"`
 }
 
 // updatePage: PATCH /docs/pages/{id} (edit): title, icon, cover, width, lock.
@@ -839,7 +1069,37 @@ func (s *Service) updatePage(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		add("icon", icon)
+		if icon != nil {
+			add("custom_icon", nil)
+		}
 		treeChange = true
+	}
+	if len(req.CustomIcon) > 0 {
+		var ci *CustomIcon
+		if string(req.CustomIcon) != "null" {
+			if err := json.Unmarshal(req.CustomIcon, &ci); err != nil || ci == nil {
+				return httpx.BadRequest("custom_icon must be {type: lucide, name, color} or {type: image, file_id}.")
+			}
+			if err := s.checkCustomIcon(ctx, id, ci); err != nil {
+				return err
+			}
+			add("icon", nil)
+		}
+		if ci == nil {
+			add("custom_icon", nil)
+		} else {
+			add("custom_icon", jsonOrNil(ci))
+		}
+		treeChange = true
+	}
+	if req.Font != nil {
+		if !pageFonts[*req.Font] {
+			return httpx.BadRequest("font must be default, serif or mono.")
+		}
+		add("font", *req.Font)
+	}
+	if req.SmallText != nil {
+		add("small_text", *req.SmallText)
 	}
 	if len(req.Cover) > 0 {
 		var cover *Cover
@@ -878,16 +1138,60 @@ func (s *Service) updatePage(w http.ResponseWriter, r *http.Request) error {
 func (s *Service) checkCover(ctx context.Context, pageID uuid.UUID, c *Cover) error {
 	c.Position = min(max(c.Position, 0), 100)
 	if c.FileID != nil {
-		var ct string
-		err := s.d.Pool.QueryRow(ctx, `SELECT content_type FROM docs_files WHERE id = $1 AND page_id = $2`, *c.FileID, pageID).Scan(&ct)
-		if db.IsNoRows(err) || (err == nil && !strings.HasPrefix(ct, "image/")) {
+		if err := s.checkPageImage(ctx, pageID, *c.FileID); err != nil {
 			return httpx.BadRequest("Upload an image to this page for the cover.")
 		}
+		c.Color, c.Gallery = "", ""
+		return nil
+	}
+	if c.Gallery != "" {
+		if !coverGallery[c.Gallery] {
+			return httpx.BadRequest("Choose a cover from the gallery or upload an image.")
+		}
 		c.Color = ""
-		return err
+		return nil
 	}
 	if !coverColors[c.Color] {
 		return httpx.BadRequest("Choose a cover colour or upload an image.")
+	}
+	return nil
+}
+
+// checkPageImage: the file must be an image uploaded to this page.
+func (s *Service) checkPageImage(ctx context.Context, pageID, fileID uuid.UUID) error {
+	var ct string
+	err := s.d.Pool.QueryRow(ctx, `SELECT content_type FROM docs_files WHERE id = $1 AND page_id = $2`, fileID, pageID).Scan(&ct)
+	if db.IsNoRows(err) || (err == nil && !strings.HasPrefix(ct, "image/")) {
+		return httpx.BadRequest("Upload an image to this page first.")
+	}
+	return err
+}
+
+// checkCustomIcon validates a lucide icon (name, palette colour) or an
+// image uploaded to the page.
+func (s *Service) checkCustomIcon(ctx context.Context, pageID uuid.UUID, c *CustomIcon) error {
+	switch c.Type {
+	case "lucide":
+		if len(c.Name) > 48 || !iconNameRE.MatchString(c.Name) {
+			return httpx.BadRequest("Choose an icon from the list.")
+		}
+		if c.Color == "" {
+			c.Color = "neutral"
+		}
+		if !coverColors[c.Color] {
+			return httpx.BadRequest("Choose an icon colour from the palette.")
+		}
+		c.FileID = nil
+	case "image":
+		if c.FileID == nil {
+			return httpx.BadRequest("Upload an image for the icon.")
+		}
+		if err := s.checkPageImage(ctx, pageID, *c.FileID); err != nil {
+			return err
+		}
+		c.Name, c.Color = "", ""
+	default:
+		return httpx.BadRequest("custom_icon.type must be lucide or image.")
 	}
 	return nil
 }

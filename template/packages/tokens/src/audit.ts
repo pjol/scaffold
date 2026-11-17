@@ -4,6 +4,7 @@
  */
 import { contrastRatio } from "./color";
 import { LAYOUT_SPACE, COMPACT_SIZE, SIZE_RESPONSIVE, size, tap } from "./layout";
+import { SWATCH_HUES, SWATCHES } from "./swatches";
 import { INTENTS, TYPE_ROLES, type ColorMode, type ColorTokens, type Palette } from "./types";
 
 export interface ContrastCheck {
@@ -44,6 +45,13 @@ function checksFor(c: ColorTokens, mode: ColorMode): Omit<ContrastCheck, "ratio"
   add("borderStrong on canvas", c.borderStrong, c.canvas, 3);
   add("ring on canvas", c.ring, c.canvas, 3);
   add("ring on surface", c.ring, c.surface, 3);
+
+  for (const h of SWATCH_HUES) {
+    const sw = SWATCHES[h][mode];
+    for (const s of SURFACES) add(`swatch ${h} on ${s}`, sw.fg, c[s], 4.5);
+    add(`text on swatch ${h} bg`, c.text, sw.bg, 7);
+    add(`swatch ${h} on swatch ${h} bg`, sw.fg, sw.bg, 4.5);
+  }
   return out;
 }
 

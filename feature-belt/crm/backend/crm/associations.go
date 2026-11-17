@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,16 @@ type Associations struct {
 	Companies []AssocCompany `json:"companies"`
 	Contacts  []AssocContact `json:"contacts"`
 	Deals     []AssocDeal    `json:"deals"`
+	Tickets   []AssocTicket  `json:"tickets"`
+}
+
+type AssocTicket struct {
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name"`
+	Priority     string    `json:"priority"`
+	StageName    string    `json:"stage_name"`
+	StageOutcome string    `json:"stage_outcome"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type AssocCompany struct {
@@ -51,25 +62,35 @@ const assocLimit = 100
 // associations lists what a record is linked to, keeping only records the
 // caller can view (agent-capped through $2).
 func (s *Service) associations(ctx context.Context, q db.Querier, userID uuid.UUID, o objectType, id uuid.UUID) (*Associations, error) {
-	a := &Associations{Companies: []AssocCompany{}, Contacts: []AssocContact{}, Deals: []AssocDeal{}}
+	a := &Associations{Companies: []AssocCompany{}, Contacts: []AssocContact{}, Deals: []AssocDeal{}, Tickets: []AssocTicket{}}
 	b := newSQL(ctx, userID)
 	idArg := b.arg(id)
-	var companySQL, contactSQL, dealSQL string
+	var companySQL, contactSQL, dealSQL, ticketSQL string
+	const ticketCols = `SELECT tk.id, tk.name, tk.priority, st.name, st.outcome, tk.created_at FROM crm_tickets tk JOIN crm_stages st ON st.id = tk.stage_id `
 	switch o {
 	case objCompany:
 		contactSQL = `SELECT c.id, ` + contactTitle("c") + `, c.emails[1], c.phones[1], c.job_title FROM crm_contact_companies cc
 			JOIN crm_contacts c ON c.id = cc.contact_id WHERE cc.company_id = ` + idArg
 		dealSQL = `SELECT d.id, d.name, d.amount, d.currency, st.name, st.outcome, to_char(d.close_date, 'YYYY-MM-DD') FROM crm_deals d
 			JOIN crm_stages st ON st.id = d.stage_id WHERE d.company_id = ` + idArg
+		ticketSQL = ticketCols + `WHERE tk.company_id = ` + idArg
 	case objContact:
 		companySQL = `SELECT co.id, co.name, co.domain, cc.is_primary FROM crm_contact_companies cc
 			JOIN crm_companies co ON co.id = cc.company_id WHERE cc.contact_id = ` + idArg
 		dealSQL = `SELECT d.id, d.name, d.amount, d.currency, st.name, st.outcome, to_char(d.close_date, 'YYYY-MM-DD') FROM crm_deal_contacts dc
 			JOIN crm_deals d ON d.id = dc.deal_id JOIN crm_stages st ON st.id = d.stage_id WHERE dc.contact_id = ` + idArg
+		ticketSQL = ticketCols + `JOIN crm_ticket_contacts tc ON tc.ticket_id = tk.id WHERE tc.contact_id = ` + idArg
 	case objDeal:
 		companySQL = `SELECT co.id, co.name, co.domain, true FROM crm_deals d JOIN crm_companies co ON co.id = d.company_id WHERE d.id = ` + idArg
 		contactSQL = `SELECT c.id, ` + contactTitle("c") + `, c.emails[1], c.phones[1], c.job_title FROM crm_deal_contacts dc
 			JOIN crm_contacts c ON c.id = dc.contact_id WHERE dc.deal_id = ` + idArg
+		ticketSQL = ticketCols + `WHERE tk.deal_id = ` + idArg
+	case objTicket:
+		companySQL = `SELECT co.id, co.name, co.domain, true FROM crm_tickets tk JOIN crm_companies co ON co.id = tk.company_id WHERE tk.id = ` + idArg
+		contactSQL = `SELECT c.id, ` + contactTitle("c") + `, c.emails[1], c.phones[1], c.job_title FROM crm_ticket_contacts tc
+			JOIN crm_contacts c ON c.id = tc.contact_id WHERE tc.ticket_id = ` + idArg
+		dealSQL = `SELECT d.id, d.name, d.amount, d.currency, st.name, st.outcome, to_char(d.close_date, 'YYYY-MM-DD') FROM crm_tickets tk
+			JOIN crm_deals d ON d.id = tk.deal_id JOIN crm_stages st ON st.id = d.stage_id WHERE tk.id = ` + idArg
 	}
 	if companySQL != "" {
 		rows, err := q.Query(ctx, companySQL+` AND access_level($1, 'crm.company', co.id, $2) >= 1 ORDER BY 4 DESC, lower(co.name), co.id LIMIT `+strconv.Itoa(assocLimit), b.args...)
@@ -119,6 +140,24 @@ func (s *Service) associations(ctx context.Context, q db.Querier, userID uuid.UU
 				return nil, err
 			}
 			a.Deals = append(a.Deals, d)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if ticketSQL != "" {
+		rows, err := q.Query(ctx, ticketSQL+` AND access_level($1, 'crm.ticket', tk.id, $2) >= 1 ORDER BY (st.outcome = 'open') DESC, tk.created_at DESC, tk.id LIMIT `+strconv.Itoa(assocLimit), b.args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var t AssocTicket
+			if err := rows.Scan(&t.ID, &t.Name, &t.Priority, &t.StageName, &t.StageOutcome, &t.CreatedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			a.Tickets = append(a.Tickets, t)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -213,6 +252,60 @@ func (s *Service) linkDealContact(ctx context.Context, tx pgx.Tx, userID, orgID,
 		return err
 	}
 	return addEvent(ctx, tx, orgID, objContact, contactID, "associated", userID, map[string]any{"other_type": objDeal, "other_id": dealID, "other_name": dealName})
+}
+
+func (s *Service) linkTicketContact(ctx context.Context, tx pgx.Tx, userID, orgID, ticketID, contactID uuid.UUID) error {
+	contactName, err := s.requireOther(ctx, tx, userID, orgID, objContact, contactID)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO crm_ticket_contacts (ticket_id, contact_id, org_id, created_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT DO NOTHING`, ticketID, contactID, orgID, userID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	ticketName, _ := recordTitle(ctx, tx, objTicket, ticketID)
+	if err := addEvent(ctx, tx, orgID, objTicket, ticketID, "associated", userID, map[string]any{"other_type": objContact, "other_id": contactID, "other_name": contactName}); err != nil {
+		return err
+	}
+	return addEvent(ctx, tx, orgID, objContact, contactID, "associated", userID, map[string]any{"other_type": objTicket, "other_id": ticketID, "other_name": ticketName})
+}
+
+// addTicketContact: POST /v1/crm/tickets/{id}/contacts {contact_id}
+func (s *Service) addTicketContact(w http.ResponseWriter, r *http.Request) error {
+	var req linkReq
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	if req.ContactID == uuid.Nil {
+		return httpx.BadRequest("Choose a contact.")
+	}
+	return s.relink(w, r, objTicket, func(ctx context.Context, tx pgx.Tx, orgID, id uuid.UUID) ([]uuid.UUID, error) {
+		return []uuid.UUID{req.ContactID}, s.linkTicketContact(ctx, tx, me(r), orgID, id, req.ContactID)
+	}, objContact)
+}
+
+// removeTicketContact: DELETE /v1/crm/tickets/{id}/contacts/{contactID}
+func (s *Service) removeTicketContact(w http.ResponseWriter, r *http.Request) error {
+	contactID, err := idParam(r, "contactID")
+	if err != nil {
+		return err
+	}
+	return s.relink(w, r, objTicket, func(ctx context.Context, tx pgx.Tx, orgID, id uuid.UUID) ([]uuid.UUID, error) {
+		name, err := s.requireOther(ctx, tx, me(r), orgID, objContact, contactID)
+		if err != nil {
+			return nil, err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM crm_ticket_contacts WHERE ticket_id = $1 AND contact_id = $2`, id, contactID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return nil, err
+		}
+		ticketName, _ := recordTitle(ctx, tx, objTicket, id)
+		if err := addEvent(ctx, tx, orgID, objTicket, id, "dissociated", me(r), map[string]any{"other_type": objContact, "other_id": contactID, "other_name": name}); err != nil {
+			return nil, err
+		}
+		return []uuid.UUID{contactID}, addEvent(ctx, tx, orgID, objContact, contactID, "dissociated", me(r), map[string]any{"other_type": objTicket, "other_id": id, "other_name": ticketName})
+	}, objContact)
 }
 
 type linkReq struct {

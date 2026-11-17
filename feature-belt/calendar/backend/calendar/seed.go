@@ -34,8 +34,11 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 		}
 	}
 	var done bool
-	if err := s.d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM calendar_booking_links WHERE slug = 'sam-intro-call')`).Scan(&done); err != nil || done {
+	if err := s.d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM calendar_booking_links WHERE slug = 'sam-intro-call')`).Scan(&done); err != nil {
 		return err
+	}
+	if done {
+		return s.seedDepth(ctx, users)
 	}
 	var orgID *uuid.UUID
 	var oid uuid.UUID
@@ -220,5 +223,8 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 	if err == nil && manageURL != "" {
 		slog.Info("calendar: dev booking manage link for casey@example.com", "url", manageURL)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return s.seedDepth(ctx, users)
 }

@@ -1,3 +1,4 @@
+import { docsRowsQuery } from "./database";
 import type { CallOptions, HttpClient } from "../api/http";
 import { seg } from "../api/query-string";
 import type { Page } from "../types";
@@ -14,6 +15,7 @@ import type {
   DocsCreateRowRequest,
   DocsFile,
   DocsImportRequest,
+  DocsLinkPreview,
   DocsMoveRequest,
   DocsOp,
   DocsOpsResult,
@@ -40,14 +42,7 @@ import type {
 } from "./types";
 
 function rowsQuery(p: DocsRowsParams) {
-  return {
-    view: p.view,
-    filters: p.filters ? JSON.stringify(p.filters) : undefined,
-    sorts: p.sorts ? JSON.stringify(p.sorts) : undefined,
-    q: p.q || undefined,
-    cursor: p.cursor,
-    limit: p.limit,
-  };
+  return docsRowsQuery(p);
 }
 
 /** `/v1/docs` endpoints: pages, block operations, databases, comments, history, presence, files, public pages. */
@@ -91,9 +86,18 @@ export function docsEndpoints(http: HttpClient) {
 
     // ---- files
     /** Attach a finished upload (purpose docs_file) to the page. */
-    registerFile: (pageId: string, body: { key: string; name: string; size: number }, o?: CallOptions) => http.post<DocsFile>(`${page(pageId)}/files`, body, o),
+    registerFile: (pageId: string, body: { key: string; name: string; size: number; content_type?: string }, o?: CallOptions) => http.post<DocsFile>(`${page(pageId)}/files`, body, o),
     /** A short-lived download link. */
     file: (fileId: string, o?: CallOptions) => http.get<DocsFile>(`${D}/files/${seg(fileId)}`, o),
+    /** A short-lived link that downloads the file under its name (instead of showing it). */
+    fileDownload: (fileId: string, o?: CallOptions) => http.get<DocsFile>(`${D}/files/${seg(fileId)}`, { ...o, query: { download: "1" } }),
+
+    // ---- link previews (bookmarks)
+    /** Fetch (or read the week's cache of) a link's title, description, site and images. */
+    linkPreview: (url: string, o?: CallOptions) => http.post<DocsLinkPreview>(`${D}/link-preview`, { url }, o),
+    /** A stored preview with fresh image links. With `token`: on a public page (no account). */
+    getLinkPreview: (previewId: string, token?: string | null, o?: CallOptions) =>
+      token ? http.get<DocsLinkPreview>(`${D}/public/previews/${seg(previewId)}`, { ...o, auth: false }) : http.get<DocsLinkPreview>(`${D}/link-previews/${seg(previewId)}`, o),
 
     // ---- presence
     presence: (id: string, o?: CallOptions) => http.get<{ items: DocsViewer[] }>(`${page(id)}/presence`, o),

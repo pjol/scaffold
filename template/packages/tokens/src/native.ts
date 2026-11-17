@@ -5,6 +5,7 @@
 import { size, space, tap } from "./layout";
 import { reanimatedSpring } from "./motion";
 import { activePaletteId, getPalette } from "./registry";
+import { swatchesFor, type Swatch, type SwatchHue } from "./swatches";
 import { TYPE_ROLES, type ColorMode, type ColorTokens, type Elevation, type FontRole, type FontWeight, type Fonts, type MotionTokens, type Radii, type SpringName, type TypeRole } from "./types";
 
 /** The subset of React Native's `TextStyle` a type role sets. */
@@ -20,6 +21,8 @@ export interface NativeTheme {
   paletteId: string;
   mode: ColorMode;
   colors: ColorTokens;
+  /** Content colours people pick (text `fg`, highlight `bg`), palette-independent. */
+  swatches: Record<SwatchHue, Swatch>;
   /** Spacing steps and semantic gaps in dp: `space[4]` = 16, `space.related` = 8. */
   space: typeof space;
   /** Component sizes in dp (`size.control` = 40). */
@@ -77,6 +80,7 @@ export function createNativeTheme(paletteId: string = activePaletteId(), mode: C
     paletteId: palette.id,
     mode,
     colors: palette.colors[mode],
+    swatches: swatchesFor(mode),
     space,
     size,
     tap,

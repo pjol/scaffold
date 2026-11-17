@@ -5,9 +5,12 @@
 - A folder in the drive can be a git repository: "New repository" in a folder, or "Turn into repository" on one (its files become the first commit, its sharing moves over, the folder goes to the trash). Repositories share, move and trash like any drive item.
 - Clone, fetch, pull and push over HTTPS (`<API>/git/<workspace>/<repo>.git`) with personal git credentials from Settings → Git credentials (read or read-write, expiry, last used, revoke). Agent credentials and sign-in tokens never work there.
 - Browse in the app: tree with last commits, README, syntax-highlighted files, blame, history, commit diffs, branches with ahead/behind, tags, code search and a file finder (T). Edit, add, upload, rename and delete files in the browser; each save is one commit to the branch (when allowed) or to a new branch, and a branch that moved meanwhile is refused, not overwritten.
-- Pull requests: compare and open, description, unified and split diffs with a file list, line comments in threads (resolve, outdated), reviews (comment, approve, request changes), review requests, merge commit or squash, branch protection (pull requests only, required approvals, stale approvals reset, no force-push or deletion), conflicts listed with local resolution steps, close and reopen, live updates.
-- AI agents work as the person through tools: read the tree, files, history and pull requests; commit to a feature branch and open a pull request (with scope Suggest, the commit becomes a diff the person accepts). Merging is always a person's action.
-- Mobile browses code, reads history and reviews pull requests (comments, line comments, approve); editing and merging are on the web.
+- Issues: Markdown with @mentions (notified), labels (token tones), assignees, milestones with due dates and progress, close as completed or not planned, comments with reactions, pin (3) and lock, templates from `.github/ISSUE_TEMPLATE/*.md`, the search syntax (`is:open label:bug assignee:@me milestone:"v1" no:label sort:comments`), keyset pages. Issues and pull requests share numbers; `#12` anywhere links, and "Fixes #12" in a pull request (merged into the default branch) or a commit (reaching it) closes the issue.
+- Pull requests: compare and open (from `pull_request_template.md`), drafts, labels, assignees, milestone, linked issues, unified/split diffs with "Viewed" checkboxes, hide whitespace and side-by-side image diffs, line and multi-line comments in threads, pending reviews (comments held until submit), ```` ```suggestion ```` blocks committed one by one or in a batch, reviews and re-requests, CODEOWNERS (owners asked automatically; "require review from code owners"), merge commit, squash or rebase, update branch, auto-merge, branch protection (pull requests only, approvals, stale approvals reset, code owners, required checks, force-push, deletion), conflicts with local steps, live updates.
+- Commit statuses: CI posts state per context with a per-repository CI token; shown on commits and pull requests; required checks block merging.
+- Releases on tags made in the app, Markdown notes (or written from merged pull requests), uploaded files; zip/tar.gz archives; line permalinks (`#L10-L20`); README images read from the repository (outside images stay links); insights (weekly commits, contributors). Outbound webhooks (push, pull requests, reviews, issues, comments, releases, statuses), HMAC-signed, with a delivery log and redeliver.
+- AI agents work as the person through tools: read the tree, files, history, issues and pull requests; open, comment on and label issues; leave comment reviews with suggestions; commit to a feature branch and open a pull request (scope Suggest turns writes into suggestions). Merging, statuses, webhooks and settings are always a person's.
+- Mobile browses code, reads history, lists, reads, opens and comments on issues, reviews pull requests (line comments, pending reviews, suggested changes shown) and lists releases; triage, editing and merging are on the web.
 - Connected GitHub and GitLab (also self-managed) repositories open in the same screens, read and written live with the person's own account (see Connected platforms).
 
 ## Data
@@ -18,6 +21,14 @@
 | `repos_protections` | branch rules by name or glob: pull requests only, required approvals, reset approvals on new commits, force-push, deletion |
 | `repos_pulls` | pull requests: number per repo, head/base branch and commit, state, merge method and commit, who merged or closed |
 | `repos_reviews`, `repos_comments`, `repos_review_requests`, `repos_pull_events` | reviews (the head reviewed, dismissed when stale), conversation and line comments (path, line, side, thread root, resolved), who's asked, the timeline |
+| `repos_issues`, `repos_issue_comments`, `repos_issue_events`, `repos_issue_labels`, `repos_issue_assignees` | issues (number shared with pulls, state + reason, milestone, locked, pinned), comments, timeline, labels, assignees |
+| `repos_labels`, `repos_milestones`, `repos_pull_labels`, `repos_pull_assignees` | labels (name, token tone, description), milestones (due date, open/closed), their links to pull requests |
+| `repos_reactions`, `repos_references` | emoji reactions on issues, pulls and comments; `#n` references (issue, pull or commit source; `closes`) |
+| `repos_viewed_files` | per person "Viewed" marks with the blob they saw |
+| `repos_ci_tokens`, `repos_statuses` | per-repository CI tokens (sha256); latest status per commit and context |
+| `repos_releases`, `repos_release_assets` | releases on tags (draft, pre-release, notes); files under org-owned storage keys |
+| `repos_webhooks`, `repos_webhook_deliveries` | hook URL, secret (signs, never returned), events; each delivery's body, status, response, redelivery |
+| `repos_archive_tokens` | one-time archive download tokens (sha256, 2 minutes) |
 | `repos_git_credentials` | sha256 of each credential, prefix, access, expiry, last used, revoked |
 | `repos_links` | drive links (item type `repo_link`) to a connected repository: provider, web base, path, who made it; nothing from the platform |
 
@@ -43,6 +54,17 @@ Git data: bare repositories at `REPOS_DIR/<id>.git`, plus `refs/pull/<n>/head` p
 | POST | `…/pulls/{n}/reviews` | comment; approve and request changes need edit, not the author | `{state, body, comments[]}` |
 | POST / DELETE | `…/pulls/{n}/reviewers[/{uid}]` | author or edit | ask people who can view |
 | GET | `…/people?q=` · `/v1/repos/git` | view · user | reviewer suggestions · git version and limits |
+| GET / POST · GET / PATCH / DELETE | `…/issues?q=&cursor=` · `…/issues/{n}` | view / comment, 120/h · view / author or edit / manage | search (counts, ignored qualifiers) · open `{title, body, labels, assignees, milestone_id, template}` · detail · title, body, state + reason (author or edit), milestone, lock, pin (edit) · delete (a person) |
+| PUT · GET · POST / PATCH / DELETE | `…/issues/{n}/labels`·`/assignees` · `/timeline` · `/comments[/{cid}]` | edit · view · comment (locked: edit), own or manage | |
+| PUT / DELETE · GET | `…/reactions` · `…/templates?kind=issue\|pull` | comment · view | `{subject_type, subject_id, emoji}` |
+| GET / POST / PATCH / DELETE | `…/labels[/{id}]` · `…/milestones[/{id}]?state=` | view / edit | |
+| POST · PUT · PUT / DELETE · POST | `…/pulls/{n}/ready`·`/draft` · `/labels`·`/assignees` · `/auto-merge` · `/update-branch` | author or edit · edit · edit, a person · edit | `{method}`; update merges the base into the head |
+| POST · GET / PUT / DELETE · GET / DELETE | `…/pulls/{n}/suggestions` · `/viewed` · `/reviews/pending` | edit, 600/h · view · comment | `{comment_ids, message?, expected_head?}`; 409 `suggestion_outdated` |
+| POST | `/v1/repos/{repoID}/statuses/{sha}` | public group; a CI token (`Bearer`), 600/min; agent, session and git credentials refused | `{state, context, description, target_url}` |
+| GET · GET / POST / DELETE | `…/commit-states?shas=` · `…/ci-tokens[/{id}]` | view · manage, people only | combined state per commit · CI tokens (secret once) |
+| GET / POST / PATCH / DELETE | `…/releases[/{id}]` · `/releases/notes?target=&previous=` · `/releases/{id}/assets[/{aid}]` | view (drafts: edit) / edit | tag made at `target` on publish · notes from merged pulls · `{key, name}` from `POST /v1/uploads` (`repos.release_asset`); download answers a 5-minute signed link |
+| POST / DELETE · POST · GET | `…/tags` · `…/archive {ref, format}` · `…/insights` | edit · view, a person, 120/h · view | archive answers `{url}` to `GET /git-archive/{token}` (root, one use, 2 minutes, access checked again) |
+| GET / POST / PATCH / DELETE / POST | `…/webhooks[/{id}[/ping]]` · `/deliveries[/{did}[/redeliver]]` | manage, people only | secret once; deliveries POST through `safehttp`, signed `X-Webhook-Signature-256` / `X-Hub-Signature-256: sha256=<hmac>` |
 | GET / POST / DELETE | `/v1/repos/credentials[/{id}]` | user, people only, 30/h | your git credentials (secret shown once) |
 | GET / POST | `/git/{org}/{repo}.git/{info/refs,git-upload-pack,git-receive-pack}` | Basic with a git credential | smart HTTP: fetch needs view, push needs edit + a read-write credential |
 
@@ -55,9 +77,11 @@ Permission model (`repos.repository`, an access resource under the repository's 
 | edit | + push (non-protected branches), commit in the app, branches, open/merge/close pull requests, approve or request changes |
 | manage | + settings, protection rules, delete anyone's comment; sharing through the shared dialog |
 
-Org permission `repos.create` (owner, admin, member). Realtime `repos:<id>` (view): `repos.refs_changed`, `repos.pull_changed {number}`, `repos.repo_changed`. Notifications: `repos.review_requested`, `repos.pull_comment`, `repos.pull_review`, `repos.pull_merged`.
+Issues: view reads, comment opens and comments, edit triages (labels, assignees, milestones, anyone's state, lock, pin), the author edits and closes their own, manage deletes.
 
-Agent tools (same checks; `repos.repository` targets, also from `Target({})`): reads `repos_list`, `repos_read_tree`, `repos_read_file`, `repos_search_code`, `repos_log`, `repos_diff`, `repos_list_pull_requests`, `repos_read_pull_request`; writes `repos_create_branch`, `repos_commit_files` (feature branch only, optional `open_pull_request`; `Preview` = every touched file before and after), `repos_open_pull_request`, `repos_comment_on_pull_request`. Search: repositories by name (`repos.repository`) and file paths in your 5 most recently changed repositories (`repos.file`).
+Org permission `repos.create` (owner, admin, member). Realtime `repos:<id>` (view): `repos.refs_changed`, `repos.pull_changed {number}`, `repos.issue_changed {number}`, `repos.status_changed {sha}`, `repos.repo_changed`. Notifications (only to people who can view): `repos.review_requested`, `repos.pull_comment`, `repos.pull_review`, `repos.pull_merged`, `repos.issue_assigned`, `repos.issue_activity`, `repos.mentioned`.
+
+Agent tools (same checks; `repos.repository` targets, also from `Target({})`): reads `repos_list`, `repos_read_tree`, `repos_read_file`, `repos_search_code`, `repos_log`, `repos_diff`, `repos_list_pull_requests`, `repos_read_pull_request`; `repos_list_issues` (search syntax), `repos_read_issue`; writes `repos_create_branch`, `repos_commit_files` (feature branch only, optional `open_pull_request`; `Preview` = every touched file before and after), `repos_open_pull_request`, `repos_comment_on_pull_request`, `repos_create_issue`, `repos_comment_on_issue`, `repos_label_issue` (names; before/after in Preview), `repos_review_pull_request` (comment reviews only, line comments with ```` ```suggestion ````). Search: repositories by name (`repos.repository`), issue titles (`repos.issue`) and file paths in your 5 most recently changed repositories (`repos.file`).
 
 ## Connected platforms
 
@@ -84,12 +108,12 @@ GitHub OAuth apps have no read-only scope for private repositories, so repos kee
 | Where | Web | Mobile |
 |---|---|---|
 | List | `/repos` (nav "Repositories"): the workspace's own, then a Connected section and source chips (`?source=`: All shows 5 of each account, one account shows its repositories with search, recent activity or name, owner) | `repos` (Home row) with the Connected section · `repos/connected/[id]` |
-| Repository | `/repos/[id]` code · `blob` · `edit` (`new=1`) · `upload` · `search` · `commits[/sha]` · `branches` · `compare` (open a pull request) · `pulls[/n]` (Conversation, Commits, Files changed) · `settings`; one header with Clone and the ⋮ menu (`feature "repos", kind "repos.repository"`) | `repos/[id]` tree + README · `blob` · `commits[/sha]` · `pulls[/n]` (conversation, files, review sheet) |
+| Repository | `/repos/[id]` code · `blob` (line links) · `edit` · `upload` · `search` · `issues[/n]` · `issues/new` · `labels` · `milestones` · `pulls[/n]` (Conversation, Commits, Files changed) · `commits[/sha]` (statuses) · `branches` · `compare` · `releases` · `insights` · `settings` (merging, protection, CI tokens, webhooks); one header with Clone (+ zip/tar.gz) and the ⋮ menu (`feature "repos", kind "repos.repository"`) | `repos/[id]` tree + README · `blob` · `commits[/sha]` · `issues[/n]` · `issues/new` · `releases` · `pulls[/n]` (conversation, files, review sheet) |
 | Create | `/repos/new?folder=` · `?from_folder=` (the drive's New menu and folder ⋮) | — |
 | Settings | `/settings/git-credentials` | `settings/git-credentials` |
 | Links | `/repos/links/[id]` opens the linked repository with your own connection, or says how to connect | — |
 
-Connected repositories use the same screens with a `SourceBadge` in the header, rows and pull requests; ⋮ adds Open in GitHub/GitLab, Manage access there, Import into Scaffold App, Add to a Scaffold App folder; Settings, git credentials, reviewer requests and unsupported actions are hidden; checks show in the merge box and on commits.
+Connected repositories use the same screens (no Issues, Releases or Insights tabs) with a `SourceBadge` in the header, rows and pull requests; ⋮ adds Open in GitHub/GitLab, Manage access there, Import into Scaffold App, Add to a Scaffold App folder; Settings, git credentials, reviewer requests and unsupported actions are hidden; checks show in the merge box and on commits.
 
 Every async view has skeleton, empty and error states; diffs collapse large files and fetch cut ones on demand.
 
@@ -108,15 +132,17 @@ npm: `highlight.js` (BSD-3) and `marked` (MIT) in web and mobile (the shared pac
 
 ## Compliance
 
-- Deletion: git credentials and review requests deleted; authorship removed from pull requests, reviews, comments and events (what was written stays); commits keep the author text recorded in git (history can't be rewritten; in-app commits never carry account emails). Repositories in a deleted person's My drive go when files purges it.
-- Export: credentials (metadata), repositories created, pull requests, reviews and comments written.
-- Pushed content belongs to the org; managers delete comments. No public links to repositories.
+- Deletion: git credentials, review requests, assignments, reactions, viewed marks, unsubmitted reviews and archive tokens deleted; authorship removed from issues, pull requests, reviews, comments, events, releases, milestones, CI tokens and webhooks (what was written stays); commits keep the author text recorded in git (history can't be rewritten; in-app commits never carry account emails). Release files are keyed by the org and outlive the uploader. Repositories in a deleted person's My drive go when files purges it.
+- Export: credentials (metadata), repositories created, issues, issue comments, pull requests, reviews, comments and releases written.
+- Pushed content belongs to the org; managers delete comments and issues. No public links to repositories. Webhook secrets sit in the database (they sign each delivery) and are never returned after creation; deliveries keep their body 30 days (200 per hook).
 
 ## Stitching
 
 1. Hosting: mount `REPOS_DIR` on a persistent volume and route `/git/*` and repository writes to the one instance that holds it (see Extending → Scale). Install git 2.38+ in the image; pushes need a Unix host.
 2. Decide the nav: keep "Repositories" in the main nav, or reach repositories only from the drive.
 3. Choose who may create repositories (`repos.create`) and whether the default branch's rule should require approvals (the rule `newRepo` writes).
+4. Webhook URLs and CI need egress and ingress: deliveries leave through `safehttp` (public https only outside development); CI reaches `POST /v1/repos/{id}/statuses/{sha}` on `PUBLIC_API_URL`. Release files use the storage bucket (purpose `repos.release_asset`, capped at `REPOS_MAX_PUSH_BYTES`).
+5. Read seam for link cards: `repos.IssueRef(ctx, q, viewer *auth.Identity, repoID, number) (*repos.LinkedIssue, error)` reads #number of one of the app's repositories (a pull request or an issue: they share numbers) with the check of the pull request and issue routes (`access_level` on `repos.repository`, capped by `access.ViaAgent(ctx)`, trashed repositories refused), records nothing, and returns `Kind` (`pull`/`issue`), title, state (pull: open, merged, closed; issue: open, closed, with `StateReason`), `Draft`, repository name, `Context` (org · repository), canonical `Path`, level and `UpdatedAt`; else `repos.ErrIssueNotFound`. `repos.IssueFromPath(path)` reads `/repos/<id>/pulls/<n>` and `/repos/<id>/issues/<n>` (connected repositories answer false). Use it for `channels.RegisterUnfurler("/repos/", …)`, returning nil on not found.
 
 ## Extending
 
@@ -125,7 +151,8 @@ npm: `highlight.js` (BSD-3) and `marked` (MIT) in web and mobile (the shared pac
 - Seams: `files.RegisterItemType` (type `repo`, `CreatePath`, `ConvertPath`, `OnDelete`); the engine in `git.go`, `write.go`, `diff.go` (`ApplyChanges`, `MergeTrees`, `FastImport`, `DiffCommits`); `checkPush` for more push rules (signed commits, path rules).
 - Scale: one writer. More API instances need a shared filesystem with working POSIX locks for `REPOS_DIR`, or a router sending `/git/*` and `/v1/repos/{id}` writes to the volume's instance. Ref updates are atomic (git lock files and `update-ref` old values); in-app writes also take a per-repository advisory lock.
 - Time limits: `net/http/cgi` can't cancel its process, so a git HTTP request is cut on its next write past `REPOS_HTTP_TIMEOUT` (git sends keepalives every 5 s). Processes the API runs itself have hard deadlines.
-- Out of scope: forks, SSH, Git LFS, tags created in the app, batched review comments, suggested-change blocks, CI status checks, code owners, rebase merging, images in READMEs (shown as links: an outside image tells its host who reads the page), editing on mobile.
+- Rebase merges replay each commit as base merged with it (git 2.38 `merge-tree` has no `--merge-base`); a branch with merge commits or a conflicting step can't rebase. CODEOWNERS (`.github/`, root, `docs/`) is read from the base; owners are workspace emails or `@team` / `@org/team` (access team handles); the last matching rule wins.
+- Out of scope: forks, SSH, Git LFS, check runs with annotations (statuses only), issue forms (YAML templates), project boards, issue transfer, expanding diff context in place, multi-line selection in the web diff (agents and the API comment on ranges), connected GitHub/GitLab issues, outside images in Markdown (shown as links: an outside image tells its host who reads the page), triage and editing on mobile.
 
 ## Provenance
 
@@ -138,3 +165,5 @@ New in the forum belt, built on `files` and `access`. Mechanics follow git's sma
 - 1.0.2: no direct writes to access grants or owners: "Turn into repository" copies the folder's grants with `access.AddGrant` (a grant to a suspended account stays on the trashed folder) and its restricted flag with `access.SetInherits` (needs access 1.2.1), and the repository resource follows its drive item's owner through `access.SetOwner`; the `repos_commit_files` suggestion preview shows the pull request it would open (title and description) or the open one it adds to. Pull request notifications name their repository (`AgentTarget`, notifications ≥ 1.1.1), so an agent reading the inbox doesn't see them for a repository its scope hides.
 - 1.0.3: Post-commit side effects run through `bg.Go` (template `internal/bg`), so shutdown and `cmd/seed` wait for them and a panic is logged instead of crashing the process: size recount (`repos.update_size`) and `git gc` after in-app writes (`repos.gc`). A pull request's “Check out locally” commands stay on one line and scroll sideways (a long branch name wrapped mid-word). gofmt. Search sets `OrgID` and `Context` (the org, then the repository for a file hit; template `app.SearchResult.Context`) and keeps to the org a search is scoped to (`app.SearchOrg`).
 - 1.1.0: GitHub and GitLab (incl. self-managed) repositories through `app.Connections`: capabilities `repos.{github,gitlab}.{read,write}`, a `RepoSource` seam behind every `{repoID}` route, browsing, history, compare, pull/merge requests with line comments, reviews, merges, CI checks, in-browser commits with conflict checks, branches; `GET /v1/repos/sources`, connected lists, import into the app, drive links (`repo_link`, migration 2401), connected search, agent read tools on connected ids and `repos_github_*`/`repos_gitlab_*` write tools; web Connected section, source chips and badges; mobile connected lists and badges. Needs agents ≥ 1.1.1 (ids with `/`).
+- 1.2.0: Issues (labels, assignees, milestones, close reasons, reactions, mentions, `#n` references, closing keywords from pull requests and commits, templates, pin, lock, search syntax), pull request depth (drafts, labels/assignees/milestones, linked issues, pending reviews, multi-line and suggestion comments applied singly or batched, re-request, files viewed, hide whitespace, image diffs, CODEOWNERS with required owner review, rebase merge, update branch, auto-merge, PR templates), commit statuses with per-repository CI tokens and required checks, releases with tags and files, zip/tar.gz archives, line permalinks, README images from the repository, insights, outbound HMAC-signed webhooks with a delivery log, issue agent tools and comment reviews, issue search; web Issues/Labels/Milestones/Releases/Insights screens and settings (CI tokens, webhooks); mobile issues and releases (migration 2402).
+- 1.2.1: read seam for link cards (`IssueRef`, `IssueFromPath`, `ErrIssueNotFound`).

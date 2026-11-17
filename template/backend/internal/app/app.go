@@ -191,6 +191,9 @@ type SearchResult struct {
 	// platform account (ConnectedSource(conn, product, url)); nil for the
 	// app's own content. Clients badge and filter by it.
 	Source *SourceRef `json:"source,omitempty"`
+	// AuthorID is who wrote or created it, when the provider knows; global
+	// search's from: keeps only hits whose AuthorID matches.
+	AuthorID string `json:"author_id,omitempty"`
 }
 
 // SearchContext joins the non-empty parts of a SearchResult.Context with

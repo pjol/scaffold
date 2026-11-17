@@ -1,0 +1,100 @@
+{
+  "name": "agent-web",
+  "title": "Agent-readable web",
+  "version": "1.0.0",
+  "summary": "Agents read the app's public pages as Markdown (a .md twin of every page, Accept: text/markdown), find everything from /llms.txt and /llms-full.txt, and, in a signed-in tab, call the app's read tools over WebMCP as the person.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web"
+  ],
+  "migration_block": 3100,
+  "env": [
+    {
+      "name": "AGENT_WEB_WEBMCP_ENABLED",
+      "tier": "backend",
+      "group": "agent-web",
+      "required": "optional",
+      "default": "true",
+      "doc": "Offer the app's read tools to browser agents on signed-in pages (WebMCP). false keeps llms.txt and the Markdown twins only."
+    },
+    {
+      "name": "AGENT_WEB_TOOL_CALLS_PER_MINUTE",
+      "tier": "backend",
+      "group": "agent-web",
+      "required": "optional",
+      "default": "60",
+      "doc": "WebMCP tool calls allowed per person per minute."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/agentweb",
+      "dst": "backend/internal/agentweb"
+    },
+    {
+      "src": "backend/feature_agent-web.go",
+      "dst": "backend/internal/api/feature_agent-web.go"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/agent-web"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/agent-web"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./agent-web\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { agentWebSession } from \"./agent-web/registry\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "agentWebSession,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "imports",
+      "insert": "import { agentWebProxy } from \"./src/features/agent-web/proxy\";"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "proxy",
+      "insert": "agentWebProxy,"
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/llms\\\\.txt\","
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/llms-full\\\\.txt\","
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/md(/.*)?\","
+    }
+  ],
+  "stitch": [
+    "Rewrite web/src/features/agent-web/site.ts: a one-sentence summary, an about paragraph (who it's for, units, limits, demo data) and conventions agents must know.",
+    "Give every public page a Markdown twin in web/src/features/agent-web/pages.ts (each proxy.ts PUBLIC_PATHS entry except sign-in, including features' public pages such as booking pages or published docs): pattern, title, one-line summary, examples for patterns with params, and a render built with md.ts from bundled content or the public API.",
+    "Write prescriptive descriptions on every read tool (app.ToolProvider): browser agents see exactly those over WebMCP.",
+    "Projects made before 2026-11-16: copy the scaffold:imports and scaffold:proxy anchors and the PROXY_HANDLERS loop into web/proxy.ts from the template before installing."
+  ]
+}

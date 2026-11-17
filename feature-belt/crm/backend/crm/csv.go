@@ -321,7 +321,7 @@ func decodeImport(r *http.Request) (*importReq, objectType, error) {
 		}
 		return nil, "", httpx.BadRequest("Invalid JSON: " + err.Error())
 	}
-	o, ok := parseObject(req.ObjectType)
+	o, ok := parsePlatformObject(req.ObjectType)
 	if !ok {
 		return nil, "", httpx.BadRequest("object_type is company, contact or deal.")
 	}
@@ -719,6 +719,7 @@ func (s *Service) newImporter(ctx context.Context, userID, orgID uuid.UUID, o ob
 	if im.pipelines, err = s.loadPipelines(ctx, s.d.Pool, orgID); err != nil {
 		return nil, err
 	}
+	im.pipelines = slices.DeleteFunc(im.pipelines, func(p Pipeline) bool { return p.ObjectType != objDeal })
 	if o == objDeal {
 		if len(im.pipelines) == 0 {
 			return nil, httpx.BadRequest("Add a pipeline in CRM settings first.")

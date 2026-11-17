@@ -2,6 +2,7 @@ import {
   CRM_PATH,
   CRM_SOURCE_ALL,
   CRM_SOURCE_APP,
+  CRM_TICKET_PRIORITY_LABEL,
   crmMoney,
   hasErrorCode,
   orgsNounA,
@@ -14,22 +15,34 @@ import {
   type CrmSettings,
   type CrmSources,
   type CrmStageOutcome,
+  type CrmTicketPriority,
 } from "@scaffoldapp/shared";
-import { Badge, Button, EmptyState, ErrorState, Screen, Skeleton, SourceFilter, sourceFilterOptions, useTheme, type BadgeTone } from "@scaffoldapp/ui-native";
+import { Badge, Button, EmptyState, ErrorState, ListRow, Screen, Skeleton, SourceFilter, Text, sourceFilterOptions, useTheme, type BadgeTone } from "@scaffoldapp/ui-native";
 import { router } from "expo-router";
-import { Building, Building2, Handshake, Lock, UserRound } from "lucide-react-native";
+import { Building, Building2, ChevronRight, Handshake, Lock, Ticket, UserRound } from "lucide-react-native";
 import { useMemo, useState, type ReactNode } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 import { appName } from "@/lib/version";
 
-export const TYPE_ICON: Record<CrmObjectType, typeof Building2> = { company: Building2, contact: UserRound, deal: Handshake };
+export const TYPE_ICON: Record<CrmObjectType, typeof Building2> = { company: Building2, contact: UserRound, deal: Handshake, ticket: Ticket };
 
 /** App path of a record (the same on web and mobile, and in notifications). */
-export function recordPath(type: CrmObjectType, id: string): `/crm/${"companies" | "contacts" | "deals"}/${string}` {
+export function recordPath(type: CrmObjectType, id: string): `/crm/${"companies" | "contacts" | "deals" | "tickets"}/${string}` {
   return `/crm/${CRM_PATH[type]}/${id}`;
 }
 
-export const OUTCOME_TONE: Record<CrmStageOutcome, BadgeTone> = { open: "neutral", won: "success", lost: "danger" };
+/** Deal stages: won and lost; ticket statuses: closed (resolved). */
+export const OUTCOME_TONE: Record<CrmStageOutcome, BadgeTone> = { open: "neutral", won: "success", lost: "danger", closed: "success" };
+
+export const PRIORITY_TONE: Record<CrmTicketPriority, BadgeTone> = { low: "neutral", medium: "info", high: "warning", urgent: "danger" };
+
+export function PriorityBadge({ priority }: { priority: CrmTicketPriority }) {
+  return (
+    <Badge tone={PRIORITY_TONE[priority]} dot={priority === "high" || priority === "urgent"}>
+      {CRM_TICKET_PRIORITY_LABEL[priority]}
+    </Badge>
+  );
+}
 
 export function money(minor: number | null | undefined, currency: string): string {
   return minor === null || minor === undefined ? "No amount" : crmMoney(minor, currency);
@@ -134,4 +147,50 @@ export function MobileSourceFilter({ state }: { state: ReturnType<typeof useMobi
 export function FactRow({ children }: { children: ReactNode }) {
   const theme = useTheme();
   return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: theme.space[3], rowGap: theme.space[1] }}>{children}</View>;
+}
+
+/**
+ * A pressable row with a title and a line of facts under it (amounts, dates, statuses), for
+ * lists inside a ListGroup. Facts are data, not explanation: context still goes in InfoTips.
+ */
+export function FactsRow({ title, facts, trailing, onPress, accessibilityLabel }: { title: string; facts: string; trailing?: ReactNode; onPress?: () => void; accessibilityLabel?: string }) {
+  const theme = useTheme();
+  const s = theme.space;
+  const body = (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: s[3], paddingHorizontal: s[4], paddingVertical: s[2], minHeight: theme.tap.lg }}>
+      <View style={{ flex: 1, gap: s[0.5] }}>
+        <Text weight={600} numberOfLines={2}>
+          {title}
+        </Text>
+        {facts ? (
+          <Text role="caption" tone="muted" numberOfLines={2}>
+            {facts}
+          </Text>
+        ) : null}
+      </View>
+      {trailing ? <View style={{ flexDirection: "row", alignItems: "center", gap: s[2], flexShrink: 0 }}>{trailing}</View> : null}
+      {onPress ? <ChevronRight size={20} color={theme.colors.textSubtle} strokeWidth={2.25} /> : null}
+    </View>
+  );
+  if (!onPress) return body;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? [title, facts].filter(Boolean).join(", ")} onPress={onPress} android_ripple={{ color: theme.colors.sunken }}>
+      {body}
+    </Pressable>
+  );
+}
+
+/** A label and a value on one line (totals, details). */
+export function ValueRow({ label, value, strong, tone, info }: { label: string; value: string; strong?: boolean; tone?: "default" | "muted" | "danger" | "success"; info?: ReactNode }) {
+  return (
+    <ListRow
+      title={label}
+      {...(info ? { info } : {})}
+      trailing={
+        <Text role={strong ? "body" : "label"} weight={strong ? 700 : 400} tone={tone ?? "default"} tabular numberOfLines={2} style={{ maxWidth: 220, textAlign: "right" }}>
+          {value}
+        </Text>
+      }
+    />
+  );
 }

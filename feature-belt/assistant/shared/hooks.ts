@@ -12,6 +12,8 @@ import { assistantEndpoints } from "./api";
 import { streamAssistant, type StreamFetch } from "./stream";
 import type {
   AssistantConsent,
+  AssistantContextKind,
+  AssistantContextRequest,
   AssistantConversation,
   AssistantConversationListParams,
   AssistantDailyTotals,
@@ -29,7 +31,14 @@ export const assistantKeys = {
   conversation: (id: string) => ["assistant", "conversations", "detail", id] as const,
   messages: (id: string) => ["assistant", "messages", id] as const,
   adminUsage: (days: number) => ["assistant", "admin", "usage", days] as const,
+  contexts: () => ["assistant", "contexts"] as const,
 };
+
+/** Kinds this person can summarise or ask about (registered or installed, not off in their AI agent scope). */
+export function useAssistantContexts(options?: QueryOverrides<{ items: AssistantContextKind[] }>): UseQueryResult<{ items: AssistantContextKind[] }, ApiError> {
+  const ep = useEndpoints(assistantEndpoints);
+  return useApiQuery(assistantKeys.contexts(), ({ signal }) => ep.contexts({ signal }), { staleTime: 5 * 60_000, ...options });
+}
 
 /** `GET /v1/assistant/status`: provider, consent, today's usage. */
 export function useAssistantStatus(options?: QueryOverrides<AssistantStatus>): UseQueryResult<AssistantStatus, ApiError> {
@@ -247,8 +256,8 @@ export interface UseAssistantChatOptions {
 }
 
 export interface AssistantChat {
-  /** Send a message (to `conversationId`, or the id given). Resolves false when refused (see `error`). */
-  send: (text: string, conversationId?: string) => Promise<boolean>;
+  /** Send a message (to `conversationId`, or the id given), optionally with a resource attached. Resolves false when refused (see `error`). */
+  send: (text: string, conversationId?: string, context?: AssistantContextRequest) => Promise<boolean>;
   /** Ask the server to stop the reply (any instance); the final events still arrive. */
   stop: () => Promise<void>;
   /** Re-attach to a reply running on the server. */
@@ -286,7 +295,7 @@ export function useAssistantChat(conversationId: string | null | undefined, opti
   getToken.current = session.getToken;
 
   const run = useCallback(
-    async (text: string | undefined, id: string | null | undefined): Promise<boolean> => {
+    async (text: string | undefined, id: string | null | undefined, context?: AssistantContextRequest): Promise<boolean> => {
       if (!id) return false;
       abortRef.current?.abort();
       const ctrl = new AbortController();
@@ -303,6 +312,7 @@ export function useAssistantChat(conversationId: string | null | undefined, opti
           token,
           conversationId: id,
           ...(text !== undefined ? { text } : {}),
+          ...(context ? { context } : {}),
           signal: ctrl.signal,
           onEvent: (e) => applyAssistantEvent(qc, id, e),
         });
@@ -339,7 +349,7 @@ export function useAssistantChat(conversationId: string | null | undefined, opti
   useEffect(() => () => abortRef.current?.abort(), []);
 
   return {
-    send: (text, id) => run(text, id ?? conversationId),
+    send: (text, id, context) => run(text, id ?? conversationId, context),
     stop: async () => {
       if (conversationId) await ep.stop(conversationId);
     },

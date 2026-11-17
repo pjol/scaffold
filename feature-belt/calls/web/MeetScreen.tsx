@@ -137,6 +137,7 @@ function MemberMeet({ code }: { code: string }) {
   const knock = useKnockCallsMeeting();
   const cancelKnock = useCancelCallsKnock();
   const search = useSearchParams();
+  const api = useEndpoints(callsEndpoints);
   const [step, setStep] = useState<Step>({ kind: "prejoin" });
   const [problem, setProblem] = useState<ReactNode>(null);
   const prefs = useRef<CallsDevicePrefs>(readDevicePrefs());
@@ -217,6 +218,8 @@ function MemberMeet({ code }: { code: string }) {
       role: step.token.role,
       joinUrl: d.meeting?.join_url ?? `${window.location.origin}/meet/${d.code}`,
       guest: null,
+      switchRoom: (token) => setStep({ kind: "call", token, prefs: step.prefs }),
+      mainToken: () => api.join(d.meeting_id),
     };
     return <CallRoom session={session} prefs={step.prefs} onEnd={(why) => (setStep({ kind: "over", why }), void info.refetch())} />;
   }
@@ -251,6 +254,7 @@ function MemberMeet({ code }: { code: string }) {
         title={title}
         action={d.mode === "knock" ? "knock" : "join"}
         live={d.live}
+        recording={d.recording}
         displayName={me.data?.display_name ?? ""}
         avatarUrl={me.data?.avatar_url ?? null}
         busy={join.isPending || knock.isPending}
@@ -388,7 +392,18 @@ function GuestMeet({ code }: { code: string }) {
   );
 
   if (step.kind === "call" && pass) {
-    const session: CallSession = { token: step.token, meetingId: step.token.meeting_id, code, title, kind: "meeting", role: "guest", joinUrl: window.location.href.split("?")[0] ?? "", guest: pass };
+    const session: CallSession = {
+      token: step.token,
+      meetingId: step.token.meeting_id,
+      code,
+      title,
+      kind: "meeting",
+      role: "guest",
+      joinUrl: window.location.href.split("?")[0] ?? "",
+      guest: pass,
+      switchRoom: (t) => setStep({ kind: "call", token: t, prefs: step.prefs }),
+      mainToken: () => api.guest.token(pass.lobbyId, pass.key),
+    };
     return <CallRoom session={session} prefs={step.prefs} onEnd={(why) => (setStep({ kind: "over", why }), void status.refetch())} />;
   }
   if (step.kind === "over") {
@@ -431,6 +446,7 @@ function GuestMeet({ code }: { code: string }) {
         title={title}
         action={rejoining || !m.lobby_enabled ? "join" : "knock"}
         live={m.live}
+        recording={m.recording}
         {...(rejoining ? {} : { name: { value: name, onChange: setName } })}
         displayName={name}
         busy={knock.isPending || token.isPending}

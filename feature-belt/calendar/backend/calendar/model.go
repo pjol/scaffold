@@ -55,6 +55,11 @@ type Attendee struct {
 	AvatarURL   *string    `json:"avatar_url"`
 	Response    string     `json:"response"`
 	RespondedAt *time.Time `json:"responded_at"`
+	// Note is the guest's message with their reply or proposal.
+	Note string `json:"note"`
+	// ProposedStart/End: a new time the guest proposed (the organizer accepts it).
+	ProposedStart *time.Time `json:"proposed_start"`
+	ProposedEnd   *time.Time `json:"proposed_end"`
 }
 
 // Occurrence is one instance of an event in a calendar range. EventID is
@@ -82,6 +87,14 @@ type Occurrence struct {
 	Owner           Person     `json:"owner"`
 	AttendeeCount   int        `json:"attendee_count"`
 	BookingID       *uuid.UUID `json:"booking_id"`
+	// CalendarID is the calendar it shows on for the viewer (invitations:
+	// the viewer's primary). EventType: default, out_of_office or focus.
+	CalendarID *uuid.UUID `json:"calendar_id"`
+	EventType  string     `json:"event_type"`
+	// Redacted: seen through a calendar shared at free/busy only (no title
+	// unless the owner marked it "details", no place, no call link).
+	Redacted  bool `json:"redacted"`
+	RoomCount int  `json:"room_count"`
 }
 
 // EventDetail is an occurrence with everything the event dialog shows.
@@ -93,8 +106,14 @@ type EventDetail struct {
 	Attendees   []Attendee  `json:"attendees"`
 	Reminders   []int       `json:"reminders"`
 	CanEdit     bool        `json:"can_edit"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	// AutoDecline (out of office, focus time): none, new or all; with
+	// DeclineMessage sent to organizers.
+	AutoDecline    string       `json:"auto_decline"`
+	DeclineMessage string       `json:"decline_message"`
+	Rooms          []EventRoom  `json:"rooms"`
+	Calendar       *CalendarRef `json:"calendar"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
 }
 
 // Recurrence is the structured form of the supported RRULE subset.
@@ -152,6 +171,10 @@ type eventRow struct {
 	Sequence         int
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	CalendarID       *uuid.UUID
+	EventType        string
+	AutoDecline      string
+	DeclineMessage   string
 	OwnerName        string
 	OwnerAvatar      *string
 }
@@ -159,14 +182,21 @@ type eventRow struct {
 const eventCols = `e.id, e.owner_id, e.recurring_event_id, e.original_start, e.title, e.description, e.location,
 	e.conference_url, e.conference_id, e.starts_at, e.ends_at, e.timezone, e.all_day, e.rrule, e.series_until,
 	e.status, e.visibility, e.show_as, e.color, e.reminders, e.sequence, e.created_at, e.updated_at,
+	e.calendar_id, e.event_type, e.auto_decline, e.decline_message,
 	u.display_name, u.avatar_url`
+
+// eventDest lists eventCols' scan targets (so queries can append columns).
+func (e *eventRow) dest() []any {
+	return []any{&e.ID, &e.OwnerID, &e.RecurringEventID, &e.OriginalStart, &e.Title, &e.Description, &e.Location,
+		&e.ConferenceURL, &e.ConferenceID, &e.StartsAt, &e.EndsAt, &e.Timezone, &e.AllDay, &e.RRule, &e.SeriesUntil,
+		&e.Status, &e.Visibility, &e.ShowAs, &e.Color, &e.Reminders, &e.Sequence, &e.CreatedAt, &e.UpdatedAt,
+		&e.CalendarID, &e.EventType, &e.AutoDecline, &e.DeclineMessage,
+		&e.OwnerName, &e.OwnerAvatar}
+}
 
 func scanEvent(row pgx.Row) (eventRow, error) {
 	var e eventRow
-	err := row.Scan(&e.ID, &e.OwnerID, &e.RecurringEventID, &e.OriginalStart, &e.Title, &e.Description, &e.Location,
-		&e.ConferenceURL, &e.ConferenceID, &e.StartsAt, &e.EndsAt, &e.Timezone, &e.AllDay, &e.RRule, &e.SeriesUntil,
-		&e.Status, &e.Visibility, &e.ShowAs, &e.Color, &e.Reminders, &e.Sequence, &e.CreatedAt, &e.UpdatedAt,
-		&e.OwnerName, &e.OwnerAvatar)
+	err := row.Scan(e.dest()...)
 	return e, err
 }
 
@@ -379,6 +409,21 @@ type Settings struct {
 	DefaultReminders       []int           `json:"default_reminders"`
 	VideoAvailable         bool            `json:"video_available"`
 	SubscriptionsAvailable bool            `json:"subscriptions_available"`
+	// WorkLocations: where they work each weekday (colleagues see it).
+	WorkLocations []WorkLocation `json:"work_locations"`
+	// SecondaryTimezone is a second clock in the day and week views.
+	SecondaryTimezone *string  `json:"secondary_timezone"`
+	WorldClocks       []string `json:"world_clocks"`
+	// AgendaEmail: the day's events by email each morning (6 AM their time).
+	AgendaEmail bool `json:"agenda_email"`
+}
+
+// WorkLocation is where someone works on a weekday (0 = Sunday): office
+// (Label names which), home, or other (Label says where).
+type WorkLocation struct {
+	Day   int    `json:"day"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
 }
 
 func defaultWorkingHours() []HoursInterval {
@@ -392,12 +437,22 @@ func defaultWorkingHours() []HoursInterval {
 // loadSettings returns the user's settings, defaults when none are saved.
 func (s *Service) loadSettings(ctx context.Context, q db.Querier, userID uuid.UUID) (Settings, error) {
 	st := Settings{Timezone: "UTC", WeekStart: 1, WorkingHours: defaultWorkingHours(), DefaultReminders: []int{10},
-		VideoAvailable: VideoAvailable(), SubscriptionsAvailable: s.secretKey != nil}
+		VideoAvailable: VideoAvailable(), SubscriptionsAvailable: s.secretKey != nil, WorkLocations: []WorkLocation{}, WorldClocks: []string{}}
 	var tz *string
-	var hours []byte
+	var hours, locs []byte
 	var rem []int32
-	err := q.QueryRow(ctx, `SELECT timezone, week_start, working_hours, default_reminders FROM calendar_settings WHERE user_id = $1`, userID).
-		Scan(&tz, &st.WeekStart, &hours, &rem)
+	err := q.QueryRow(ctx, `SELECT timezone, week_start, working_hours, default_reminders, work_locations, secondary_timezone, world_clocks, agenda_email
+		FROM calendar_settings WHERE user_id = $1`, userID).
+		Scan(&tz, &st.WeekStart, &hours, &rem, &locs, &st.SecondaryTimezone, &st.WorldClocks, &st.AgendaEmail)
+	if st.WorldClocks == nil {
+		st.WorldClocks = []string{}
+	}
+	if locs != nil {
+		_ = json.Unmarshal(locs, &st.WorkLocations)
+		if st.WorkLocations == nil {
+			st.WorkLocations = []WorkLocation{}
+		}
+	}
 	if db.IsNoRows(err) {
 		return st, nil
 	}
@@ -499,5 +554,32 @@ func validateReminders(in []int) ([]int, error) {
 		}
 	}
 	slices.Sort(out)
+	return out, nil
+}
+
+// validateWorkLocations: one entry per weekday, type office, home or other.
+func validateWorkLocations(in []WorkLocation) ([]WorkLocation, error) {
+	if len(in) > 7 {
+		return nil, httpx.BadRequest("One work location per day.")
+	}
+	seen := map[int]bool{}
+	out := []WorkLocation{}
+	for _, l := range in {
+		if l.Day < 0 || l.Day > 6 || seen[l.Day] {
+			return nil, httpx.BadRequest("One work location per day.")
+		}
+		seen[l.Day] = true
+		switch l.Type {
+		case "office", "home", "other":
+		default:
+			return nil, httpx.BadRequest("Work locations are office, home or other.")
+		}
+		label, ok := cleanText(l.Label, 60)
+		if !ok {
+			return nil, httpx.BadRequest("Location names are up to 60 characters.")
+		}
+		out = append(out, WorkLocation{Day: l.Day, Type: l.Type, Label: label})
+	}
+	slices.SortFunc(out, func(a, b WorkLocation) int { return a.Day - b.Day })
 	return out, nil
 }

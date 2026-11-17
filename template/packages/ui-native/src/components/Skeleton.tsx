@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { StyleSheet, View, type DimensionValue, type StyleProp, type ViewStyle } from "react-native";
 import Animated, { Easing, cancelAnimation, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from "react-native-reanimated";
 import { useTheme } from "../theme/ThemeProvider";
+import { useRowInset } from "./ListRow";
 
 export interface SkeletonProps {
   width?: DimensionValue;
@@ -63,8 +64,9 @@ export function SkeletonText({ lines = 3, lineHeight = 16 }: { lines?: number; l
 export function SkeletonRow() {
   const theme = useTheme();
   const s = theme.space;
+  const inset = useRowInset();
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: s[3], minHeight: theme.tap.lg, paddingHorizontal: s[4] }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: s[3], minHeight: theme.tap.lg, paddingHorizontal: inset }}>
       <Skeleton shape="circle" width={s[8]} height={s[8]} />
       <View style={{ flex: 1 }}>
         <Skeleton shape="text" height={16} width="70%" />

@@ -3,11 +3,15 @@
 import { InfoTip, Skeleton, SkeletonGroup, cn } from "@scaffoldapp/ui-web";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 
-/** Data table that scrolls sideways inside its card when the screen is narrower than its min width (`className="min-w-160"`). */
-export function Table({ children, className, label }: { children: ReactNode; className?: string; label: string }) {
+/**
+ * Data table that scrolls sideways when the screen is narrower than its min width
+ * (`className="min-w-160"`). `flush` is for a table on the canvas: its first and last
+ * columns line up with the column around it, with no inset of their own.
+ */
+export function Table({ children, className, label, flush }: { children: ReactNode; className?: string; label: string; flush?: boolean }) {
   return (
     <div className="w-full overflow-x-auto">
-      <table aria-label={label} className={cn("w-full border-separate border-spacing-0 text-left type-label", className)}>
+      <table aria-label={label} className={cn("w-full border-separate border-spacing-0 text-left type-label", flush && "[&_td:first-child]:pl-0 [&_td:last-child]:pr-0 [&_th:first-child]:pl-0 [&_th:last-child]:pr-0", className)}>
         {children}
       </table>
     </div>
@@ -62,11 +66,11 @@ export function TD({ children, align = "left", className }: { children?: ReactNo
 }
 
 /** Table-shaped skeleton. */
-export function TableSkeleton({ rows = 6, cols = 4 }: { rows?: number; cols?: number }) {
+export function TableSkeleton({ rows = 6, cols = 4, flush }: { rows?: number; cols?: number; flush?: boolean }) {
   return (
     <SkeletonGroup className="flex flex-col">
       {Array.from({ length: rows }, (_, r) => (
-        <div key={r} className="flex h-row items-center gap-4 border-b border-border px-4 last:border-b-0">
+        <div key={r} className={cn("flex h-row items-center gap-4 border-b border-border last:border-b-0", !flush && "px-4")}>
           {Array.from({ length: cols }, (_, c) => (
             <Skeleton key={c} shape="text" className={cn("h-4 flex-1", c === 0 && "max-w-40")} />
           ))}

@@ -288,7 +288,7 @@ func (s *Service) importFromSource(w http.ResponseWriter, r *http.Request) error
 	if err := httpx.Decode(r, &req); err != nil {
 		return err
 	}
-	o, ok := parseObject(req.ObjectType)
+	o, ok := parsePlatformObject(req.ObjectType)
 	if !ok {
 		return httpx.BadRequest("object_type is company, contact or deal.")
 	}

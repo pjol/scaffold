@@ -1,8 +1,8 @@
 import { useSignIn, useSignUp } from "@clerk/expo";
 import { DEV_IDENTITIES, useAuthSession, useDevAuth, type DevIdentityLike } from "@scaffoldapp/shared";
-import { Avatar, Badge, Button, Display, Field, InfoTip, Input, ListGroup, ListRow, Screen, Spinner, enterUp, haptic, toast, useTheme } from "@scaffoldapp/ui-native";
-import { FlaskConical, KeyRound, Mail } from "lucide-react-native";
-import { useRef, useState } from "react";
+import { Avatar, Badge, Button, Caption, Divider, Field, InfoTip, Input, ListGroup, ListRow, Screen, Spinner, Title, enterUp, haptic, toast, useTheme } from "@scaffoldapp/ui-native";
+import { KeyRound, Mail } from "lucide-react-native";
+import { useRef, useState, type ReactNode } from "react";
 import { Platform, View, type TextInput } from "react-native";
 import Animated from "react-native-reanimated";
 import { LegalLinks } from "@/components/LegalLinks";
@@ -11,7 +11,7 @@ import { appName } from "@/lib/version";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-/** Clerk email code + passkey in production; the seeded-identity picker when dev auth is on. */
+/** Clerk email code + passkey in production; email or a seeded account when dev auth is on. Laid out like the web sign-in. */
 export default function SignInScreen() {
   const session = useAuthSession();
   return session.mode === "dev" ? <DevSignIn /> : <ClerkSignIn />;
@@ -25,6 +25,35 @@ function clerkError(err: unknown): { code: string; message: string } {
     return { code: first?.code ?? e.code ?? "unknown", message: first?.longMessage ?? first?.message ?? e.longMessage ?? e.message ?? "Couldn't sign in. Try again." };
   }
   return { code: "unknown", message: "Couldn't sign in. Try again." };
+}
+
+/** The shared frame: centred heading, the form, "or" + the alternatives, legal links. */
+function SignInLayout({ heading, children, alternatives }: { heading: ReactNode; children: ReactNode; alternatives?: ReactNode }) {
+  const s = useTheme().space;
+  return (
+    <Screen keyboard centered gap={s[6]}>
+      {heading}
+      {children}
+      {alternatives ? (
+        <>
+          <OrDivider />
+          {alternatives}
+        </>
+      ) : null}
+      <LegalLinks />
+    </Screen>
+  );
+}
+
+function OrDivider() {
+  const s = useTheme().space;
+  return (
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: "row", alignItems: "center", gap: s[3] }}>
+      <Divider style={{ flex: 1 }} />
+      <Caption>or</Caption>
+      <Divider style={{ flex: 1 }} />
+    </View>
+  );
 }
 
 // ───────────────────────────────────────────────────────────── Clerk ──
@@ -49,6 +78,7 @@ function ClerkSignIn() {
   const [busy, setBusy] = useState<"code" | "verify" | "passkey" | null>(null);
   const codeRef = useRef<TextInput>(null);
   const emailOk = EMAIL_RE.test(email.trim());
+  const passkeys = Platform.OS === "ios" || Platform.OS === "android";
 
   const fail = (e: unknown) => {
     haptic.error();
@@ -124,48 +154,20 @@ function ClerkSignIn() {
     }
   };
 
-  return (
-    <Screen keyboard centered>
-      <Animated.View entering={enterUp(theme)} style={{ gap: s[3] }}>
-        <Display>{step === "code" ? "Check your email" : appName()}</Display>
-        {step === "code" ? (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: s[2] }}>
-            <Badge icon={Mail}>{email.trim()}</Badge>
-            <InfoTip content="We sent a 6-digit code to this address." />
+  if (step === "code") {
+    return (
+      <SignInLayout
+        heading={
+          <View style={{ alignItems: "center", gap: s[3] }}>
+            <Title align="center">Check your email</Title>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: s[2] }}>
+              <Badge icon={Mail}>{email.trim()}</Badge>
+              <InfoTip content="We sent a 6-digit code to this address." />
+            </View>
           </View>
-        ) : null}
-      </Animated.View>
-
-      {step === "email" ? (
-        <Animated.View key="email" entering={enterUp(theme, 1)} style={{ gap: s[4] }}>
-          <Field label="Email" error={error}>
-            <Input
-              value={email}
-              onChangeText={setEmail}
-              placeholder="you@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="email"
-              textContentType="emailAddress"
-              returnKeyType="go"
-              onSubmitEditing={() => emailOk && void sendCode()}
-              leadingIcon={Mail}
-            />
-          </Field>
-          <View style={{ gap: s[3] }}>
-            <Button fullWidth loading={busy === "code"} disabled={!emailOk || busy !== null} onPress={() => void sendCode()}>
-              Email me a code
-            </Button>
-            {Platform.OS === "ios" || Platform.OS === "android" ? (
-              <Button variant="secondary" fullWidth leftIcon={KeyRound} loading={busy === "passkey"} disabled={busy !== null} onPress={() => void withPasskey()}>
-                Sign in with a passkey
-              </Button>
-            ) : null}
-          </View>
-        </Animated.View>
-      ) : (
-        <Animated.View key="code" entering={enterUp(theme, 1)} style={{ gap: s[4] }}>
+        }
+      >
+        <Animated.View key="code" entering={enterUp(theme)} style={{ gap: s[3] }}>
           <Field label="Code" error={error}>
             <Input
               ref={codeRef}
@@ -182,40 +184,69 @@ function ClerkSignIn() {
               style={{ letterSpacing: s[2], textAlign: "center", fontFamily: theme.font("body", 600) }}
             />
           </Field>
-          <View style={{ gap: s[3] }}>
-            <Button fullWidth loading={busy === "verify"} disabled={code.length !== 6 || busy !== null} onPress={() => void verify(code)}>
-              Sign in
+          <Button fullWidth loading={busy === "verify"} disabled={code.length !== 6 || busy !== null} onPress={() => void verify(code)}>
+            Sign in
+          </Button>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: s[2] }}>
+            <Button variant="ghost" size="md" disabled={busy !== null} onPress={() => void sendCode()}>
+              Send a new code
             </Button>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: s[2] }}>
-              <Button variant="ghost" size="md" disabled={busy !== null} onPress={() => void sendCode()}>
-                Send a new code
-              </Button>
-              <Button
-                variant="ghost"
-                size="md"
-                disabled={busy !== null}
-                onPress={() => {
-                  setError(null);
-                  setStep("email");
-                }}
-              >
-                Use another email
-              </Button>
-            </View>
+            <Button
+              variant="ghost"
+              size="md"
+              disabled={busy !== null}
+              onPress={() => {
+                setError(null);
+                setStep("email");
+              }}
+            >
+              Use another email
+            </Button>
           </View>
         </Animated.View>
-      )}
-      <LegalLinks />
-    </Screen>
+      </SignInLayout>
+    );
+  }
+
+  return (
+    <SignInLayout
+      heading={<Title align="center">Sign in to {appName()}</Title>}
+      alternatives={
+        passkeys ? (
+          <Button variant="secondary" fullWidth leftIcon={KeyRound} loading={busy === "passkey"} disabled={busy !== null} onPress={() => void withPasskey()}>
+            Sign in with a passkey
+          </Button>
+        ) : undefined
+      }
+    >
+      <Animated.View key="email" entering={enterUp(theme)} style={{ gap: s[3] }}>
+        <Field label="Email address" error={error}>
+          <Input
+            value={email}
+            onChangeText={setEmail}
+            placeholder="name@work-email.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            textContentType="emailAddress"
+            returnKeyType="go"
+            onSubmitEditing={() => emailOk && void sendCode()}
+          />
+        </Field>
+        <Button fullWidth loading={busy === "code"} disabled={!emailOk || busy !== null} onPress={() => void sendCode()}>
+          Continue
+        </Button>
+      </Animated.View>
+    </SignInLayout>
   );
 }
 
 // ───────────────────────────────────────────────────────────── dev ──
 
-/** Development sign-in: a seeded identity or any email, as `dev:<subject>:<email>` tokens. */
+/** Development sign-in: any email or a seeded account, as `dev:<subject>:<email>` tokens. */
 function DevSignIn() {
-  const theme = useTheme();
-  const s = theme.space;
+  const s = useTheme().space;
   const dev = useDevAuth();
   const [busy, setBusy] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -235,53 +266,43 @@ function DevSignIn() {
   };
 
   return (
-    <Screen keyboard>
-      <Animated.View entering={enterUp(theme)} style={{ gap: s[3] }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: s[2], flexWrap: "wrap" }}>
-          <Display>Sign in</Display>
-          <InfoTip size="md" content="Development sign-in. The API accepts these accounts only with APP_ENV=development and AUTH_DEV_BYPASS=true (dev-up sets both)." />
-        </View>
-        <Badge tone="warning" icon={FlaskConical}>
-          Development
-        </Badge>
-      </Animated.View>
-
-      <Animated.View entering={enterUp(theme, 1)}>
-        <ListGroup title="Seeded accounts" info="Created by backend/cmd/seed with the Terms already accepted.">
+    <SignInLayout
+      heading={<Title align="center">Sign in to {appName()}</Title>}
+      alternatives={
+        <ListGroup
+          title="Development accounts"
+          info="Development builds sign in without a password: pick a seeded account (created by backend/cmd/seed, Terms accepted) or type any email (a new address creates its account; use .test so no mail leaves this machine). The API accepts these only with APP_ENV=development and AUTH_DEV_BYPASS=true, which dev-up sets."
+        >
           {DEV_IDENTITIES.map((identity) => (
             <ListRow
               key={identity.subject}
               title={identity.name}
-              info={`${identity.info} ${identity.email}`}
-              leading={<Avatar name={identity.name} size="md" />}
+              leading={<Avatar name={identity.name} size="sm" />}
               trailing={busy === identity.subject ? <Spinner size={20} /> : identity.admin_role ? <Badge size="sm" tone="primary">Admin</Badge> : undefined}
-              chevron={false}
               disabled={busy !== null}
               onPress={() => void pick(identity)}
             />
           ))}
         </ListGroup>
-      </Animated.View>
-
-      <Animated.View entering={enterUp(theme, 2)} style={{ gap: s[4] }}>
-        <Field label="Any email" info="Creates the account on first sign-in. Use a .test address so no mail leaves this machine.">
+      }
+    >
+      <View style={{ gap: s[3] }}>
+        <Field label="Email address">
           <Input
             value={email}
             onChangeText={setEmail}
-            placeholder="name@scaffoldapp.test"
+            placeholder="name@work-email.com"
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="go"
             onSubmitEditing={() => emailOk && void pick(devIdentityForEmail(email))}
-            leadingIcon={Mail}
           />
         </Field>
-        <Button variant="secondary" fullWidth disabled={!emailOk || busy !== null} loading={busy !== null && busy === devIdentityForEmail(email).subject} onPress={() => void pick(devIdentityForEmail(email))}>
-          Sign in with this email
+        <Button fullWidth disabled={!emailOk || busy !== null} loading={busy !== null && busy === devIdentityForEmail(email).subject} onPress={() => void pick(devIdentityForEmail(email))}>
+          Continue
         </Button>
-      </Animated.View>
-      <LegalLinks />
-    </Screen>
+      </View>
+    </SignInLayout>
   );
 }

@@ -14,13 +14,14 @@ import {
   useCallsUpcoming,
   useCancelCallsMeeting,
   useCreateCallsMeeting,
+  orgsNoun,
   useActiveOrg,
   useMe,
   type CallsHistoryItem,
   type CallsMeeting,
 } from "@scaffoldapp/shared";
 import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, Input, Menu, MenuItem, SkeletonRow, toast } from "@scaffoldapp/ui-web";
-import { CalendarClock, CalendarPlus, Copy, ExternalLink, Info, Link2, LogIn, Pencil, Phone, PhoneIncoming, PhoneMissed, Plus, Trash2, Video } from "lucide-react";
+import { CalendarClock, CalendarDays, CalendarPlus, Copy, ExternalLink, Info, Link2, LogIn, Pencil, Phone, PhoneIncoming, PhoneMissed, Plus, Settings2, Trash2, Video } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
@@ -29,6 +30,7 @@ import { AppAvatar } from "@/components/shell/AppAvatar";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { Screen, Section } from "@/components/shell/PageHeader";
 import { copyMeetingLink, MeetingLinkDialog, ScheduleMeetingDialog, StartCallDialog } from "./MeetingDialogs";
+import { OrgCallSettingsDialog } from "./OrgCallSettings";
 import { PlatformMeetingRow } from "./PlatformMeetings";
 import { callsScheduleAction, callsSourceLink } from "./seams";
 
@@ -43,6 +45,7 @@ export function CallsScreen() {
   const [calling, setCalling] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const [created, setCreated] = useState<CallsMeeting | null>(null);
+  const [orgSettings, setOrgSettings] = useState(false);
 
   // The app's Schedule action (setCallsScheduleAction), else our own dialog.
   const schedule = () => {
@@ -83,7 +86,11 @@ export function CallsScreen() {
                 Schedule a meeting
               </MenuItem>
             </Menu>
-            <ResourceMenu feature="calls" title="Calls" />
+            <ResourceMenu
+              feature="calls"
+              title="Calls"
+              actions={org ? [{ id: "org-settings", label: `Calls in this ${orgsNoun()}`, icon: Settings2, onSelect: () => setOrgSettings(true) }] : []}
+            />
           </>
         }
       >
@@ -95,6 +102,7 @@ export function CallsScreen() {
       <StartCallDialog open={calling} onOpenChange={setCalling} />
       <ScheduleMeetingDialog open={scheduling} onOpenChange={setScheduling} />
       <MeetingLinkDialog meeting={created} onClose={() => setCreated(null)} />
+      {org && <OrgCallSettingsDialog orgId={org.id} open={orgSettings} onOpenChange={setOrgSettings} />}
     </div>
   );
 }
@@ -174,12 +182,14 @@ function UpcomingSection() {
  * feature made (`source`) is edited and cancelled there: "Open in …" when the app links it.
  */
 function meetingActions(m: CallsMeeting, isHost: boolean, navigate: (href: string) => void, onEdit?: () => void, onCancel?: () => void) {
+  const details = { id: "details", label: "Meeting details", icon: CalendarDays, onSelect: () => navigate(`/calls/meetings/${m.id}`) };
   const copy = { id: "copy", label: "Copy link", icon: Copy, onSelect: () => void copyMeetingLink(m.join_url) };
   if (m.source) {
     const link = callsSourceLink(m.source);
-    return [copy, ...(link ? [{ id: "source", label: link.label, icon: ExternalLink, onSelect: () => navigate(link.href) }] : [])];
+    return [details, copy, ...(link ? [{ id: "source", label: link.label, icon: ExternalLink, onSelect: () => navigate(link.href) }] : [])];
   }
   return [
+    details,
     copy,
     ...(isHost && onEdit ? [{ id: "edit", label: "Edit", icon: Pencil, onSelect: onEdit }] : []),
     ...(isHost && onCancel ? [{ id: "cancel", label: m.starts_at ? "Cancel meeting" : "Delete link", icon: Trash2, onSelect: onCancel, destructive: true }] : []),

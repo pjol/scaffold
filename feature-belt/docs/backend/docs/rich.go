@@ -21,8 +21,10 @@ type Span struct {
 	Underline bool     `json:"underline,omitempty"`
 	Strike    bool     `json:"strike,omitempty"`
 	Code      bool     `json:"code,omitempty"`
-	Link      string   `json:"link,omitempty"`    // http(s) or mailto only
-	Mention   *Mention `json:"mention,omitempty"` // the span is one mention chip
+	Link      string   `json:"link,omitempty"`     // http(s) or mailto only
+	Color     string   `json:"color,omitempty"`    // text colour ("red") or highlight ("red_background")
+	Equation  bool     `json:"equation,omitempty"` // the text is TeX shown as one inline equation
+	Mention   *Mention `json:"mention,omitempty"`  // the span is one mention chip
 }
 
 // Mention points at a person in the org, a page, or a date. The span's text
@@ -31,6 +33,10 @@ type Mention struct {
 	Type string `json:"type"`           // user | page | date
 	ID   string `json:"id,omitempty"`   // user or page id
 	Date string `json:"date,omitempty"` // YYYY-MM-DD
+	Time string `json:"time,omitempty"` // HH:MM (local to whoever set it), dates only
+	// RemindAt (RFC 3339, UTC) makes a date a reminder: whoever set it is
+	// notified then (reminders.go).
+	RemindAt string `json:"remind_at,omitempty"`
 }
 
 const (
@@ -38,11 +44,12 @@ const (
 	maxSpans        = 2000
 	maxLinkLen      = 2000
 	maxMentionChars = 200
+	maxInlineTeX    = 2000
 )
 
 func (a Span) sameMarks(b Span) bool {
-	return a.Mention == nil && b.Mention == nil && a.Bold == b.Bold && a.Italic == b.Italic &&
-		a.Underline == b.Underline && a.Strike == b.Strike && a.Code == b.Code && a.Link == b.Link
+	return a.Mention == nil && b.Mention == nil && !a.Equation && !b.Equation && a.Bold == b.Bold && a.Italic == b.Italic &&
+		a.Underline == b.Underline && a.Strike == b.Strike && a.Code == b.Code && a.Link == b.Link && a.Color == b.Color
 }
 
 // cleanText drops control characters other than newline and tab and
@@ -91,7 +98,10 @@ func safeLink(raw string) string {
 	return u.String()
 }
 
-var dateRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+var (
+	dateRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	timeRE = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
+)
 
 func validDate(s string) bool {
 	if !dateRE.MatchString(s) {
@@ -120,6 +130,20 @@ func sanitizeSpans(in []Span, rules spanRules) ([]Span, int) {
 			continue
 		}
 		s.Link = safeLink(s.Link)
+		if !validColor(s.Color) {
+			s.Color = ""
+		}
+		if s.Equation {
+			// One inline equation: TeX on one line, no link or code mark.
+			s.Mention, s.Link, s.Code = nil, "", false
+			s.Text = strings.TrimSpace(strings.ReplaceAll(s.Text, "\n", " "))
+			if utf8.RuneCountInString(s.Text) > maxInlineTeX {
+				s.Text = string([]rune(s.Text)[:maxInlineTeX])
+			}
+			if s.Text == "" {
+				continue
+			}
+		}
 		if s.Mention != nil {
 			m := *s.Mention
 			ok := false
@@ -131,10 +155,14 @@ func sanitizeSpans(in []Span, rules spanRules) ([]Span, int) {
 			case "date":
 				ok = validDate(m.Date)
 				m.ID = ""
+				if !timeRE.MatchString(m.Time) {
+					m.Time = ""
+				}
+				m.RemindAt = normalizeRemindAt(m.RemindAt)
 			}
 			if ok {
 				s.Mention = &m
-				s.Code, s.Link = false, ""
+				s.Code, s.Link, s.Equation = false, "", false
 				s.Text = strings.ReplaceAll(s.Text, "\n", " ")
 				if utf8.RuneCountInString(s.Text) > maxMentionChars {
 					s.Text = string([]rune(s.Text)[:maxMentionChars])
@@ -151,6 +179,19 @@ func sanitizeSpans(in []Span, rules spanRules) ([]Span, int) {
 		n += utf8.RuneCountInString(s.Text)
 	}
 	return out, n
+}
+
+// normalizeRemindAt keeps a reminder time that parses (as UTC), within ten
+// years either way; anything else drops the reminder, not the date.
+func normalizeRemindAt(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil || t.Before(time.Now().AddDate(-10, 0, 0)) || t.After(time.Now().AddDate(10, 0, 0)) {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func plainOf(spans []Span) string {
@@ -190,7 +231,21 @@ func mentionIDs(spans []Span) (users, pages []uuid.UUID) {
 
 // ---- Markdown (inline) -----------------------------------------------------------
 
-var mdEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "_", `\_`, "`", "\\`", "[", `\[`, "]", `\]`, "~", `\~`, "<", `\<`)
+var mdEscaper = mdEscape{strings.NewReplacer(`\`, `\\`, "*", `\*`, "_", `\_`, "`", "\\`", "[", `\[`, "]", `\]`, "~", `\~`, "<", `\<`)}
+
+// mdEscape escapes Markdown punctuation, and a $ only where it would open an
+// inline equation ($ then a non-space, non-digit), so prices stay "$5".
+type mdEscape struct{ r *strings.Replacer }
+
+var dollarOpenRE = regexp.MustCompile(`\$[^\s\d$]`)
+
+func (e mdEscape) Replace(s string) string {
+	s = e.r.Replace(s)
+	if !strings.Contains(s, "$") {
+		return s
+	}
+	return dollarOpenRE.ReplaceAllStringFunc(s, func(m string) string { return `\` + m })
+}
 
 // mdNames resolves mention labels when rendering Markdown (live names).
 type mdNames struct {
@@ -199,10 +254,19 @@ type mdNames struct {
 }
 
 // spansToMarkdown renders rich text as inline Markdown. Underline uses
-// <u>…</u>; page mentions become links to /docs/<id>; people become @Name.
+// <u>…</u>, colours <span color="red">…</span>, inline equations $TeX$;
+// page mentions become links to /docs/<id>; people become @Name.
 func spansToMarkdown(spans []Span, names mdNames) string {
 	var b strings.Builder
 	for _, s := range spans {
+		if s.Equation {
+			tex := strings.ReplaceAll(s.Text, "$", `\$`)
+			if r, _ := utf8.DecodeRuneInString(tex); unicode.IsDigit(r) {
+				tex = "{}" + tex // "$2x$" would read as money
+			}
+			b.WriteString("$" + tex + "$")
+			continue
+		}
 		if s.Mention != nil {
 			switch s.Mention.Type {
 			case "user":
@@ -259,6 +323,9 @@ func spansToMarkdown(spans []Span, names mdNames) string {
 		if s.Underline {
 			out = "<u>" + out + "</u>"
 		}
+		if s.Color != "" {
+			out = `<span color="` + s.Color + `">` + out + "</span>"
+		}
 		if s.Link != "" {
 			out = "[" + out + "](" + s.Link + ")"
 		}
@@ -269,7 +336,7 @@ func spansToMarkdown(spans []Span, names mdNames) string {
 
 type inlineState struct {
 	bold, italic, strike, underline bool
-	link                            string
+	link, color                     string
 }
 
 // markdownToSpans parses inline Markdown: **bold**, __bold__, *italic*,
@@ -287,7 +354,7 @@ func emit(out *[]Span, st inlineState, text string, code bool) {
 	if text == "" {
 		return
 	}
-	*out = append(*out, Span{Text: text, Bold: st.bold, Italic: st.italic, Strike: st.strike, Underline: st.underline, Code: code, Link: st.link})
+	*out = append(*out, Span{Text: text, Bold: st.bold, Italic: st.italic, Strike: st.strike, Underline: st.underline, Code: code, Link: st.link, Color: st.color})
 }
 
 func hasAhead(r []rune, from int, delim string) int {
@@ -353,6 +420,45 @@ func parseInline(r []rune, st inlineState, out *[]Span) {
 				buf.WriteString("~~")
 				i++
 			}
+		case c == '$' && i+1 < len(r) && r[i+1] != '$' && !unicode.IsSpace(r[i+1]) && !unicode.IsDigit(r[i+1]):
+			// $TeX$: opens before a non-space, non-digit (so "$5" is money);
+			// the closing $ follows a non-space and isn't followed by a digit.
+			end := -1
+			for j := i + 1; j < len(r); j++ {
+				if r[j] == '\\' {
+					j++
+					continue
+				}
+				if r[j] == '\n' {
+					break
+				}
+				if r[j] == '$' && !unicode.IsSpace(r[j-1]) && (j+1 >= len(r) || !unicode.IsDigit(r[j+1])) {
+					end = j
+					break
+				}
+			}
+			if end > i+1 {
+				flush()
+				*out = append(*out, Span{Text: strings.ReplaceAll(string(r[i+1:end]), `\$`, "$"), Equation: true})
+				i = end
+			} else {
+				buf.WriteRune(c)
+			}
+		case strings.HasPrefix(string(r[i:min(len(r), i+13)]), `<span color="`):
+			if m := spanColorRE.FindStringSubmatch(string(r[i:min(len(r), i+40)])); m != nil {
+				open := len([]rune(m[0]))
+				if end := hasAhead(r, i+open, "</span>"); end >= i+open {
+					flush()
+					inner := st
+					if validColor(m[1]) {
+						inner.color = m[1]
+					}
+					parseInline(r[i+open:end], inner, out)
+					i = end + len("</span>") - 1
+					continue
+				}
+			}
+			buf.WriteRune(c)
 		case strings.HasPrefix(rest, "<u>"):
 			if end := hasAhead(r, i+3, "</u>"); end >= i+3 {
 				flush()
@@ -444,6 +550,8 @@ func linkAt(r []rune, i int) (label, target string, next int, ok bool) {
 	return "", "", 0, false
 }
 
+var spanColorRE = regexp.MustCompile(`^<span color="([a-z_]{1,20})">`)
+
 var docsPathRE = regexp.MustCompile(`^(?:page:|/docs/)([0-9a-fA-F-]{36})$`)
 
 func pageLinkTarget(target string) (string, bool) {
@@ -467,7 +575,7 @@ func spansEqual(a, b []Span) bool {
 	}
 	for i := range x {
 		if x[i].Text != y[i].Text || x[i].Bold != y[i].Bold || x[i].Italic != y[i].Italic || x[i].Underline != y[i].Underline ||
-			x[i].Strike != y[i].Strike || x[i].Code != y[i].Code || x[i].Link != y[i].Link {
+			x[i].Strike != y[i].Strike || x[i].Code != y[i].Code || x[i].Link != y[i].Link || x[i].Color != y[i].Color || x[i].Equation != y[i].Equation {
 			return false
 		}
 		if (x[i].Mention == nil) != (y[i].Mention == nil) || (x[i].Mention != nil && *x[i].Mention != *y[i].Mention) {
@@ -489,7 +597,7 @@ func sliceSpans(spans []Span, start, end int) []Span {
 		if b <= start || a >= end {
 			continue
 		}
-		if s.Mention != nil {
+		if s.Mention != nil || s.Equation {
 			if a >= start && b <= end {
 				out = append(out, s)
 			}

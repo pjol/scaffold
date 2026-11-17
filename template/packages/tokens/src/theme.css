@@ -88,6 +88,26 @@
   --color-ink-900: var(--app-ink-900);
   --color-ink-950: var(--app-ink-950);
 
+  /* swatches: content colours people pick (docs text colours and highlights, labels) */
+  --color-swatch-gray: var(--app-swatch-gray);
+  --color-swatch-gray-bg: var(--app-swatch-gray-bg);
+  --color-swatch-brown: var(--app-swatch-brown);
+  --color-swatch-brown-bg: var(--app-swatch-brown-bg);
+  --color-swatch-orange: var(--app-swatch-orange);
+  --color-swatch-orange-bg: var(--app-swatch-orange-bg);
+  --color-swatch-yellow: var(--app-swatch-yellow);
+  --color-swatch-yellow-bg: var(--app-swatch-yellow-bg);
+  --color-swatch-green: var(--app-swatch-green);
+  --color-swatch-green-bg: var(--app-swatch-green-bg);
+  --color-swatch-blue: var(--app-swatch-blue);
+  --color-swatch-blue-bg: var(--app-swatch-blue-bg);
+  --color-swatch-purple: var(--app-swatch-purple);
+  --color-swatch-purple-bg: var(--app-swatch-purple-bg);
+  --color-swatch-pink: var(--app-swatch-pink);
+  --color-swatch-pink-bg: var(--app-swatch-pink-bg);
+  --color-swatch-red: var(--app-swatch-red);
+  --color-swatch-red-bg: var(--app-swatch-red-bg);
+
   /* ── type ───────────────────────────────────────────────────────────── */
   --font-display: var(--app-font-display);
   --font-body: var(--app-font-body);

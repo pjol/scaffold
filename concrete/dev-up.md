@@ -14,7 +14,7 @@ scripts/dev-up/dev-up.sh stop             stop a stack this project's dev-up sta
 --reset-db                                drop and recreate the dev database (confirm), then migrate + seed
 --no-seed                                 skip cmd/seed
 --clone-from <postgres-url>               restore a remote database instead of seeding, then scrub it
---web-prod                                serve a production build (built in the background at boot) instead of next dev
+--web-dev                                 next dev (hot reload, pages compile on first visit) instead of the default production build
 --lan | --tunnel                          Expo for physical devices (LAN IP / Expo tunnel); default is localhost for simulators
 --ios | --android                         open the simulator/emulator once Metro is up
 --s3 | --redis                            start MinIO (the `minio` binary, else docker) / Redis on the project's ports and point the backend at them
@@ -38,7 +38,7 @@ Flags are parsed before `.env.dev` is read and win over it. Unknown flags are er
    - `hook_<name>_prepare` runs before env files are written and before Postgres and the backend start: it may `start_bg`/`wait_for` its own services, take a port with `hook_port <6-9>` (offsets reserved for hooks), and set values with `hook_env backend|web|mobile KEY VALUE` (highest precedence, passed through a 0600 file, never argv). A failing prepare stops the boot and tears down what started.
    - `hook_<name>_started` runs once the backend is ready: it may add menu items with `menu_add <key> <label> <fn>` and query with `psql_dev`.
    - Hook processes get PID files and are torn down like every other service. Details: `scripts/dev-up/hooks/README.md`.
-10. **Web**: `next dev -p <base+1>` (or with `--web-prod`, a production build started in the background at step 5 and served with `next start`, falling back to dev if the build fails). Wait for HTTP 200.
+10. **Web**: a production build by default, so no page compiles on first visit. `next build` starts in the background after step 6, since it needs fresh tokens, and is skipped when the last build is still current: same `web/.env.local` (where `NEXT_PUBLIC_*` values are inlined) and Node, and no source under `web/`/`packages/` newer than it. Serve it with `next start -p <base+1>`. If the build fails, fall back to `next dev` and say so. `--web-dev` runs `next dev` from the start, for hot reload. `R` rebuilds. Wait for HTTP 200.
 11. **Mobile**: Expo on base+3, stdin `</dev/null` so it can't steal menu keys; `--host localhost` by default (simulators time out on LAN URLs behind the macOS firewall), `--lan` writes the LAN IP into `EXPO_PUBLIC_API_URL`, `--tunnel` uses Expo's tunnel. `--ios`: boot a simulator, open the installed dev build via its scheme (`<scheme>://expo-development-client/?url=…`), or offer to build it once with `expo run:ios` (logs to `logs/ios-build.log`); `--android` likewise with the first AVD.
 12. **Summary**: URLs (API, web, admin, Metro), dev identities and how to sign in, log paths, which providers are live, then the menu.
 

@@ -12,7 +12,8 @@ web/
   app/
     layout.tsx           Inter (next/font → --app-face-body), ThemeScript, metadata from APP_NAME
     globals.css          @import "tailwindcss"; @import "@<slug>/tokens/theme.css"; @source ui-web
-    (public)/            sign-in/[[...sign-in]] · legal/[doc] · delete-account · support (PublicFrame)
+    (auth)/              sign-in/[[...sign-in]] (AuthFrame)
+    (public)/            legal/[doc] · delete-account · support (PublicFrame)
     (app)/               layout = AppFrame (gates + shell) · page = Home · settings/* · admin/*
     not-found.tsx error.tsx global-error.tsx mark.svg/route.ts
   src/
@@ -31,6 +32,8 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 - Screens only call `useAuthSession()`; sign out through `useSignOut()` (clears the query cache, navigates).
 - One API client per app (`createWebApiClient`, `NEXT_PUBLIC_API_URL`, platform `web`); its `getToken` waits up to 2.5 s for auth to load so the first request never caches a 401. One realtime client per signed-in identity; `bindVisibilityLifecycle` reconnects when the tab returns. Switching identity or signing out resets user queries (`resetQueries`, never `removeQueries` under mounted screens).
 - `proxy.ts` sends signed-out visitors of app routes to /sign-in (Clerk only). `PUBLIC_PATHS` lists the public ones as regex sources matched against the whole path; a feature with public pages adds one line above `// scaffold:public-paths` (`"/invites/(.*)",`). The matcher skips images, fonts and documents but not `.svg` or `.glb`, so folders of those served from `public/` need an entry: `/brand/(.*)` (logos, design.md) ships in the list; 3D models add `/models/(.*)`. The API stays the authority.
+- `proxy.ts` runs `PROXY_HANDLERS` before auth, in order. A feature that answers some requests itself (agent-web rewrites Markdown requests for public pages to their twins) adds its import above `// scaffold:imports` and one entry above `// scaffold:proxy`; a handler returns a response or `null`, stays cheap, and never answers a non-public path.
+- `next.config.ts` sends `Content-Security-Policy: frame-ancestors 'self'` on every page, so other sites can't frame the app. A page built to be embedded elsewhere (a booking page) opts in with one entry above `// scaffold:headers` in `HEADERS` (`{ source: "/book/:slug/embed", headers: [{ key: "Content-Security-Policy", value: "frame-ancestors *" }] },`); the later entry wins. Embeddable pages live outside the app frame and never carry secrets in the URL.
 
 ## Routing and gates
 
@@ -40,7 +43,7 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 3. `me.consent.required` → `ConsentScreen` (`ConsentForm` with the shared documents, contact email filled from `/v1/config`). It submits the bundled versions; a 409 means the build is stale and the banner offers Reload.
 4. The shell (`AppShell`): side nav ≥ 1024 (Home · `featureNav` · Settings · Admin for staff), bottom tabs < 1024 (Home · up to 3 features · Settings; overflow goes to the account menu), top bar (name, account menu). `me.status === "suspended"` shows a warning banner.
 
-`(public)` pages use `PublicFrame` (name, Sign in / Open app, footer with legal links and the support address). `/delete-account` is Play's web deletion URL: steps and what is deleted and kept, signed out → sign in, signed in → the same `DeleteAccountDialog`, plus the support email. Root `error.tsx`, `(app)/error.tsx` (keeps the shell) and `global-error.tsx` (no providers; inline `tokensStylesheet()`) all offer Retry.
+`(public)` pages use `PublicFrame` (name, Sign in / Open app, footer with legal links and the support address). `/sign-in` uses `AuthFrame` instead: the name centred at the top, one column, legal links at the foot, no header bar or nav, the way product sign-in pages look (Slack, Clerk, Privy). Inside it, Clerk's `<SignIn>` card, or in development a card laid out like it: "Sign in to <name>", email + Continue, "or", then the seeded accounts as rows. `/delete-account` is Play's web deletion URL: steps and what is deleted and kept, signed out → sign in, signed in → the same `DeleteAccountDialog`, plus the support email. Root `error.tsx`, `(app)/error.tsx` (keeps the shell) and `global-error.tsx` (no providers; inline `tokensStylesheet()`) all offer Retry.
 
 ## Data layer
 
@@ -67,18 +70,19 @@ Route files are thin: metadata plus one screen component from `src/screens` (fea
 | `// scaffold:consent-routes` | `consentRoutes: string[]` | whole-path regex sources (`"/support(/.*)?"`) AppFrame shows instead of the consent screen |
 | `// scaffold:support-links` | `supportLinks: { id, href, label, icon }[]` | consent screen, suspended banner, blocked-account screen (next to the support email), Settings → Support. Add the route to `consentRoutes` if it must open before consent; point at a public page if banned users need it |
 | `// scaffold:resource-menu` | `resourceMenuProviders: { id, useActions(ctx) → { actions, element? } }[]` | rows added to every ⋮ menu. Every resource and section screen puts its secondary actions in `ResourceMenu` (`src/components/resource/ResourceMenu.tsx`: `feature`, optional access `kind`/`id`, `title`, its own `actions`), so cross-feature controls (Share…, AI agent access) sit in the same place everywhere. `choices` renders a submenu (ui-web `MenuSub`/`MenuChoice`; inline under a heading row below 640 px) |
+| `// scaffold:quick-actions` | `quickActions: { id, label, icon, keywords?, href? \| run?({query, navigate}), withQuery?, useAvailable? }[]` | commands in the ⌘K palette (the search feature lists them beside navigation and settings entries): `href` opens a route, `run` acts; `withQuery` ones show once text is typed and act on it ("Ask the assistant: …"); `useAvailable` (a cache read) hides one that doesn't apply |
 
 `useBadge` (nav, home tiles, admin tabs) is a hook returning a count; it runs on every render, so read a cache, never fetch.
 
 ## Settings and admin
 
 - Settings: side tabs ≥ 1024 (`/settings` shows Profile there), a list on phones with a back link on each section. Order: Profile (photo via `useUpload` purpose `avatar`, name) · Appearance (System/Light/Dark; palette picker when the build ships more than one) · feature sections · Account (Download my data → JSON file; Delete account: 3 taps, `requireText="DELETE"`, says what is deleted and kept, then signs out) · Legal · Support · Admin (staff).
-- **Settings groups**: once any `settingsSections` entry has a `group`, Settings shows headed groups (side-tab headings ≥ 1024, one card per group on phones), in this order and with these labels (`screens/settings/links.ts`): **You** (Profile, Appearance, its sections, Account) · **Workspace** · **AI agents** · **Developer** · **Other** (sections without a group), then Legal · Support · Admin without a heading. Empty groups are left out; hrefs and anchors don't change. An app assigns groups on its own registry lines (`{ ...chatSettings, group: "you" }`); belt features don't set one. Long side tabs scroll inside the sticky column.
+- **Settings groups**: once any `settingsSections` entry has a `group`, Settings shows headed groups (side-tab headings ≥ 1024, one `ListGroup` per group on phones), in this order and with these labels (`screens/settings/links.ts`): **You** (Profile, Appearance, its sections, Account) · **Workspace** · **AI agents** · **Developer** · **Other** (sections without a group), then Legal · Support · Admin without a heading. Empty groups are left out; hrefs and anchors don't change. An app assigns groups on its own registry lines (`{ ...chatSettings, group: "you" }`); belt features don't set one. Long side tabs scroll inside the sticky column.
 - Admin (`/admin`, `data-density="compact"`): staff only by `me.admin_role` (the API guards every route). Overview (counts, recent actions) · Users (search, status filter, keyset list, detail: status for staff, role and delete for admins, never yourself) · Audit log (filter by target, "only this target") · `adminNav`. Every change confirms in a `ConfirmDialog` naming the person and the consequence.
 
 ## Screens, states and copy
 
-- Page container `mx-auto w-full max-w-content px-gutter py-section`; `Screen` gives title → body 24 and `gap-section` between sections; section heading + content in one `gap-3` stack (`Section`). Forms `max-w-form`.
+- Page container `mx-auto w-full max-w-content px-gutter py-section`; `Screen` gives title → body 24 and `gap-section` between sections; section heading + content in one `gap-3` stack (`Section`), rows in a `ListGroup`, both on the canvas (design.md, house rule 8). Forms `max-w-form`.
 - Every async view: skeleton shaped like the result, `EmptyState` (title + one action), `ErrorState` (what failed + Retry). Interactive rows never contain other controls (no `info` on them).
 - Copy follows writing.md: no subtitles (context in `info`), sentence case, numerals, verbs on buttons, errors say what to do. Use `APP_NAME`, never the literal.
 - Tokens only; check 375 px and 1440 px, light and dark, keyboard focus, reduced motion.
@@ -93,6 +97,14 @@ Content from a person's connected platform account (shared `SourceRef` on rows, 
 - `ConnectPrompt {offers, returnTo?, title?, info?, linkAs?, onDismiss?}`: a quiet dashed card offering `ConnectionOffer`s (`withReturnTo` appends `return_to`); nothing when there are no offers. Use it in empty states and at the foot of lists, never as a banner.
 - `ConnectedSection {items, activeId?, onSelect?, linkAs?, addHref?, action?, loading?, title?="Connected"}` with `connectedSectionItems(sources, hrefFor?)`: the sidebar section after the app's own, one row per account ("Google Drive · sam@acme.com") with Reconnect (`fix_url`) or a lock (blocked).
 - Fixes go to `/settings/connections?capability=<key>&return_to=<path>` (`connectionFixPath`); show connection errors by code (`isConnectionErrorCode`). Where an app action can't apply to connected content, offer the platform's ("Manage sharing in Google Drive") in the ⋮ menu.
+
+## File previews
+
+Any file a person stored (drive items, attachments, file blocks) shows through the ui-web kit, never a hand-rolled viewer:
+
+- `FilePreview {url, name, mime?, size?, downloadUrl?, onDownload?, compact?, thumbnailUrl?, className?}`: kind from `filePreviewKind(name, mime)` (shared `@<slug>/shared/preview`, also exported by ui-web). Image (zoom/pan: buttons, + − 0, ctrl/⌘-wheel, pinch, double click, arrows), video, audio, PDF (the browser's viewer ≥ 640 px, Open below), text, code (highlight.js, lazy), Markdown (parsed tree, never HTML; links http(s)/mailto/relative), CSV/TSV (virtualised, 100,000 rows), JSON (formatted or the parse error), SVG (an `<img>` of a data URL only, never inline or same-origin), docx/xlsx/pptx/odt/ods/odp (fflate + DOMParser into components, lazy, ≤ 40 MB; legacy .doc/.xls/.ppt, RTF and iWork download), zip listings (central directory by Range), fonts (FontFace sample); `other` = icon, size, Download. Text kinds read the first 2 MB. `compact` = attachment size: a bounded image or player, or a card that opens `FilePreviewDialog` (same props + `open`, `onOpenChange`).
+- `FileIcon {name, mime?, kind?, tone?}` + `filePreviewIcon(kind)` / `filePreviewTone(kind)` for lists.
+- `url` is fetched by the browser for text, office, zip and font kinds: presigned links need the bucket's CORS to allow GET (and the Range header) from the web origin; serve script-capable types (HTML, SVG, XML, unknown) as attachments with a forced type — the kit still draws them as text. Nothing loads from a CDN.
 
 ## Images
 

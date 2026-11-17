@@ -1,0 +1,1116 @@
+{
+  "provenance": {
+    "packages": {
+      "@aauth/agent": "4.1.1",
+      "@aauth/protocol": "2.0.0",
+      "@aauth/local-keys": "2.0.0",
+      "@hellocoop/httpsig": "2.6.0",
+      "jose": "6.2.15"
+    },
+    "node": "v22.21.0",
+    "date": "2026-11-05",
+    "keys": "Throwaway keys generated for this file. They protect nothing.",
+    "regenerate": "See testdata/README.md."
+  },
+  "now": 1793920215,
+  "issuers": [
+    {
+      "issuer": "https://agent.example",
+      "dwk": "aauth-agent.json",
+      "jwks": {
+        "keys": [
+          {
+            "crv": "Ed25519",
+            "x": "iKbOSWY9NIGZj2lkPDYciBYozSpTjksmS68FC67FWrA",
+            "kty": "OKP",
+            "alg": "Ed25519",
+            "kid": "ap-ed"
+          },
+          {
+            "kty": "EC",
+            "x": "JxplVPXbu8ZsQXhmfyUaCtoCiTf-uL7_lhYGjIq1q14",
+            "y": "flJMEIdNcx5zUtkJIOwrrAZv4shkZAvXUTyjOnMD8vc",
+            "crv": "P-256",
+            "alg": "ES256",
+            "kid": "ap-ec"
+          }
+        ]
+      }
+    },
+    {
+      "issuer": "https://ps.example",
+      "dwk": "aauth-person.json",
+      "jwks": {
+        "keys": [
+          {
+            "crv": "Ed25519",
+            "x": "wz49krlG878xgfTBzfqRzoykzLQgttEbqckdb4cb_zk",
+            "kty": "OKP",
+            "alg": "Ed25519",
+            "kid": "ps-ed"
+          },
+          {
+            "kty": "EC",
+            "x": "TRXycjYYnQN8jkkOOZ8nbozu8jXf_Dh0D0BtvCHvPo4",
+            "y": "Gi0YHuVCPnxq7xSI6el-lZLYPL9i0dU0ZwSVB5merrU",
+            "crv": "P-256",
+            "alg": "ES256",
+            "kid": "ps-ec"
+          }
+        ]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "post-ed25519-ed25519",
+      "how": "createSignedFetch(..., {signBody:true}) POST with a body",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:VVauLJ/nlDLLKri6z6mkPR2Kq08BvbapzYQARoowVu29gvq8vaxGOWAQdyWRN0qgnR5vrU0lqXqYrESIK3cJCw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "get-ed25519-ed25519",
+      "how": "createSignedFetch(..., {signBody:true}) GET with no body",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "signature",
+          "sig=:UcORR5G0M2MatU3HYaUdYh3E/04shhK2DUPS8qrdy8/M62NjNZD3jEjj//QFw0DjNU4205AsJ1N+KUjH8mtTAg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "post-es256-es256",
+      "how": "createSignedFetch(..., {signBody:true}) POST with a body",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:5TWQkkOOeh+vRUvbxCj4/6oFAOBi7VCzEjgI4MXA2KXBMLx2tZre7A33vs2Xbh10N9paNVLNGtMlv+YXCzfGHg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJmNWY4ZjAxOS0xN2JmLTQ0MGUtYjcxOS03NmExZGJiNGUzYzUiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.AOB6__nUYh4DcpDL2L0u16OyE2Vl6rdymVftm8KIbmdEG0GThTxf62HxmzscAebI0BX8HZ8cUamCi1KxTZvu1A\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "get-es256-es256",
+      "how": "createSignedFetch(..., {signBody:true}) GET with no body",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "signature",
+          "sig=:XK9SyWe/9cUaIFZxxHCdROhIQTwZ1Twg3B50Ww8IeYu7apXhvX0K9GZSIKcPDRsJYSoYIK8FtwakCgCIjx1Srg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJmNWY4ZjAxOS0xN2JmLTQ0MGUtYjcxOS03NmExZGJiNGUzYzUiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.AOB6__nUYh4DcpDL2L0u16OyE2Vl6rdymVftm8KIbmdEG0GThTxf62HxmzscAebI0BX8HZ8cUamCi1KxTZvu1A\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "post-issuer-es256-agent-ed25519",
+      "how": "createSignedFetch(..., {signBody:true}) POST with a body",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:NNY/wyUEEUYnm86EMfqDoxkau2Emt6mjSWQ67AMv/wyvEfJ8GR7WS39sgfkAumeRWAtKnpnD6uoBHI3Afuq1Bw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiI5NjkxYTEzMC0xOTgwLTQ3MTItYjdhNC1lMTZkYmU3NzA3MTkiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nJKUSCm-M_QJvj800cxrfwgbXD95U1_eew3Yc5CAEEhX9jiqT9Wm1ErdaZ1nJma3l6kyqb2u6kGzTto9MzWYhQ\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "get-issuer-es256-agent-ed25519",
+      "how": "createSignedFetch(..., {signBody:true}) GET with no body",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "signature",
+          "sig=:m9VNupKbhdGFQFMehItGrZ18uQya02V7eUrCKR4CgtOSVg5igPWFKkT2mUihMzNpSZkrrKSHehmmU50UtAotBg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiI5NjkxYTEzMC0xOTgwLTQ3MTItYjdhNC1lMTZkYmU3NzA3MTkiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nJKUSCm-M_QJvj800cxrfwgbXD95U1_eew3Yc5CAEEhX9jiqT9Wm1ErdaZ1nJma3l6kyqb2u6kGzTto9MzWYhQ\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "post-issuer-ed25519-agent-es256",
+      "how": "createSignedFetch(..., {signBody:true}) POST with a body",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:3XP8VS2eCP/35lXAaJDOFroYU3oLnMbm4apOOXHsz6bjlvQyqweC3+I+za+vanpvzPVHB4776xsROh8w+t7YEA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJhYmE5NjE4Mi0wNGM1LTQ0NjItYTIzYi02ZWQzZDc2OTljNWMiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.18qSmzId3XUQ2wN_4p-RwINKAWX1jtVmY7Ps1nOgtwy79oujO9wBm0qApPy7h6cQXtTgKktpph0xDNRn4FJuBw\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "get-issuer-ed25519-agent-es256",
+      "how": "createSignedFetch(..., {signBody:true}) GET with no body",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "signature",
+          "sig=:7YKyJnH6VteR1toEQI7Zrf94nme5bgH+VZaZ2GKIp3Z0vo1Ku+iH6kbnTQXTKgPtjca1XApTd/vOlzQ2NjtPbQ==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJhYmE5NjE4Mi0wNGM1LTQ0NjItYTIzYi02ZWQzZDc2OTljNWMiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.18qSmzId3XUQ2wN_4p-RwINKAWX1jtVmY7Ps1nOgtwy79oujO9wBm0qApPy7h6cQXtTgKktpph0xDNRn4FJuBw\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "capabilities-header",
+      "how": "createSignedFetch(..., {capabilities}) sets aauth-capabilities, uncovered",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "aauth-capabilities",
+          "interaction, clarification"
+        ],
+        [
+          "signature",
+          "sig=:UcORR5G0M2MatU3HYaUdYh3E/04shhK2DUPS8qrdy8/M62NjNZD3jEjj//QFw0DjNU4205AsJ1N+KUjH8mtTAg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "query-not-covered",
+      "how": "createSignedFetch GET with a query string; @path excludes it",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc?x=1&y=two",
+      "headers": [
+        [
+          "signature",
+          "sig=:UcORR5G0M2MatU3HYaUdYh3E/04shhK2DUPS8qrdy8/M62NjNZD3jEjj//QFw0DjNU4205AsJ1N+KUjH8mtTAg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "authority-normalized",
+      "how": "createSignedFetch to https://PS.Example:443; the URL parser normalizes @authority",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:VVauLJ/nlDLLKri6z6mkPR2Kq08BvbapzYQARoowVu29gvq8vaxGOWAQdyWRN0qgnR5vrU0lqXqYrESIK3cJCw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "encoded-path",
+      "how": "createSignedFetch with a percent-encoded path",
+      "method": "GET",
+      "url": "https://ps.example/mission/abc%2Fdef",
+      "headers": [
+        [
+          "signature",
+          "sig=:7Kp4K3kKhJ849TpSTWPfDYWPeZGjSGLjUzhY74m6yaDNEGVbcsgstZ2cU8+qMmJP1FIcIx3CKpG3LVnt/Q25DA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "utf8-body",
+      "how": "createSignedFetch with non-ASCII JSON",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:Jzwrlf7DPe6MBMTBWp8yKAXIISCaIkBLaOHXEXQ5A78=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:OSpLAqzvP4xBfhmyDnOS2Toclfx+pUFgXVP8kGWs08jEoKp9kQvViVbHpEP6EYqyF74X4GIfxmpMrqwZ/UVsDw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImp1c3RpZmljYXRpb24iOiJyw6lzZXJ2ZXIgw6AgWsO8cmljaCDinIgifQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "default-components-post",
+      "how": "@hellocoop/httpsig fetch with its default components: content-digest is appended last",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:ktk84JhK4WcLHiYXiKQvtzqsbX5vlmI2P3Hl/giJijxCVLGoYahbQecEZvGanZq0dnz1Sufrjfb56o6nQqKVBw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"signature-key\" \"content-digest\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "extra-derived-components",
+      "how": "covers @target-uri, @scheme and @request-target too",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc?x=1",
+      "headers": [
+        [
+          "signature",
+          "sig=:MEFSW1ipaObLbWWpbwxzSXMyNZwrOrhi4h9m4tsKQO1+l/NzfzcM5fJb2La57gxIbhuN+YYTdnpxWb0bBLS1Bg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"@target-uri\" \"@scheme\" \"@request-target\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "jwks-uri-ed25519",
+      "how": "@hellocoop/httpsig fetch, jwks_uri scheme, PS_COMPONENTS_BODY",
+      "method": "POST",
+      "url": "https://resource.example/revoke",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:fHFgPHQ2vbJPk2koFpffbrj8Op1FCaZcSvdajeHoPLw=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:LCyl7Q2cmaCH8ytNZA22jr1dB7qh4GbotQP9L4Mw3Xt51MhGA8JsdXfoeztDkCD8Q3Wgqwgbsf1BNn2OY8P9Aw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ed\""
+        ]
+      ],
+      "body_b64": "eyJqdGkiOiJ4IiwiZXhwIjoxNzkzOTIwODE1fQ==",
+      "policy": "server",
+      "origin": "https://resource.example",
+      "expect": {
+        "alg": "Ed25519",
+        "server": "https://ps.example"
+      }
+    },
+    {
+      "name": "jwks-uri-es256",
+      "how": "@hellocoop/httpsig fetch, jwks_uri scheme, ES256",
+      "method": "POST",
+      "url": "https://resource.example/revoke",
+      "headers": [
+        [
+          "content-digest",
+          "sha-256=:b3IJ2JQCr03wWjN/iqEHZgN9ZPP8I6Q/f1QLhfKWXPI=:"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:wA/18CIXzKhJixBefJVWvv89CcwO26eDiNG6LjCerJxnMUkJlIuLZDV+tzpOvGjnNPZMRatZ7KApgUd65MCeBA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwks_uri;id=\"https://ps.example\";dwk=\"aauth-person.json\";kid=\"ps-ec\""
+        ]
+      ],
+      "body_b64": "eyJqdGkiOiJ5IiwiZXhwIjoxNzkzOTIwODE1fQ==",
+      "policy": "server",
+      "origin": "https://resource.example",
+      "expect": {
+        "alg": "ES256",
+        "server": "https://ps.example"
+      }
+    },
+    {
+      "name": "person-token-at-resource",
+      "how": "createSignedFetch presenting a person token minted with jose in the protocol shape",
+      "method": "GET",
+      "url": "https://resource.example/authorize",
+      "headers": [
+        [
+          "signature",
+          "sig=:UMHJ2LfUhluxPDuwx83cSTcvSDwaY9jXEw2novk+On1ugZ5mxCgnhoYqweU+iHvUU8ncXOk1qDN5Rr0clyTIAw==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtcGVyc29uK2p3dCIsImtpZCI6InBzLWVkIn0.eyJpc3MiOiJodHRwczovL3BzLmV4YW1wbGUiLCJkd2siOiJhYXV0aC1wZXJzb24uanNvbiIsImF1ZCI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsInN1YiI6IjhmMTRlNDVmY2VlYTE2N2E1YTM2ZGVkZDRiZWEyNTQzIiwianRpIjoiYmJiNjc5NDUtNmQwOS00NTE2LWI4ZmItOWMwMjk4ZmI5N2IyIiwiY25mIjp7Imp3ayI6eyJjcnYiOiJFZDI1NTE5IiwieCI6IjE2V0p4dkRPbjB2Z1BLOGpsTEdYLTF5QjVNQ0JNb09IaWdsZlN1Mmduam8iLCJrdHkiOiJPS1AiLCJhbGciOiJFZDI1NTE5In19LCJpYXQiOjE3OTM5MjAyMTUsImV4cCI6MTc5MzkyMzgxNX0.nKqbxZjP2gwfjYQZBwatEr_9OmVcfJtpsXmSjnpxIVbszVFKLLY_tQf36jGENt86QPPryqb-3zsx0ePp93z1Aw\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "resource",
+      "origin": "https://resource.example",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-person+jwt",
+        "sub": "8f14e45fceea167a5a36dedd4bea2543"
+      }
+    },
+    {
+      "name": "difference-query-component",
+      "how": "covers @query",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc?x=1",
+      "headers": [
+        [
+          "signature",
+          "sig=:g37oenvSVkGKfNW6YjRGps3Yf+A+vKE+sJz7rPphrJKk0KZhyrTHZmhA6YQfuLN+wMK6CaMYefyf8KN8zVKsBg==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"@query\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "failure": "invalid_signature"
+      },
+      "note": "The SDK signs \"@query\": x=1. RFC 9421 section 2.2.7 makes the value ?x=1, with the leading question mark."
+    },
+    {
+      "name": "refused-hwk-scheme",
+      "how": "hwk scheme",
+      "method": "GET",
+      "url": "https://ps.example/pending/abc",
+      "headers": [
+        [
+          "signature",
+          "sig=:vCzyzrXJtUnwoqOdjR/j88Og396xzfcvu6pCM1mPNWq22qkkgkPGTKE7OfTMx6MpTjlUCkwR+plTMiUnDYxQDQ==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=hwk;alg=\"Ed25519\";kty=\"OKP\";crv=\"Ed25519\";x=\"16WJxvDOn0vgPK8jlLGX-1yB5MCBMoOHiglfSu2gnjo\""
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "failure": "unsupported_scheme"
+      },
+      "note": "Agents MUST use the jwt scheme."
+    },
+    {
+      "name": "refused-uncovered-body",
+      "how": "contentDigest:\"omit\" on a PS request",
+      "method": "POST",
+      "url": "https://ps.example/person",
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "signature",
+          "sig=:ISUfEwjA8kFBJATbC0pydw6vozwYRKFmuUCuPsaALlb30kj4SVxFgrRYmkUMUJ3SkshNXk04hO3KDZR4UAAfAA==:"
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "https://ps.example",
+      "expect": {
+        "failure": "invalid_input"
+      },
+      "note": "A PS requires content-digest coverage on a body."
+    },
+    {
+      "name": "loopback-post-ed25519",
+      "how": "createSignedFetch over real HTTP to a loopback server; rawHeaders as received",
+      "method": "POST",
+      "url": "http://127.0.0.1:60922/person",
+      "headers": [
+        [
+          "host",
+          "127.0.0.1:60922"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature",
+          "sig=:JbAWTkT3gKWM5fG9pEvQNJ2YRBm6FRsiz2znDMgOYN8UwsF77UfAiZUtUbkIUVBvYCHwokgviqvWhxiima5aAQ==:"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "*"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "user-agent",
+          "node"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate"
+        ],
+        [
+          "content-length",
+          "70"
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "loopback-get-ed25519",
+      "how": "createSignedFetch over real HTTP to a loopback server; rawHeaders as received",
+      "method": "GET",
+      "url": "http://127.0.0.1:60922/pending/abc?x=1",
+      "headers": [
+        [
+          "host",
+          "127.0.0.1:60922"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFZDI1NTE5IiwidHlwIjoiYWEtYWdlbnQrand0Iiwia2lkIjoiYXAtZWQifQ.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJiNjg4ZTY4OC0zYzVjLTQ4ZTgtODZiYS00MzY1NThjYTA1NTgiLCJjbmYiOnsiandrIjp7ImNydiI6IkVkMjU1MTkiLCJ4IjoiMTZXSnh2RE9uMHZnUEs4amxMR1gtMXlCNU1DQk1vT0hpZ2xmU3UyZ25qbyIsImt0eSI6Ik9LUCIsImFsZyI6IkVkMjU1MTkifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.nuCfSe24y0s-4OCDY3mzAFQO3UmM5s7X3JS1ihDfc4wFlY4LtLbR40fBRCh3iYxUh-n76rjYLeY3b0Ip0kzTAA\""
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature",
+          "sig=:z4g0FI/EsoeRS/g9SMvAq7S7v91RgJAJUf9qwM3M2IxFyDHG/edvIIm1butvulULO89xXLbhdbwTb5dyesJXAA==:"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "*"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "user-agent",
+          "node"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate"
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "",
+      "expect": {
+        "alg": "Ed25519",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "loopback-post-es256",
+      "how": "createSignedFetch over real HTTP to a loopback server; rawHeaders as received",
+      "method": "POST",
+      "url": "http://127.0.0.1:60922/person",
+      "headers": [
+        [
+          "host",
+          "127.0.0.1:60922"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "content-digest",
+          "sha-256=:3U1ftIuj9LAZ1bBe/D7cdVNDtcxTj6NrBvMLg8Jwu8M=:"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJmNWY4ZjAxOS0xN2JmLTQ0MGUtYjcxOS03NmExZGJiNGUzYzUiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.AOB6__nUYh4DcpDL2L0u16OyE2Vl6rdymVftm8KIbmdEG0GThTxf62HxmzscAebI0BX8HZ8cUamCi1KxTZvu1A\""
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-digest\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature",
+          "sig=:zl9dCbWiT7bWe4HJndmnT2XPb31kZPA0zgrRgKG6kl0xjfv3h3CqG+5YCZ7hxWp9GGQ5XHYiXVbMazEk8Bzt+Q==:"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "*"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "user-agent",
+          "node"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate"
+        ],
+        [
+          "content-length",
+          "70"
+        ]
+      ],
+      "body_b64": "eyJyZXNvdXJjZSI6Imh0dHBzOi8vcmVzb3VyY2UuZXhhbXBsZSIsImNhcGFiaWxpdGllcyI6WyJpbnRlcmFjdGlvbiJdfQ==",
+      "policy": "agent",
+      "origin": "",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    },
+    {
+      "name": "loopback-get-es256",
+      "how": "createSignedFetch over real HTTP to a loopback server; rawHeaders as received",
+      "method": "GET",
+      "url": "http://127.0.0.1:60922/pending/abc?x=1",
+      "headers": [
+        [
+          "host",
+          "127.0.0.1:60922"
+        ],
+        [
+          "connection",
+          "keep-alive"
+        ],
+        [
+          "signature-key",
+          "sig=jwt;jwt=\"eyJhbGciOiJFUzI1NiIsInR5cCI6ImFhLWFnZW50K2p3dCIsImtpZCI6ImFwLWVjIn0.eyJpc3MiOiJodHRwczovL2FnZW50LmV4YW1wbGUiLCJkd2siOiJhYXV0aC1hZ2VudC5qc29uIiwic3ViIjoiYWF1dGg6YXNzaXN0YW50QGFnZW50LmV4YW1wbGUiLCJqdGkiOiJmNWY4ZjAxOS0xN2JmLTQ0MGUtYjcxOS03NmExZGJiNGUzYzUiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwieCI6InF6YktKNVRHbHEwRVZKZ0RrZ0ZyWDBBV0h0Sm8yU3lKdV9DYmhsb1BpYkEiLCJ5IjoiY2hvM0pwdTk3VEo3eC1LMEUzdzJZZnhCdkVyU3ZTdHh3S2pPdWFSUDluTSIsImNydiI6IlAtMjU2IiwiYWxnIjoiRVMyNTYifX0sImlhdCI6MTc5MzkyMDIxNSwiZXhwIjoxNzkzOTIzODE1LCJwcyI6Imh0dHBzOi8vcHMuZXhhbXBsZSJ9.AOB6__nUYh4DcpDL2L0u16OyE2Vl6rdymVftm8KIbmdEG0GThTxf62HxmzscAebI0BX8HZ8cUamCi1KxTZvu1A\""
+        ],
+        [
+          "signature-input",
+          "sig=(\"@method\" \"@authority\" \"@path\" \"signature-key\");created=1793920215"
+        ],
+        [
+          "signature",
+          "sig=:fvHgLiOwYFc3kqEbYm3TZetf3hXa9oS7Ezv21ILkmt/kLTTAf7TUaVAXW8VktvwLAqZOvcERSsgSoe+q9LiL9Q==:"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "*"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "user-agent",
+          "node"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate"
+        ]
+      ],
+      "body_b64": "",
+      "policy": "agent",
+      "origin": "",
+      "expect": {
+        "alg": "ES256",
+        "typ": "aa-agent+jwt",
+        "sub": "aauth:assistant@agent.example"
+      }
+    }
+  ],
+  "headers": {
+    "requirement": [
+      {
+        "input": {
+          "Value": "auth-token",
+          "ResourceToken": "eyJhbGc.e30.sig"
+        },
+        "field": "requirement=auth-token;resource-token=\"eyJhbGc.e30.sig\""
+      },
+      {
+        "input": {
+          "Value": "interaction",
+          "URL": "https://example.com/interact",
+          "Code": "A1B2-C3D4"
+        },
+        "field": "requirement=interaction;url=\"https://example.com/interact\";code=\"A1B2-C3D4\""
+      },
+      {
+        "input": {
+          "Value": "approval"
+        },
+        "field": "requirement=approval"
+      },
+      {
+        "input": {
+          "Value": "person-token"
+        },
+        "field": "requirement=person-token"
+      },
+      {
+        "input": {
+          "Value": "clarification"
+        },
+        "field": "requirement=clarification"
+      },
+      {
+        "input": {
+          "Value": "claims"
+        },
+        "field": "requirement=claims"
+      }
+    ],
+    "capabilities": {
+      "input": [
+        "interaction",
+        "clarification",
+        "payment"
+      ],
+      "field": "interaction, clarification, payment"
+    },
+    "signature_error": [
+      {
+        "code": "invalid_signature",
+        "field": "error=invalid_signature"
+      },
+      {
+        "code": "revoked_jwt",
+        "field": "error=revoked_jwt"
+      },
+      {
+        "code": "clock_skew",
+        "field": "error=clock_skew"
+      },
+      {
+        "code": "invalid_input",
+        "required_input": [
+          "@method",
+          "@authority",
+          "@path",
+          "signature-key",
+          "content-digest"
+        ],
+        "field": "error=invalid_input, required_input=(\"@method\" \"@authority\" \"@path\" \"signature-key\" \"content-digest\")"
+      }
+    ],
+    "accept_scheme": {
+      "input": [
+        "jwt",
+        "jwks_uri"
+      ],
+      "field": "jwt, jwks_uri"
+    },
+    "accept_alg": {
+      "input": [
+        "Ed25519",
+        "ES256"
+      ],
+      "field": "Ed25519, ES256"
+    }
+  },
+  "thumbprints": [
+    {
+      "jwk": {
+        "crv": "Ed25519",
+        "x": "16WJxvDOn0vgPK8jlLGX-1yB5MCBMoOHiglfSu2gnjo",
+        "kty": "OKP",
+        "alg": "Ed25519"
+      },
+      "thumbprint": "RgV7V3LS64e0kIEQj-c44seB7lp_1w-OaKtbMTAOnH8"
+    },
+    {
+      "jwk": {
+        "kty": "EC",
+        "x": "qzbKJ5TGlq0EVJgDkgFrX0AWHtJo2SyJu_CbhloPibA",
+        "y": "cho3Jpu97TJ7x-K0E3w2YfxBvErSvStxwKjOuaRP9nM",
+        "crv": "P-256",
+        "alg": "ES256"
+      },
+      "thumbprint": "GogfpQUygtJ_T_L2-1yfpQ4Z6EaGed4rJBzLzwBSxu8"
+    },
+    {
+      "jwk": {
+        "crv": "Ed25519",
+        "x": "iKbOSWY9NIGZj2lkPDYciBYozSpTjksmS68FC67FWrA",
+        "kty": "OKP",
+        "alg": "Ed25519",
+        "kid": "ap-ed"
+      },
+      "thumbprint": "l1WKEpYH-xo4TnKfDSQTuxGxgidfkK4Kq-jAe1CxwTE"
+    }
+  ],
+  "digests": [
+    {
+      "body_b64": "",
+      "field": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:"
+    },
+    {
+      "body_b64": "eyJoZWxsbyI6ICJ3b3JsZCJ9",
+      "field": "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:"
+    },
+    {
+      "body_b64": "eyJoZWxsbyI6ICJ3b3JsZCJ9Cg==",
+      "field": "sha-256=:RK/0qy18MlBSVnWgjwz6lZEWjP/lF5HF9bvEF8FabDg=:"
+    },
+    {
+      "body_b64": "csOpc2VydmVyIOKciA==",
+      "field": "sha-256=:K1jTNaFkanSy+zuToKOsJaetA+LnnnycrtyCyqryOq8=:"
+    }
+  ]
+}

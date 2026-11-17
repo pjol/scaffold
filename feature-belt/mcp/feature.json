@@ -1,8 +1,8 @@
 {
   "name": "mcp",
   "title": "MCP, connected apps and API keys",
-  "version": "1.1.0",
-  "summary": "People connect agents (Claude, ChatGPT, Cursor, Claude Code) by URL and sign in, or use personal API keys; the agent calls the app's tools over MCP as them.",
+  "version": "1.2.0",
+  "summary": "People connect agents (Claude, ChatGPT, Cursor, Claude Code) by URL and sign in, or use personal API keys, and AAuth agents link once through their person server; the agent calls the app's tools over MCP as them.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -57,12 +57,33 @@
       "required": "optional",
       "default": "true",
       "doc": "Accept https client_id URLs (client ID metadata documents), which the server fetches through a private-address guard."
+    },
+    {
+      "name": "MCP_AAUTH_ENABLED",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "optional",
+      "default": "true",
+      "doc": "Accept agents that sign their requests with AAuth through their person server. Needs PUBLIC_API_URL to be an https origin with no path (loopback http in development) and PUBLIC_WEB_URL for the link page."
+    },
+    {
+      "name": "AAUTH_KEY_ENCRYPTION_SECRET",
+      "tier": "backend",
+      "group": "mcp",
+      "required": "prod",
+      "secret": true,
+      "doc": "At least 32 bytes sealing the AAuth signing keys (resource tokens) in the database with AES-256-GCM. Development falls back to a public development secret. Not needed when MCP_AAUTH_ENABLED=false.",
+      "source": "openssl rand -base64 48"
     }
   ],
   "files": [
     {
       "src": "backend/mcp",
       "dst": "backend/internal/mcp"
+    },
+    {
+      "src": "backend/aauth",
+      "dst": "backend/internal/aauth"
     },
     {
       "src": "backend/feature_mcp.go",
@@ -120,6 +141,11 @@
       "file": "web/proxy.ts",
       "anchor": "public-paths",
       "insert": "\"/connect\","
+    },
+    {
+      "file": "web/proxy.ts",
+      "anchor": "public-paths",
+      "insert": "\"/connect/aauth\","
     }
   ],
   "stitch": [
@@ -128,6 +154,8 @@
     "Rewrite the server instructions, resource_name and card description in backend/internal/mcp/mcp.go and the consent copy in web/src/features/mcp/ConnectScreen.tsx for this app.",
     "Serve the API at the origin PUBLIC_API_URL names (no path prefix): /mcp, /.well-known/* and /oauth/* live at its root, and PUBLIC_API_URL is the OAuth issuer.",
     "Set PUBLIC_WEB_URL: /oauth/authorize sends people to its /connect page to sign in and consent. OAuth is off without it.",
-    "Decide whether hosted clients may use client ID metadata documents (MCP_OAUTH_CLIENT_METADATA_ENABLED); turn it off if the API must make no outbound requests."
+    "Decide whether hosted clients may use client ID metadata documents (MCP_OAUTH_CLIENT_METADATA_ENABLED); turn it off if the API must make no outbound requests.",
+    "AAuth (on by default): serve the API at an https origin with no path, so PUBLIC_API_URL is a valid AAuth server identifier, and set AAUTH_KEY_ENCRYPTION_SECRET outside development. The resource metadata's name and description are in backend/internal/mcp/aauth.go and mcp.go (aauthDescription); rewrite them for this app. Turn it off with MCP_AAUTH_ENABLED=false.",
+    "Projects made before 2026-11-08: copy template/backend/internal/safehttp (Options.LongHeaders), which internal/aauth needs."
   ]
 }

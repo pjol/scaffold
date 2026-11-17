@@ -107,6 +107,15 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`DELETE FROM files_uploads WHERE user_id = $1`,
 		`DELETE FROM files_archives WHERE user_id = $1`,
 		`DELETE FROM files_connected_downloads WHERE user_id = $1`,
+		// Locks they held are released; comments stay in their threads without a name.
+		`UPDATE files_items SET locked_by = NULL, locked_at = NULL, lock_note = '' WHERE locked_by = $1`,
+		`UPDATE files_comments SET author_id = NULL WHERE author_id = $1`,
+		`UPDATE files_comments SET resolved_by = NULL WHERE resolved_by = $1`,
+		`UPDATE files_comments SET mentions = array_remove(mentions, $1) WHERE $1 = ANY(mentions)`,
+		`UPDATE files_link_settings SET updated_by = NULL WHERE updated_by = $1`,
+		// Their file requests stop taking files (created_by NULL closes them).
+		`UPDATE files_requests SET created_by = NULL, closed_at = COALESCE(closed_at, now()) WHERE created_by = $1`,
+		`UPDATE files_requests SET closed_by = NULL WHERE closed_by = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -181,11 +190,41 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if err != nil {
 		return nil, err
 	}
+	type comment struct {
+		ItemID    uuid.UUID `json:"item_id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT item_id, body, created_at FROM files_comments WHERE author_id = $1 ORDER BY created_at LIMIT 10000`, userID)
+	if err != nil {
+		return nil, err
+	}
+	comments, err := pgx.CollectRows(rows, pgx.RowToStructByPos[comment])
+	if err != nil {
+		return nil, err
+	}
+	type request struct {
+		FolderID      uuid.UUID  `json:"folder_id"`
+		Title         string     `json:"title"`
+		FilesReceived int        `json:"files_received"`
+		CreatedAt     time.Time  `json:"created_at"`
+		ClosedAt      *time.Time `json:"closed_at"`
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT folder_id, title, files_received, created_at, closed_at FROM files_requests WHERE created_by = $1 ORDER BY created_at LIMIT 10000`, userID)
+	if err != nil {
+		return nil, err
+	}
+	requests, err := pgx.CollectRows(rows, pgx.RowToStructByPos[request])
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"items":    orEmpty(items),
-		"versions": orEmpty(versions),
-		"starred":  orEmpty(stars),
-		"activity": orEmpty(events),
+		"items":         orEmpty(items),
+		"versions":      orEmpty(versions),
+		"starred":       orEmpty(stars),
+		"activity":      orEmpty(events),
+		"comments":      orEmpty(comments),
+		"file_requests": orEmpty(requests),
 	}, nil
 }
 

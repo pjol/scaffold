@@ -14,7 +14,7 @@ const APP_SUPPORTS: ReposSupports = {
   request_changes: true,
   reviewers: true,
   realtime: true,
-  checks: false,
+  checks: true,
   code_search_refs: true,
   tree_commits: true,
   import: false,

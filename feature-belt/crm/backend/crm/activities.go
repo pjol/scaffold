@@ -65,6 +65,9 @@ type Activity struct {
 	CreatedAt       time.Time   `json:"created_at"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	CanEdit         bool        `json:"can_edit"`
+	// Email is the mail metadata of an email sent from or logged out of a
+	// connected mailbox (from, to, cc, provider).
+	Email *EmailMeta `json:"email"`
 	// Unreachable names people mentioned who can't see the record (not notified).
 	Unreachable []string `json:"unreachable,omitempty"`
 
@@ -102,7 +105,7 @@ type TimelineItem struct {
 
 const activityCols = `a.id, a.org_id, a.type, a.record_type, a.record_id, a.subject, a.body, a.occurred_at, a.duration_minutes, a.outcome,
 	a.direction, a.due_at, a.assignee_id, au.display_name, au.avatar_url, a.reminder_at, a.done_at, a.priority, a.mentions,
-	a.created_by, cu.display_name, cu.avatar_url, a.agent, a.created_at, a.updated_at`
+	a.created_by, cu.display_name, cu.avatar_url, a.agent, a.created_at, a.updated_at, a.email`
 
 const activityFrom = `FROM crm_activities a
 	LEFT JOIN users au ON au.id = a.assignee_id AND au.status <> 'deleted'
@@ -114,7 +117,7 @@ func scanActivity(row pgx.Row, extra ...any) (*Activity, error) {
 	var aName, aAvatar, cName, cAvatar *string
 	dest := []any{&a.ID, &a.OrgID, &a.Type, &rt, &a.primary.ID, &a.Subject, &a.Body, &a.OccurredAt, &a.DurationMinutes, &a.Outcome,
 		&a.Direction, &a.DueAt, &a.assigneeID, &aName, &aAvatar, &a.ReminderAt, &a.DoneAt, &a.Priority, &a.mentionIDs,
-		&a.authorID, &cName, &cAvatar, &a.Agent, &a.CreatedAt, &a.UpdatedAt}
+		&a.authorID, &cName, &cAvatar, &a.Agent, &a.CreatedAt, &a.UpdatedAt, &a.Email}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -587,6 +590,8 @@ type activityReq struct {
 	// ClearDue / ClearReminder remove those task fields on update.
 	ClearDue      bool `json:"clear_due"`
 	ClearReminder bool `json:"clear_reminder"`
+	// email is set by the mail routes (sent or logged from a mailbox), never by clients.
+	email *EmailMeta
 }
 
 func (s *Service) createActivity(o objectType) func(http.ResponseWriter, *http.Request) error {
@@ -654,7 +659,7 @@ func (s *Service) logActivity(ctx context.Context, userID uuid.UUID, o objectTyp
 		for _, x := range req.AlsoOn {
 			ot, ok := parseObject(x.Type)
 			if !ok {
-				return httpx.BadRequest("also_on types are company, contact or deal.")
+				return httpx.BadRequest("also_on types are company, contact, deal or ticket.")
 			}
 			k := refKey{ot, x.ID}
 			if slices.Contains(links, k) {
@@ -699,10 +704,13 @@ func (s *Service) logActivity(ctx context.Context, userID uuid.UUID, o objectTyp
 		}
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO crm_activities (org_id, type, record_type, record_id, subject, body, occurred_at, duration_minutes, outcome,
-			                            direction, due_at, assignee_id, reminder_at, done_at, priority, mentions, agent, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
+			                            direction, due_at, assignee_id, reminder_at, done_at, priority, mentions, agent, created_by, email)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING id`,
 			orgID, req.Type, string(o), recordID, subject, body, occurred, req.DurationMinutes, req.Outcome, req.Direction,
-			taskTime(req.Type, req.DueAt), assignee, taskTime(req.Type, req.ReminderAt), done, priority, mentions, agentName(ctx), userID).Scan(&id); err != nil {
+			taskTime(req.Type, req.DueAt), assignee, taskTime(req.Type, req.ReminderAt), done, priority, mentions, agentName(ctx), userID, req.email).Scan(&id); err != nil {
+			if req.email != nil && db.IsUniqueViolation(err, "crm_activities_email_message_key") {
+				return httpx.Conflict("That email is already in the CRM.")
+			}
 			return err
 		}
 		for _, k := range links {
@@ -713,6 +721,14 @@ func (s *Service) logActivity(ctx context.Context, userID uuid.UUID, o objectTyp
 			if req.Type != "task" {
 				if _, err := tx.Exec(ctx, `UPDATE `+k.Type.table()+` SET last_activity_at = GREATEST(COALESCE(last_activity_at, '-infinity'), $2) WHERE id = $1`,
 					k.ID, occurred); err != nil {
+					return err
+				}
+			}
+			// A ticket's first response: the first email, call or meeting
+			// someone logs on it after it opened (inbound mail doesn't count).
+			if k.Type == objTicket && (req.Type == "call" || req.Type == "email" || req.Type == "meeting") && deref(req.Direction) != "inbound" {
+				if _, err := tx.Exec(ctx, `UPDATE crm_tickets SET first_response_at = GREATEST($2, created_at)
+					WHERE id = $1 AND first_response_at IS NULL`, k.ID, occurred); err != nil {
 					return err
 				}
 			}

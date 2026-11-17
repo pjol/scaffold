@@ -1,5 +1,14 @@
 import type { CallOptions, HttpClient } from "../api/http";
-import type { Presence, PresenceHeartbeatRequest, PresenceHeartbeatResult, PresenceMine, PresenceSetStatusRequest } from "./types";
+import type {
+  Presence,
+  PresenceCreatePresetRequest,
+  PresenceHeartbeatRequest,
+  PresenceHeartbeatResult,
+  PresenceMine,
+  PresenceSchedule,
+  PresenceSetStatusRequest,
+  PresenceStatusPreset,
+} from "./types";
 
 /** `/v1/presence` endpoints (signed in). */
 export function presenceEndpoints(http: HttpClient) {
@@ -16,6 +25,12 @@ export function presenceEndpoints(http: HttpClient) {
     setDND: (until: string, o?: CallOptions) => http.put<PresenceMine>(`${P}/me/dnd`, { until }, o),
     clearDND: (o?: CallOptions) => http.delete<PresenceMine>(`${P}/me/dnd`, o),
     setAway: (away: boolean, o?: CallOptions) => http.put<PresenceMine>(`${P}/me/away`, { away }, o),
+    /** Quiet hours per weekday; pushes and emails hold during them like any Do Not Disturb. */
+    setSchedule: (body: PresenceSchedule, o?: CallOptions) => http.put<PresenceMine>(`${P}/me/schedule`, body, o),
+    clearSchedule: (o?: CallOptions) => http.delete<PresenceMine>(`${P}/me/schedule`, o),
+    presets: (o?: CallOptions) => http.get<{ items: PresenceStatusPreset[] }>(`${P}/me/presets`, o),
+    createPreset: (body: PresenceCreatePresetRequest, o?: CallOptions) => http.post<PresenceStatusPreset>(`${P}/me/presets`, body, o),
+    deletePreset: (id: string, o?: CallOptions) => http.delete<void>(`${P}/me/presets/${encodeURIComponent(id)}`, o),
   };
 }
 

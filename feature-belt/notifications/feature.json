@@ -1,8 +1,8 @@
 {
   "name": "notifications",
   "title": "Notifications",
-  "version": "1.1.2",
-  "summary": "Users get an in-app inbox with an unread badge, push on their phones and optional email, and choose channels per kind.",
+  "version": "1.2.0",
+  "summary": "Users get an in-app inbox with an unread badge (read and unread, snooze, grouping by thread, filters, muting), push on their phones, optional email and an email digest, and choose channels per kind.",
   "surfaces": [
     "backend",
     "web",
@@ -79,7 +79,7 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { notificationsAdminNav, notificationsBell, notificationsHome, notificationsSession, notificationsSettings } from \"./notifications/registry\";"
+      "insert": "import { notificationsAdminNav, notificationsBell, notificationsHome, notificationsInboxAction, notificationsSession, notificationsSettings } from \"./notifications/registry\";"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -105,6 +105,11 @@
       "file": "web/src/features/registry.tsx",
       "anchor": "header-actions",
       "insert": "notificationsBell,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "notificationsInboxAction,"
     },
     {
       "file": "mobile/src/features/registry.tsx",
@@ -143,6 +148,8 @@
     "Mobile push: run `eas init` (extra.eas.projectId), set up APNs/FCM credentials in EAS, and rebuild the dev client (the expo-notifications config plugin is wired into app.config.ts).",
     "Decide placement on mobile: Inbox is a Home row; promote it to a tab only if notifications are a primary destination.",
     "Show PushBanner where asking for push explains itself (after a first message or support request), never at launch.",
-    "Name Expo push (and your mail provider) as processors in the privacy policy (concrete/compliance.md)."
+    "Name Expo push (and your mail provider) as processors in the privacy policy (concrete/compliance.md).",
+    "Let people mute a resource from the inbox: notifications.AllowMute(\"<feature>.<kind>\") for the resource kinds your notifications are about (stored here; new notifications about a muted resource are dropped), or notifications.RegisterMuteHandler(kind, h) when the feature keeps its own mute (a channel's mute setting). Without either, rows have no Mute.",
+    "Thread grouping: put \"thread_id\" in a notification's data (or link to ?thread=<id>) so the inbox groups replies by thread; Kind.Group overrides the resource a kind is about (default: AgentTarget)."
   ]
 }

@@ -50,8 +50,52 @@ export interface AssistantConversation {
 }
 
 export interface AssistantDisplayPart {
-  type: "text";
+  type: "text" | "context";
   text: string;
+  /** `type: "context"`: what the person attached (Summarise / Ask about this). */
+  context?: AssistantContextRef;
+}
+
+/** A resource attached to a message, as the conversation shows it. */
+export interface AssistantContextRef {
+  kind: string;
+  id: string;
+  /** "channel", "page", "call"… */
+  label: string;
+  title: string;
+  /** App path of the resource. */
+  link?: string;
+  scope?: string;
+  scope_label?: string;
+  /** Why there was nothing to read ("This call has no saved transcript."). */
+  missing?: string;
+}
+
+/** One way to summarise a kind ("unread", "Unread messages"); `{title}` in `prompt` becomes the title. */
+export interface AssistantContextScope {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+/** A kind the person can summarise or ask about (`GET /v1/assistant/contexts`). */
+export interface AssistantContextKind {
+  kind: string;
+  label: string;
+  /** Agent-scope key (the module). */
+  feature: string;
+  scopes: AssistantContextScope[];
+  /** The Summarise message when there are no scopes. */
+  prompt: string;
+}
+
+/** What to attach to a message: a resource as the ⋮ menu knows it. */
+export interface AssistantContextRequest {
+  kind: string;
+  id: string;
+  scope?: string;
+  /** What the person saw, a label used when the server names nothing better. */
+  title?: string;
 }
 
 /**

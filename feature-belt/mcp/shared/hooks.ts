@@ -7,6 +7,12 @@ import { useApiQuery, usePagedQuery, type InfiniteOverrides, type PagedQueryResu
 import { listKeyParams } from "../hooks/keys";
 import { mcpEndpoints } from "./api";
 import type {
+  McpAAuthClaimRequest,
+  McpAAuthDecision,
+  McpAAuthInteraction,
+  McpAAuthLink,
+  McpAdminAAuthLink,
+  McpAdminAAuthLinkListParams,
   McpAdminConnection,
   McpAdminConnectionListParams,
   McpAdminKey,
@@ -29,6 +35,10 @@ export const mcpKeys = {
   connections: () => ["mcp", "connections"] as const,
   adminConnections: () => ["mcp", "admin", "connections"] as const,
   adminConnectionList: (params: Record<string, unknown> = {}) => ["mcp", "admin", "connections", params] as const,
+  aauthInteraction: (id: string) => ["mcp", "aauth", "interaction", id] as const,
+  aauthLinks: () => ["mcp", "aauth", "links"] as const,
+  adminAAuthLinks: () => ["mcp", "admin", "aauth"] as const,
+  adminAAuthLinkList: (params: Record<string, unknown> = {}) => ["mcp", "admin", "aauth", params] as const,
 };
 
 /** The caller's active API keys, newest first (`data.items`). */
@@ -128,5 +138,75 @@ export function useAdminRevokeMcpConnection(): UseMutationResult<void, ApiError,
   return useMutation<void, ApiError, string>({
     mutationFn: (id) => ep.admin.revokeConnection(id),
     onSettled: () => qc.invalidateQueries({ queryKey: mcpKeys.adminConnections() }),
+  });
+}
+
+/** Claim the code an agent showed on the link page. Single use: a second claim is 410 `invalid_code`. */
+export function useClaimMcpAAuthInteraction(): UseMutationResult<McpAAuthInteraction, ApiError, McpAAuthClaimRequest> {
+  const ep = useEndpoints(mcpEndpoints);
+  const qc = useQueryClient();
+  return useMutation<McpAAuthInteraction, ApiError, McpAAuthClaimRequest>({
+    mutationFn: (body) => ep.claimAAuthInteraction(body),
+    onSuccess: (view) => qc.setQueryData(mcpKeys.aauthInteraction(view.id), view),
+  });
+}
+
+/** A link request the caller claimed, for a reload of the page. Never retried: 404 and 410 are answers. */
+export function useMcpAAuthInteraction(id: string | null): UseQueryResult<McpAAuthInteraction, ApiError> {
+  const ep = useEndpoints(mcpEndpoints);
+  return useApiQuery<McpAAuthInteraction>(
+    mcpKeys.aauthInteraction(id ?? ""),
+    ({ signal }) => ep.aauthInteraction(id ?? "", { signal }),
+    { retry: false, staleTime: Infinity },
+    !!id,
+  );
+}
+
+/** Link the person server's account to the caller, or decline; the result says where to send the browser. */
+export function useDecideMcpAAuthInteraction(): UseMutationResult<McpAAuthDecision, ApiError, { id: string; allow: boolean }> {
+  const ep = useEndpoints(mcpEndpoints);
+  const qc = useQueryClient();
+  return useMutation<McpAAuthDecision, ApiError, { id: string; allow: boolean }>({
+    mutationFn: ({ id, allow }) => ep.decideAAuthInteraction(id, allow),
+    onSuccess: () => qc.invalidateQueries({ queryKey: mcpKeys.aauthLinks() }),
+  });
+}
+
+/** The caller's linked person servers, most recently linked first (`data.items`). */
+export function useMcpAAuthLinks(options?: InfiniteOverrides<McpAAuthLink>): PagedQueryResult<McpAAuthLink> {
+  const ep = useEndpoints(mcpEndpoints);
+  return usePagedQuery<McpAAuthLink>(mcpKeys.aauthLinks(), (cursor, signal) => ep.aauthLinks(cursor ? { cursor } : {}, { signal }), options);
+}
+
+/** Unlink a person server: its agents stop acting as the caller at once. */
+export function useUnlinkMcpAAuth(): UseMutationResult<void, ApiError, string> {
+  const ep = useEndpoints(mcpEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (id) => ep.unlinkAAuth(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: mcpKeys.aauthLinks() }),
+  });
+}
+
+/** Admin: linked person servers across users (filter by user id and status). */
+export function useAdminMcpAAuthLinks(
+  params: Omit<McpAdminAAuthLinkListParams, "cursor"> = {},
+  options?: InfiniteOverrides<McpAdminAAuthLink>,
+): PagedQueryResult<McpAdminAAuthLink> {
+  const ep = useEndpoints(mcpEndpoints);
+  return usePagedQuery<McpAdminAAuthLink>(
+    mcpKeys.adminAAuthLinkList(listKeyParams(params)),
+    (cursor, signal) => ep.admin.aauthLinks({ ...params, ...(cursor ? { cursor } : {}) }, { signal }),
+    { placeholderData: (prev) => prev, ...options },
+  );
+}
+
+/** Admin: unlink (audited as mcp.aauth.unlink). */
+export function useAdminUnlinkMcpAAuth(): UseMutationResult<void, ApiError, string> {
+  const ep = useEndpoints(mcpEndpoints);
+  const qc = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (id) => ep.admin.unlinkAAuth(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: mcpKeys.adminAAuthLinks() }),
   });
 }

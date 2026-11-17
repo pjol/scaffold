@@ -10,35 +10,57 @@ import {
   errorMessage,
   generateId,
   useDocsChildren,
+  useDocsExport,
+  useDocsFollow,
   useDocsPage,
   useDocsPageSession,
   useDocsPresence,
   useDocsRestorePage,
+  useDocsSaveAsTemplate,
   useDocsSetFavorite,
-  useDocsSetRowValues,
   useDocsTrashPage,
   useDocsUpdatePage,
   useMe,
+  DOCS_COVER_GALLERY_NAMES,
+  DOCS_ICON_COLORS,
+  DOCS_ICON_SET,
   type DocsBlock,
   type DocsBlockType,
+  type DocsCoverColor,
+  type DocsExportFormat,
   type DocsOp,
   type DocsPageDetail,
-  type DocsProperty,
   type DocsSessionSnapshot,
   type DocsViewer,
 } from "@scaffoldapp/shared";
 import { AvatarGroup, Banner, Button, EmptyState, ErrorState, IconButton, ListRow, Screen, Sheet, Skeleton, Text, toast, useTheme } from "@scaffoldapp/ui-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import { ArrowDown, ArrowUp, CloudOff, FileText, Lock, MessageSquare, Plus, Star, Trash2, LockOpen } from "lucide-react-native";
+import { ArrowDown, ArrowUp, BadgeCheck, Bell, BellOff, CloudOff, Download, FileText, History, ImagePlus, LayoutTemplate, Lock, MessageSquare, Plus, Smile, Star, Trash2, LockOpen, Type } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
-import { AppState, Pressable, Share, TextInput, View } from "react-native";
+import { AppState, Platform, Pressable, ScrollView, Share, TextInput, View } from "react-native";
+import { BlockInsertSheet, type InsertPlace } from "./BlockInsertSheet";
+import { CoverArt, DOCS_LUCIDE_NATIVE, PageIcon, paletteColor } from "./PageIcon";
+import { docsShareExport } from "./pageActions";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { BlockList } from "./Blocks";
-import { DatabaseView, ValueView } from "./DatabaseView";
-import { PropertySheet } from "./PropertySheet";
+import { DatabaseView } from "./DatabaseView";
+import { InlineDatabase } from "./database/InlineDatabase";
+import { RowProperties } from "./database/RowProperties";
 
 const LISTY = new Set<DocsBlockType>(["bulleted_list", "numbered_list", "to_do", "toggle"]);
-const TURN_INTO: DocsBlockType[] = ["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"];
+const TURN_INTO: DocsBlockType[] = ["paragraph", "heading_1", "heading_2", "heading_3", "heading_4", "bulleted_list", "numbered_list", "to_do", "toggle", "quote", "callout"];
+
+/** Emoji offered for page icons on mobile (the web has the full searchable set). */
+const ICON_EMOJI = ["📄", "📝", "📘", "📚", "🗂️", "📌", "✅", "🎯", "🚀", "💡", "⚠️", "📅", "🗓️", "📈", "📊", "💰", "📦", "🛠️", "🧪", "🐛", "💻", "📱", "🌐", "💬", "📣", "👋", "🎉", "❤️", "⭐", "🔥", "✨", "🌱", "🏠", "🏢", "🧭", "🗺️", "🧩", "🎨", "✏️", "🎓", "🧠", "🤝", "👥", "🏆", "🔍", "⚖️"];
+
+const EXPORTS: { id: DocsExportFormat; label: string }[] = [
+  { id: "markdown", label: "Markdown" },
+  { id: "docx", label: "Word (.docx)" },
+  { id: "html", label: "HTML (print to PDF from the share sheet)" },
+  { id: "zip", label: "Markdown & CSV with subpages (.zip)" },
+];
+
+const FONT_FAMILY = { default: undefined, serif: Platform.select({ ios: "Georgia", default: "serif" }), mono: Platform.select({ ios: "Menlo", default: "monospace" }) } as const;
 
 function siblings(snap: DocsSessionSnapshot, parent: string | null) {
   return snap.children.get(parent ?? "") ?? [];
@@ -75,48 +97,6 @@ export function PageScreen() {
   return <Loaded key={id} detail={detail.data} />;
 }
 
-function RowProperties({ detail, editable }: { detail: DocsPageDetail; editable: boolean }) {
-  const theme = useTheme();
-  const db = detail.database!;
-  const setValues = useDocsSetRowValues(db.id);
-  const [editing, setEditing] = useState<DocsProperty | null>(null);
-  const page = detail.page;
-  return (
-    <View style={{ gap: theme.space[1], borderBottomWidth: 1, borderBottomColor: theme.colors.border, paddingBottom: theme.space[3] }}>
-      {db.schema
-        .filter((p) => p.type !== "title")
-        .map((p) => (
-          <Pressable
-            key={p.id}
-            accessibilityRole="button"
-            disabled={!editable}
-            onPress={() => (p.type === "checkbox" ? setValues.mutate({ rowId: page.id, values: { [p.id]: page.props[p.id] !== true } }) : setEditing(p))}
-            style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: theme.space[3], minHeight: theme.tap.base, backgroundColor: pressed ? theme.colors.sunken : "transparent" })}
-          >
-            <Text role="label" tone="muted" numberOfLines={1} style={{ width: 110 }}>
-              {p.name}
-            </Text>
-            <View style={{ flex: 1 }}>
-              <ValueView prop={p} value={page.props[p.id]} refs={detail.refs} />
-            </View>
-          </Pressable>
-        ))}
-      <PropertySheet
-        open={!!editing}
-        prop={editing}
-        value={editing ? page.props[editing.id] : undefined}
-        orgId={page.org_id}
-        onClose={() => setEditing(null)}
-        onSave={(v) => {
-          const p = editing;
-          setEditing(null);
-          if (p) setValues.mutate({ rowId: page.id, values: { [p.id]: v } }, { onError: (e) => toast.error(errorMessage(e, "Couldn't save that value.")) });
-        }}
-      />
-    </View>
-  );
-}
-
 function Loaded({ detail }: { detail: DocsPageDetail }) {
   const theme = useTheme();
   const c = theme.colors;
@@ -138,6 +118,12 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
   const trash = useDocsTrashPage(page.org_id);
   const restore = useDocsRestorePage(page.org_id);
   const kids = useDocsChildren(page.id, page.kind === "page");
+  const follow = useDocsFollow(page.id);
+  const exporter = useDocsExport();
+  const saveTemplate = useDocsSaveAsTemplate(page.org_id);
+  const [insertAt, setInsertAt] = useState<InsertPlace | null>(null);
+  const [sheet, setSheet] = useState<null | "icon" | "cover" | "export">(null);
+  const [iconColor, setIconColor] = useState<DocsCoverColor>("neutral");
   useEffect(() => setTitle(page.title), [page.title]);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
@@ -197,9 +183,7 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
       setEditingId(last.id);
       return;
     }
-    const nid = generateId();
-    apply([{ op: "create", id: nid, type: "paragraph", parent_id: null, position: docsKeyBetween(last?.position ?? null, null), props: { text: [] } }]);
-    setEditingId(nid);
+    setInsertAt({ parentId: null, after: last?.position ?? null, before: null });
   };
 
   const shift = (b: DocsBlock, dir: -1 | 1) => {
@@ -236,7 +220,28 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
                 orgId={page.org_id}
                 actions={[
                   { id: "fav", label: detail.favorite ? "Remove from favorites" : "Add to favorites", icon: Star, onSelect: () => favorite.mutate(!detail.favorite) },
+                  {
+                    id: "follow",
+                    label: detail.following ? "Stop following" : "Follow",
+                    icon: detail.following ? BellOff : Bell,
+                    onSelect: () => follow.mutate(!detail.following, { onSuccess: (r) => toast.success(r.following ? "You'll hear about edits and comments." : "You won't hear about edits any more."), onError: (e) => toast.error(errorMessage(e, "Couldn't change following.")) }),
+                  },
                   { id: "link", label: "Share link", icon: FileText, onSelect: () => void Share.share({ message: `/docs/${page.id}` }) },
+                  ...(page.kind === "page" ? [{ id: "history", label: "Page history", icon: History, onSelect: () => router.push(`/docs/${page.id}/history` as never) }] : []),
+                  { id: "export", label: "Export…", icon: Download, onSelect: () => setSheet("export") },
+                  ...(!page.is_row && !page.is_template
+                    ? [{ id: "template", label: "Save as template", icon: LayoutTemplate, onSelect: () => saveTemplate.mutate({ pageId: page.id }, { onSuccess: () => toast.success("Saved as a template."), onError: (e) => toast.error(errorMessage(e, "Couldn't save the template.")) }) }]
+                    : []),
+                  ...(editable && page.kind === "page"
+                    ? [
+                        {
+                          id: "font",
+                          label: "Text style",
+                          icon: Type,
+                          choices: (["default", "serif", "mono"] as const).map((f) => ({ id: f, label: f === "default" ? "Default" : f === "serif" ? "Serif" : "Mono", checked: (page.font ?? "default") === f, onSelect: () => update.mutate({ font: f }) })),
+                        },
+                      ]
+                    : []),
                   ...(canEdit && !trashed ? [{ id: "lock", label: page.locked ? "Allow editing" : "Lock page", icon: page.locked ? LockOpen : Lock, onSelect: () => update.mutate({ locked: !page.locked }) }] : []),
                   ...(canEdit && !trashed
                     ? [
@@ -269,8 +274,31 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
         <Banner tone="warning" title="This page is in the trash." {...(canEdit ? { action: { label: "Restore", onPress: () => restore.mutate(page.id) } } : {})} />
       ) : null}
       {snapshot.saveState === "offline" ? <Banner tone="warning" icon={CloudOff} title="Offline. Your changes save when you're back online." /> : null}
+      {page.cover ? (
+        <Pressable accessibilityRole="button" accessibilityLabel="Change cover" disabled={!editable} onPress={() => setSheet("cover")} style={{ marginHorizontal: -s[4], marginTop: -s[4] }}>
+          <CoverArt cover={page.cover} height={120} />
+        </Pressable>
+      ) : null}
       <View style={{ gap: s[2] }}>
-        {page.icon ? <Text role="hero">{page.icon}</Text> : null}
+        {page.icon || page.custom_icon ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Change icon" disabled={!editable} onPress={() => setSheet("icon")} style={{ alignSelf: "flex-start" }}>
+            <PageIcon icon={page.icon} custom={page.custom_icon} kind={page.kind} size="lg" />
+          </Pressable>
+        ) : null}
+        {editable && (!(page.icon || page.custom_icon) || !page.cover) ? (
+          <View style={{ flexDirection: "row", gap: s[1] }}>
+            {!(page.icon || page.custom_icon) ? (
+              <Button variant="ghost" size="md" leftIcon={Smile} onPress={() => setSheet("icon")}>
+                Add icon
+              </Button>
+            ) : null}
+            {!page.cover ? (
+              <Button variant="ghost" size="md" leftIcon={ImagePlus} onPress={() => setSheet("cover")}>
+                Add cover
+              </Button>
+            ) : null}
+          </View>
+        ) : null}
         {editable ? (
           <TextInput
             value={title}
@@ -283,11 +311,21 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
             blurOnSubmit
             maxLength={300}
             accessibilityLabel="Page title"
-            style={[theme.type.display as object, { color: c.text }]}
+            style={[theme.type.display as object, { color: c.text }, FONT_FAMILY[page.font ?? "default"] ? { fontFamily: FONT_FAMILY[page.font ?? "default"] } : null]}
           />
         ) : (
-          <Text role="display">{name}</Text>
+          <Text role="display" style={FONT_FAMILY[page.font ?? "default"] ? { fontFamily: FONT_FAMILY[page.font ?? "default"] } : undefined}>
+            {name}
+          </Text>
         )}
+        {page.verified ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: s[1], alignSelf: "flex-start", backgroundColor: c.successSoft, borderRadius: theme.radius.pill, paddingHorizontal: s[2], paddingVertical: s[0.5] }}>
+            <BadgeCheck size={14} color={c.successStrong} />
+            <Text role="caption" style={{ color: c.successStrong }}>
+              Verified{page.verified_by && detail.refs.users[page.verified_by] ? ` by ${detail.refs.users[page.verified_by]!.name}` : ""}
+            </Text>
+          </View>
+        ) : null}
         {viewers.length ? <AvatarGroup people={Array.from(new Map(viewers.map((v) => [v.user.id, { name: v.user.name, src: v.user.avatar_url }])).values())} size="xs" /> : null}
         {page.locked ? (
           <Text role="caption" tone="muted">
@@ -311,9 +349,7 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
             onToggleTodo={(b) => apply([{ op: "update", id: b.id, props: { checked: !b.props.checked } }])}
             onBlockMenu={(b) => editable && setMenuBlock(b)}
             onBackspaceEmpty={onBackspaceEmpty}
-            renderDatabase={(id) => (
-              <ListRow title={docsTitle(detail.refs.pages[id]?.title)} leading={<FileText size={18} color={c.textMuted} />} onPress={() => router.push(`/docs/${id}` as never)} />
-            )}
+            renderDatabase={(id, blockId) => <InlineDatabase databaseId={id} blockId={blockId} pageId={page.id} />}
           />
           {editable ? (
             <Button variant="ghost" size="md" leftIcon={Plus} onPress={addBlock}>
@@ -342,9 +378,9 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
               onPress={() => {
                 const b = menuBlock;
                 setMenuBlock(null);
-                const nid = generateId();
-                apply([{ op: "create", id: nid, type: "paragraph", parent_id: b.parent_id, position: positionAfter(session!.getSnapshot(), b), props: { text: [] } }]);
-                setEditingId(nid);
+                const sibs = siblings(session!.getSnapshot(), b.parent_id);
+                const i = sibs.findIndex((x) => x.id === b.id);
+                setInsertAt({ parentId: b.parent_id, after: b.position, before: sibs[i + 1]?.position ?? null });
               }}
             />
             <ListRow title="Move up" leading={<ArrowUp size={18} color={c.text} />} chevron={false} onPress={() => (shift(menuBlock, -1), setMenuBlock(null))} />
@@ -357,6 +393,90 @@ function Loaded({ detail }: { detail: DocsPageDetail }) {
             <ListRow title="Delete" destructive leading={<Trash2 size={18} color={c.dangerStrong} />} chevron={false} onPress={() => (apply([{ op: "delete", id: menuBlock.id }]), setMenuBlock(null))} />
           </View>
         ) : null}
+      </Sheet>
+      <BlockInsertSheet
+        open={!!insertAt}
+        onClose={() => setInsertAt(null)}
+        pageId={page.id}
+        place={insertAt ?? { parentId: null, after: null, before: null }}
+        onInsert={(ops, focusId) => {
+          setInsertAt(null);
+          apply(ops);
+          if (focusId) setEditingId(focusId);
+        }}
+      />
+      <Sheet open={sheet === "icon"} onClose={() => setSheet(null)} title="Page icon" snapPoints={["70%"]}>
+        <ScrollView contentContainerStyle={{ gap: s[3] }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[1] }}>
+            {ICON_EMOJI.map((e) => (
+              <Pressable key={e} accessibilityRole="button" accessibilityLabel={`Icon ${e}`} onPress={() => (setSheet(null), update.mutate({ icon: e }))} style={{ width: theme.tap.base, height: theme.tap.base, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 24 }}>{e}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <View style={{ flexDirection: "row", gap: s[2] }}>
+            {DOCS_ICON_COLORS.map((col) => (
+              <Pressable
+                key={col}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: iconColor === col }}
+                accessibilityLabel={`${col} colour`}
+                onPress={() => setIconColor(col)}
+                style={{ width: 28, height: 28, borderRadius: theme.radius.pill, backgroundColor: paletteColor(theme, col === "neutral" ? "ink-400" : col), borderWidth: 2, borderColor: iconColor === col ? c.text : "transparent" }}
+              />
+            ))}
+          </View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[1] }}>
+            {DOCS_ICON_SET.map((n) => {
+              const Icon = DOCS_LUCIDE_NATIVE[n];
+              return (
+                <Pressable key={n} accessibilityRole="button" accessibilityLabel={n.replace(/-/g, " ")} onPress={() => (setSheet(null), update.mutate({ custom_icon: { type: "lucide", name: n, color: iconColor } }))} style={{ width: theme.tap.base, height: theme.tap.base, alignItems: "center", justifyContent: "center" }}>
+                  <Icon size={22} color={paletteColor(theme, iconColor)} />
+                </Pressable>
+              );
+            })}
+          </View>
+          {page.icon || page.custom_icon ? (
+            <Button variant="ghost" size="md" onPress={() => (setSheet(null), update.mutate({ icon: null, custom_icon: null }))}>
+              Remove icon
+            </Button>
+          ) : null}
+        </ScrollView>
+      </Sheet>
+      <Sheet open={sheet === "cover"} onClose={() => setSheet(null)} title="Cover" snapPoints={["55%"]}>
+        <View style={{ gap: s[3] }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[2] }}>
+            {DOCS_COVER_GALLERY_NAMES.map((g) => (
+              <Pressable key={g} accessibilityRole="button" accessibilityLabel={`${g} cover`} onPress={() => (setSheet(null), update.mutate({ cover: { gallery: g, position: 50 } }))} style={{ width: 72, borderRadius: theme.radius.sm, overflow: "hidden" }}>
+                <CoverArt cover={{ gallery: g, position: 50 }} height={40} />
+              </Pressable>
+            ))}
+          </View>
+          {page.cover ? (
+            <Button variant="ghost" size="md" onPress={() => (setSheet(null), update.mutate({ cover: null }))}>
+              Remove cover
+            </Button>
+          ) : null}
+        </View>
+      </Sheet>
+      <Sheet open={sheet === "export"} onClose={() => setSheet(null)} title="Export" snapPoints={["45%"]}>
+        <View>
+          {EXPORTS.map((x) => (
+            <ListRow
+              key={x.id}
+              title={x.label}
+              leading={<Download size={18} color={c.text} />}
+              chevron={false}
+              disabled={exporter.isPending}
+              onPress={() =>
+                exporter.mutate(
+                  { pageId: page.id, format: x.id, subpages: x.id === "zip" },
+                  { onSuccess: (r) => (setSheet(null), void docsShareExport(r)), onError: (e) => toast.error(errorMessage(e, "Couldn't export the page.")) },
+                )
+              }
+            />
+          ))}
+        </View>
       </Sheet>
     </Screen>
   );

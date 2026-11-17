@@ -1,8 +1,8 @@
 {
   "name": "presence",
   "title": "Presence",
-  "version": "1.0.0",
-  "summary": "People see who is online, away or offline, set a custom status that clears on its own, and pause notifications with Do Not Disturb.",
+  "version": "1.1.1",
+  "summary": "People see who is online, away or offline, set a custom status that clears on its own (with their own saved statuses), and pause notifications with Do Not Disturb, by hand or on a weekly schedule.",
   "requires": [],
   "surfaces": [
     "backend",
@@ -75,7 +75,7 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { presenceAccountMenu, presenceSession } from \"./presence/registry\";"
+      "insert": "import { presenceAccountMenu, presencePauseAction, presenceScheduleAction, presenceSession, presenceStatusAction } from \"./presence/registry\";"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -101,6 +101,21 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "session",
       "insert": "presenceSession,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "presenceStatusAction,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "presencePauseAction,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "presenceScheduleAction,"
     }
   ],
   "stitch": [
@@ -108,6 +123,7 @@
     "Run custom status text through the content filter: presence.SetTextCheck(moderation.Check) when the moderation feature is installed.",
     "Hold push and email during Do Not Disturb app-wide (notifications >= 1.1.0): notifications.AddDeliveryFilter(\"presence.dnd\", func(ctx, n) (notifications.Hold, error) { on, err := presence.IsDND(ctx, d.Pool, n.UserID); return notifications.Hold{Push: on, Email: on}, err }). The channels feature registers it when installed.",
     "Show presence where people appear: PresenceAvatar / UserPresenceDot from @/features/presence on web and mobile; usePresence(ids) batches every id on screen into one request.",
-    "Mobile: the Status row sits in Settings; move it to a profile or account sheet if the app has one."
+    "Mobile: the Status row sits in Settings; move it to a profile or account sheet if the app has one.",
+    "Turn features' quiet time into Do Not Disturb with presence.SetDNDUntil(ctx, d.Pool, userID, until) (never shortens a longer one; announces like the API), e.g. calendar.SetFocusHook(func(ctx, uid, until) { _ = presence.SetDNDUntil(ctx, d.Pool, uid, until) })."
   ]
 }

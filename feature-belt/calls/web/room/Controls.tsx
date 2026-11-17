@@ -1,14 +1,27 @@
 "use client";
 
 import { useLocalParticipant, useMediaDeviceSelect } from "@livekit/components-react";
-import { CALLS_REACTIONS, type CallsReaction } from "@scaffoldapp/shared";
+import { CALLS_REACTIONS, type CallsReaction, type CallsRoomRules } from "@scaffoldapp/shared";
 import { Badge, IconButton, Menu, MenuChoice, MenuItem, MenuLabel, MenuSeparator, MenuSub, Tooltip, cn, toast, useMediaQuery } from "@scaffoldapp/ui-web";
 import {
+  AudioLines,
+  BarChart3,
+  Captions,
+  CaptionsOff,
   ChevronUp,
+  Circle,
   Copy,
+  Eye,
+  Gauge,
   Hand,
+  Keyboard,
   LayoutGrid,
+  Maximize,
   MessageSquare,
+  Minimize,
+  PictureInPicture2,
+  ScrollText,
+  Square,
   Mic,
   MicOff,
   MonitorUp,
@@ -43,6 +56,32 @@ export interface ControlsProps {
   onSettings: () => void;
   onLeave: () => void;
   onEndForAll: () => void;
+  /** What the host allows people who aren't hosts to do. */
+  rules: CallsRoomRules;
+  /** You may turn your microphone on (unmuting allowed, or a host let you). */
+  canUnmute: boolean;
+  /** Mic pressed while you may not unmute: ask to speak. */
+  onAskToSpeak: () => void;
+  /** In a breakout room: no hand, no host room controls. */
+  inBreakout: boolean;
+  /** Unseen polls or questions. */
+  activityBadge: number;
+  captions: { available: boolean; on: boolean; toggle: () => void };
+  recording: { can: boolean; on: boolean; busy: boolean; toggle: () => void };
+  transcript: { can: boolean; on: boolean; busy: boolean; toggle: () => void };
+  view: {
+    selfView: boolean;
+    mirror: boolean;
+    fullscreen: boolean;
+    pip: boolean;
+    toggleSelfView: () => void;
+    toggleMirror: () => void;
+    toggleFullscreen: () => void;
+    openPip: (() => void) | null;
+  };
+  audio: { noiseSuppression: boolean; echoCancellation: boolean; autoGainControl: boolean; set: (k: "noiseSuppression" | "echoCancellation" | "autoGainControl", on: boolean) => void };
+  onStats: () => void;
+  onShortcuts: () => void;
 }
 
 /** Toggle the mic or camera; failures say what to do. */
@@ -72,16 +111,21 @@ export function Controls(props: ControlsProps) {
     }
   };
 
+  const blockedMic = !isMicrophoneEnabled && !props.canUnmute;
   const mic = (
     <MediaToggle
       on={isMicrophoneEnabled}
-      label={isMicrophoneEnabled ? "Turn off microphone" : "Turn on microphone"}
+      label={blockedMic ? "Ask to speak" : isMicrophoneEnabled ? "Turn off microphone" : "Turn on microphone"}
       shortcut={shortcutLabel("D")}
       icon={isMicrophoneEnabled ? <Mic /> : <MicOff />}
-      onToggle={() => void toggleMedia("mic", (on) => localParticipant.setMicrophoneEnabled(on), !isMicrophoneEnabled)}
+      onToggle={() => (blockedMic ? props.onAskToSpeak() : void toggleMedia("mic", (on) => localParticipant.setMicrophoneEnabled(on), !isMicrophoneEnabled))}
       menu={wide ? <DeviceMenu kind="audioinput" title="Microphone" /> : null}
     />
   );
+  const mayPresent = canShare && (props.isHost || props.rules.screen_share);
+  const mayReact = props.isHost || props.rules.reactions;
+  const mayHand = !props.inBreakout;
+  const v = props.view;
   const cam = (
     <MediaToggle
       on={isCameraEnabled}
@@ -106,7 +150,7 @@ export function Controls(props: ControlsProps) {
       )}
       {mic}
       {cam}
-      {wide && canShare && (
+      {wide && (mayPresent || isScreenShareEnabled) && (
         <Tooltip content={isScreenShareEnabled ? "Stop presenting" : "Present your screen"}>
           <IconButton
             label={isScreenShareEnabled ? "Stop presenting" : "Present your screen"}
@@ -117,14 +161,28 @@ export function Controls(props: ControlsProps) {
           />
         </Tooltip>
       )}
-      {wide && (
+      {wide && props.captions.available && (
+        <Tooltip content={`${props.captions.on ? "Turn off captions" : "Turn on captions"} · ${shortcutLabel("K", true)}`}>
+          <IconButton
+            label={props.captions.on ? "Turn off captions" : "Turn on captions"}
+            icon={props.captions.on ? <Captions /> : <CaptionsOff />}
+            variant={props.captions.on ? "primary" : "secondary"}
+            className={round}
+            aria-pressed={props.captions.on}
+            onClick={props.captions.toggle}
+          />
+        </Tooltip>
+      )}
+      {wide && mayHand && (
         <Tooltip content={`${props.handRaised ? "Lower hand" : "Raise hand"} · ${shortcutLabel("H", true)}`}>
           <IconButton label={props.handRaised ? "Lower hand" : "Raise hand"} icon={<Hand />} variant={props.handRaised ? "primary" : "secondary"} className={round} aria-pressed={props.handRaised} onClick={props.onToggleHand} />
         </Tooltip>
       )}
-      <Tooltip content="Send a reaction">
-        <IconButton label="Send a reaction" icon={<SmilePlus />} variant={reacting ? "primary" : "secondary"} className={round} aria-expanded={reacting} onClick={() => setReacting((r) => !r)} />
-      </Tooltip>
+      {mayReact && (
+        <Tooltip content="Send a reaction">
+          <IconButton label="Send a reaction" icon={<SmilePlus />} variant={reacting ? "primary" : "secondary"} className={round} aria-expanded={reacting} onClick={() => setReacting((r) => !r)} />
+        </Tooltip>
+      )}
       <PanelButton
         label="People"
         shortcut={shortcutLabel("P", true)}
@@ -143,20 +201,51 @@ export function Controls(props: ControlsProps) {
         badge={props.unreadChat || undefined}
         onClick={() => props.onPanel(props.panel === "chat" ? null : "chat")}
       />
+      {wide && (
+        <PanelButton
+          label="Polls and Q&A"
+          shortcut={shortcutLabel("A", true)}
+          icon={<BarChart3 />}
+          active={props.panel === "activities"}
+          badge={props.activityBadge || undefined}
+          onClick={() => props.onPanel(props.panel === "activities" ? null : "activities")}
+        />
+      )}
       <Menu side="top" trigger={<IconButton label="More options" icon={<MoreVertical />} variant="secondary" className={round} />}>
         {!wide && (
           <>
-            <MenuItem icon={<Hand />} onSelect={props.onToggleHand}>
-              {props.handRaised ? "Lower hand" : "Raise hand"}
-            </MenuItem>
-            {canShare && (
+            {mayHand && (
+              <MenuItem icon={<Hand />} onSelect={props.onToggleHand}>
+                {props.handRaised ? "Lower hand" : "Raise hand"}
+              </MenuItem>
+            )}
+            {(mayPresent || isScreenShareEnabled) && (
               <MenuItem icon={isScreenShareEnabled ? <MonitorX /> : <MonitorUp />} onSelect={() => void share()}>
                 {isScreenShareEnabled ? "Stop presenting" : "Present your screen"}
               </MenuItem>
             )}
+            {props.captions.available && (
+              <MenuItem icon={props.captions.on ? <CaptionsOff /> : <Captions />} onSelect={props.captions.toggle}>
+                {props.captions.on ? "Turn off captions" : "Turn on captions"}
+              </MenuItem>
+            )}
+            <MenuItem icon={<BarChart3 />} onSelect={() => props.onPanel("activities")}>
+              Polls and Q&amp;A{props.activityBadge ? ` (${props.activityBadge})` : ""}
+            </MenuItem>
             <MenuSeparator />
           </>
         )}
+        {props.isHost && props.recording.can && (
+          <MenuItem icon={props.recording.on ? <Square /> : <Circle />} disabled={props.recording.busy} onSelect={props.recording.toggle}>
+            {props.recording.on ? "Stop recording" : "Record"}
+          </MenuItem>
+        )}
+        {props.isHost && props.transcript.can && (
+          <MenuItem icon={<ScrollText />} disabled={props.transcript.busy} onSelect={props.transcript.toggle}>
+            {props.transcript.on ? "Stop saving the transcript" : "Save the transcript"}
+          </MenuItem>
+        )}
+        {props.isHost && (props.recording.can || props.transcript.can) && <MenuSeparator />}
         <MenuSub icon={<LayoutGrid />} label="Layout" hint={props.layout === "auto" ? "Auto" : props.layout === "grid" ? "Grid" : "Speaker"}>
           {(["auto", "grid", "speaker"] as const).map((l) => (
             <MenuChoice key={l} checked={props.layout === l} onSelect={() => props.onLayout(l)}>
@@ -164,8 +253,41 @@ export function Controls(props: ControlsProps) {
             </MenuChoice>
           ))}
         </MenuSub>
+        <MenuSub icon={<Eye />} label="View">
+          <MenuChoice checked={v.selfView} onSelect={v.toggleSelfView}>
+            Show my video to me
+          </MenuChoice>
+          <MenuChoice checked={v.mirror} onSelect={v.toggleMirror}>
+            Mirror my video
+          </MenuChoice>
+          <MenuItem icon={v.fullscreen ? <Minimize /> : <Maximize />} onSelect={v.toggleFullscreen}>
+            {v.fullscreen ? "Exit full screen" : "Full screen"}
+          </MenuItem>
+          {v.openPip && (
+            <MenuItem icon={<PictureInPicture2 />} onSelect={v.openPip}>
+              {v.pip ? "Close the small window" : "Picture in picture"}
+            </MenuItem>
+          )}
+        </MenuSub>
+        <MenuSub icon={<AudioLines />} label="Microphone sound">
+          <MenuChoice checked={props.audio.noiseSuppression} onSelect={() => props.audio.set("noiseSuppression", !props.audio.noiseSuppression)}>
+            Reduce background noise
+          </MenuChoice>
+          <MenuChoice checked={props.audio.echoCancellation} onSelect={() => props.audio.set("echoCancellation", !props.audio.echoCancellation)}>
+            Cancel echo
+          </MenuChoice>
+          <MenuChoice checked={props.audio.autoGainControl} onSelect={() => props.audio.set("autoGainControl", !props.audio.autoGainControl)}>
+            Adjust volume automatically
+          </MenuChoice>
+        </MenuSub>
         <MenuItem icon={<Copy />} onSelect={props.onCopyLink}>
           Copy meeting link
+        </MenuItem>
+        <MenuItem icon={<Gauge />} onSelect={props.onStats}>
+          Connection
+        </MenuItem>
+        <MenuItem icon={<Keyboard />} onSelect={props.onShortcuts}>
+          Keyboard shortcuts
         </MenuItem>
         {props.isHost && (
           <MenuItem icon={<Settings2 />} onSelect={props.onSettings}>

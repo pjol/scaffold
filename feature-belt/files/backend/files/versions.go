@@ -65,11 +65,12 @@ func (s *Service) addVersion(ctx context.Context, tx pgx.Tx, itemID, orgID, by u
 		itemID, orgID, number, v.key, v.size, v.mime, v.textLike, nullID(by), v.note).Scan(&vid); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM files_versions WHERE item_id = $1 AND id <> $2 AND number <= $3`, itemID, vid, number-maxVersions); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM files_versions WHERE item_id = $1 AND id <> $2 AND number <= $3 AND NOT keep_forever`, itemID, vid, number-maxVersions); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `
 		UPDATE files_items SET version_id = $2, mime_type = $3, size = $4, text_like = $5, content_text = $6,
+		       content_source = CASE WHEN $6::text IS NULL THEN '' ELSE 'text' END,
 		       version_count = (SELECT count(*) FROM files_versions WHERE item_id = $1), updated_at = now(), updated_by = $7
 		WHERE id = $1`, itemID, vid, v.mime, v.size, v.textLike, v.content, nullID(by))
 	return err
@@ -126,9 +127,10 @@ func (s *Service) listVersions(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Service) versions(ctx context.Context, q db.Querier, itemID uuid.UUID) ([]Version, error) {
 	rows, err := q.Query(ctx, `
-		SELECT v.id, v.number, v.size, v.mime_type, v.uploaded_by, u.display_name, u.avatar_url, v.note, v.id = i.version_id, v.created_at
+		SELECT v.id, v.number, v.size, v.mime_type, v.uploaded_by, u.display_name, u.avatar_url, v.note, v.name, v.keep_forever,
+		       v.id = i.version_id, v.created_at
 		FROM files_versions v JOIN files_items i ON i.id = v.item_id LEFT JOIN users u ON u.id = v.uploaded_by
-		WHERE v.item_id = $1 ORDER BY v.number DESC LIMIT $2`, itemID, maxVersions)
+		WHERE v.item_id = $1 ORDER BY v.number DESC LIMIT $2`, itemID, maxVersions*2)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +140,7 @@ func (s *Service) versions(ctx context.Context, q db.Querier, itemID uuid.UUID) 
 		var v Version
 		var by *uuid.UUID
 		var name, avatar *string
-		if err := rows.Scan(&v.ID, &v.Number, &v.Size, &v.MimeType, &by, &name, &avatar, &v.Note, &v.Current, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.Number, &v.Size, &v.MimeType, &by, &name, &avatar, &v.Note, &v.Name, &v.KeepForever, &v.Current, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		v.UploadedBy = person(by, name, avatar)

@@ -1,8 +1,8 @@
 {
   "name": "channels",
   "title": "Channels",
-  "version": "1.1.1",
-  "summary": "Org members talk in public, private and forum channels, direct and group messages, with threads, mentions, reactions, pins, saved items, search and live delivery.",
+  "version": "1.2.0",
+  "summary": "Org members talk in public, private, forum and announcement channels, direct and group messages, with threads, mentions, reactions, polls, custom emoji, link previews, drafts, scheduled messages, reminders, bookmarks, an Activity view, search with filters and live delivery.",
   "requires": [
     "orgs",
     "presence",
@@ -145,6 +145,17 @@
     "Do Not Disturb: channels registers notifications.AddDeliveryFilter(\"presence.dnd\", ...) so pushes and emails are held app-wide while it is on; remove that line from channels.New if the app wants DND to cover channels only.",
     "Name the section (Channels, Chat, Messages) in nav copy and decide its place: it is a nav entry and a mobile tab. Workspaces follow the active org (useActiveOrg); people in no org see the empty state that links to Settings → Organizations.",
     "Add the push-preview line to the privacy policy: message text appears in notifications.",
-    "If you change CHANNELS_ATTACHMENT_MAX_MB, the clients read the limit from the workspace config; nothing else to change."
-  ]
+    "If you change CHANNELS_ATTACHMENT_MAX_MB, the clients read the limit from the workspace config; nothing else to change.",
+    "Link cards and bookmarks to your own resources: channels.RegisterUnfurler(\"/docs/\", func(ctx, viewer *auth.Identity, u *url.URL) (*channels.Card, error)) per feature, checking the viewer's access exactly like the feature's routes (return nil, nil when they can't see it). Channels registers \"/channels/\" itself.",
+    "New permission actions for the access matrix (DefaultPermission covers them until registered): channels.add_emoji (members), channels.manage_workspace (owners, admins: link previews, retention), channels.manage_integrations (owners, admins: incoming webhooks), channels.post_announcement (owners, admins; channel admins always).",
+    "Time zones: channels.SetUserZone(func(ctx, userID) *time.Location) lets reminders and profile cards use the app's calendar zone when a client hasn't reported one.",
+    "Profile card teams: give the GroupResolver a GroupsOf(ctx, orgID, userID) ([]channels.Group, error) method (channels.GroupMembership).",
+    "Slash commands from other features: registerChannelsSlashCommand({name, usage, hint, run(ctx)}) on web and mobile (stitch files); ctx.http builds any feature's endpoints.",
+    "Incoming webhooks post to PUBLIC_API_URL/v1/channels/hooks/<token>; the path is redacted from logs. Add the expo-document-picker dependency and rebuild the mobile binary."
+  ],
+  "deps": {
+    "mobile": {
+      "expo-document-picker": "~57.0.3"
+    }
+  }
 }

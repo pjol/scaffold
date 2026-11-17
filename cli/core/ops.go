@@ -61,6 +61,7 @@ func (k *Kit) Operations() []Operation {
 		define("spec", "Print a scaffold spec document (e.g. concrete/design). With no path, list them.", k.Spec),
 		define("new", "Create a project from the concrete template, optionally with features.", k.New),
 		define("add", "Install features (and their requirements) into an existing project.", k.Add),
+		define("adopt", "Write scaffold.json for a project not made by `scaffold new`: surfaces, custom (non-template) surfaces, package layout, hand-written env examples.", k.Adopt),
 		define("env", "Report the project's env vars; --write regenerates ENV.md and the .env.example files.", k.Env),
 		define("doctor", "Check a project against the concrete contract: manifest, migrations, anchors, env, house rules.", k.Doctor),
 	}

@@ -1,0 +1,197 @@
+{
+  "provenance": {
+    "packages": {
+      "@aauth/agent": "4.1.1",
+      "@aauth/protocol": "2.0.0",
+      "@aauth/local-keys": "2.0.0",
+      "@hellocoop/httpsig": "2.6.0",
+      "jose": "6.2.15"
+    },
+    "node": "v22.21.0",
+    "date": "2026-11-05",
+    "regenerate": "See testdata/README.md."
+  },
+  "go_signed_sha256": "4ec57eb36c0fd3816916eff86dcd32acec4b23a76a69e11a2b3f354c9e7e2389",
+  "tokens": [
+    {
+      "name": "agent-token-ed25519",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    },
+    {
+      "name": "agent-token-es256",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    },
+    {
+      "name": "person-token",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    },
+    {
+      "name": "resource-token",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    },
+    {
+      "name": "auth-token-ps",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    },
+    {
+      "name": "auth-token-as",
+      "verified": true,
+      "via": "jose.jwtVerify"
+    }
+  ],
+  "requests": [
+    {
+      "name": "agent-ed25519-post",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    },
+    {
+      "name": "agent-ed25519-get",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    },
+    {
+      "name": "agent-es256-post",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    },
+    {
+      "name": "agent-es256-get",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    },
+    {
+      "name": "server-ed25519-post",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    },
+    {
+      "name": "server-es256-get",
+      "verified": true,
+      "via": "@hellocoop/httpsig verify"
+    }
+  ],
+  "responses": [
+    {
+      "name": "decision-ed25519",
+      "verified": true,
+      "via": "httpsig structured-fields, parseSignatureKey, generateContentDigest and crypto.verify",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"content-digest\";req: sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"@authority\";req: ss.example\n\"@path\";req: /decision\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\""
+    },
+    {
+      "name": "decision-es256",
+      "verified": true,
+      "via": "httpsig structured-fields, parseSignatureKey, generateContentDigest and crypto.verify",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"content-digest\";req: sha-256=:F3R5LWqJkOPNRHNUfqG24hsZj0p+w+Q8DEMxt5Vp5ws=:\n\"@authority\";req: ss.example\n\"@path\";req: /decision\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"content-digest\";req \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ec\""
+    },
+    {
+      "name": "decision-on-poll",
+      "verified": true,
+      "via": "httpsig structured-fields, parseSignatureKey, generateContentDigest and crypto.verify",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:7s/z+ZQJzUurmD1X3d4YfpP9t0KufdraaRxkPOctQf4=:\n\"@authority\";req: ss.example\n\"@path\";req: /pending/q7x2\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"ss-ed\""
+    },
+    {
+      "name": "usage-response",
+      "verified": true,
+      "via": "httpsig structured-fields, parseSignatureKey, generateContentDigest and crypto.verify",
+      "base": "\"@status\": 200\n\"content-type\": application/json\n\"content-digest\": sha-256=:xYs2W13wlp3uDOHn2CZIVBBrHmFojjNC64ACGKJ1NKU=:\n\"@authority\";req: resource.example\n\"@path\";req: /usage\n\"@signature-params\": (\"@status\" \"content-type\" \"content-digest\" \"@authority\";req \"@path\";req);created=1790600000;keyid=\"res-ed\""
+    }
+  ],
+  "responses_high_level": [
+    {
+      "name": "decision-ed25519",
+      "verified": false,
+      "via": "@hellocoop/httpsig verify",
+      "error": "Unsupported component parameters on \"content-digest\" in Signature-Input"
+    },
+    {
+      "name": "decision-es256",
+      "verified": false,
+      "via": "@hellocoop/httpsig verify",
+      "error": "Unsupported component parameters on \"content-digest\" in Signature-Input"
+    },
+    {
+      "name": "decision-on-poll",
+      "verified": false,
+      "via": "@hellocoop/httpsig verify",
+      "error": "Unsupported component parameters on \"@authority\" in Signature-Input"
+    },
+    {
+      "name": "usage-response",
+      "verified": false,
+      "via": "@hellocoop/httpsig verify",
+      "error": "Unsupported component parameters on \"@authority\" in Signature-Input"
+    }
+  ],
+  "headers": [
+    {
+      "name": "requirement_auth_token",
+      "verified": true
+    },
+    {
+      "name": "requirement_interaction",
+      "verified": true
+    },
+    {
+      "name": "requirement_approval",
+      "verified": true
+    },
+    {
+      "name": "requirement_person_token",
+      "verified": true
+    },
+    {
+      "name": "capabilities",
+      "verified": true
+    },
+    {
+      "name": "signature_error_input",
+      "verified": true
+    },
+    {
+      "name": "signature_error_plain",
+      "verified": true
+    },
+    {
+      "name": "accept_scheme",
+      "verified": true
+    },
+    {
+      "name": "accept_alg",
+      "verified": true
+    },
+    {
+      "name": "signature_key_agent-ed25519-post",
+      "verified": true
+    },
+    {
+      "name": "signature_key_agent-ed25519-get",
+      "verified": true
+    },
+    {
+      "name": "signature_key_agent-es256-post",
+      "verified": true
+    },
+    {
+      "name": "signature_key_agent-es256-get",
+      "verified": true
+    },
+    {
+      "name": "signature_key_server-ed25519-post",
+      "verified": true
+    },
+    {
+      "name": "signature_key_server-es256-get",
+      "verified": true
+    },
+    {
+      "name": "accept_signature_is_a_dictionary",
+      "verified": true
+    }
+  ]
+}

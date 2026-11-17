@@ -1,8 +1,17 @@
 "use client";
 
-import { errorMessage, mcpEndpointUrl, useMcpConnections, useRevokeMcpConnection, type McpConnection } from "@scaffoldapp/shared";
+import {
+  errorMessage,
+  mcpEndpointUrl,
+  useMcpAAuthLinks,
+  useMcpConnections,
+  useRevokeMcpConnection,
+  useUnlinkMcpAAuth,
+  type McpAAuthLink,
+  type McpConnection,
+} from "@scaffoldapp/shared";
 import { Badge, Card, ConfirmDialog, Divider, EmptyState, ErrorState, SkeletonGroup, SkeletonRow, toast } from "@scaffoldapp/ui-web";
-import { Plug, Unplug } from "lucide-react";
+import { Plug, ServerCog, Unplug } from "lucide-react";
 import { Fragment, useState } from "react";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import { LoadMore } from "@/components/shell/LoadMore";
@@ -17,7 +26,8 @@ import { CopyField } from "./CopyField";
  * Cursor, Claude Code). One row per app with its access, when it was connected and last
  * used; the row's ⋮ menu (ResourceMenu, feature "mcp", kind "mcp.client") holds Disconnect,
  * which ends every token it holds, and whatever other features add there (agent access).
- * The server URL to add sits on top.
+ * Below, person servers linked over AAuth (kind "mcp.aauth_link", with Unlink). The server
+ * URL to add sits on top.
  */
 export function ConnectedAppsScreen() {
   const apps = useMcpConnections();
@@ -34,7 +44,7 @@ export function ConnectedAppsScreen() {
       />
       <Section
         title="Connect an app"
-        info="In Claude, ChatGPT, Cursor or Claude Code, add a custom connector (remote MCP server) with this URL, then sign in when it asks."
+        info="In Claude, ChatGPT, Cursor or Claude Code, add a custom connector (remote MCP server) with this URL, then sign in when it asks. An agent that signs its requests with AAuth uses the same URL and asks you to link its person server."
       >
         <CopyField label="Server URL" value={endpoint} className="max-w-form" />
       </Section>
@@ -85,6 +95,7 @@ export function ConnectedAppsScreen() {
           )}
         </Card>
       </Section>
+      <PersonServers />
       <ConfirmDialog
         open={revoking !== null}
         onOpenChange={(o) => !o && setRevoking(null)}
@@ -102,5 +113,78 @@ export function ConnectedAppsScreen() {
         It stops working right away, on every device. To use it again, connect it and sign in again.
       </ConfirmDialog>
     </div>
+  );
+}
+
+/** Person servers linked over AAuth: their agents can ask for access as the person. */
+function PersonServers() {
+  const links = useMcpAAuthLinks();
+  const unlink = useUnlinkMcpAAuth();
+  const [unlinking, setUnlinking] = useState<McpAAuthLink | null>(null);
+  const rows = links.data?.items ?? [];
+  const nameOf = (l: McpAAuthLink) => l.person_server.name || l.person_server.host;
+
+  return (
+    <Section
+      title="Person servers"
+      info={`Linked over AAuth. Agents acting for you through a linked person server can ask for access to ${APP_NAME} as you; each needs a grant from that server first.`}
+    >
+      <Card padding="none">
+        {links.isPending ? (
+          <SkeletonGroup className="flex flex-col">
+            <SkeletonRow />
+          </SkeletonGroup>
+        ) : links.isError ? (
+          <ErrorState compact title="Couldn't load your person servers" onRetry={() => void links.refetch()} retrying={links.isFetching} />
+        ) : rows.length === 0 ? (
+          <EmptyState compact icon={<ServerCog />} title="No linked person servers" />
+        ) : (
+          <ul>
+            {rows.map((l, i) => (
+              <Fragment key={l.id}>
+                {i > 0 ? <Divider className="mx-4" /> : null}
+                <li className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="truncate type-body font-semibold text-fg">{nameOf(l)}</span>
+                    <span className="flex flex-wrap gap-x-3 type-caption text-fg-muted">
+                      {l.person_server.name ? <span>{l.person_server.host}</span> : null}
+                      {l.email ? <span>{l.email}</span> : null}
+                      <span>Linked {formatDate(l.linked_at)}</span>
+                      <span>{l.last_used_at ? `Used ${formatRelative(l.last_used_at)}` : "Never used"}</span>
+                      {l.agents > 0 ? <span>{l.agents === 1 ? "1 agent" : `${l.agents} agents`}</span> : null}
+                    </span>
+                  </div>
+                  <ResourceMenu
+                    feature="mcp"
+                    kind="mcp.aauth_link"
+                    id={l.id}
+                    title={nameOf(l)}
+                    label={`More actions for ${nameOf(l)}`}
+                    actions={[{ id: "unlink", label: "Unlink", icon: Unplug, destructive: true, onSelect: () => setUnlinking(l) }]}
+                  />
+                </li>
+              </Fragment>
+            ))}
+            <LoadMore hasNextPage={links.hasNextPage} isFetchingNextPage={links.isFetchingNextPage} fetchNextPage={links.fetchNextPage} />
+          </ul>
+        )}
+      </Card>
+      <ConfirmDialog
+        open={unlinking !== null}
+        onOpenChange={(o) => !o && setUnlinking(null)}
+        title={`Unlink ${unlinking ? nameOf(unlinking) : "this person server"}?`}
+        confirmLabel="Unlink"
+        tone="danger"
+        onConfirm={async () => {
+          if (!unlinking) return;
+          await unlink.mutateAsync(unlinking.id);
+          toast.success("Person server unlinked");
+          setUnlinking(null);
+        }}
+        errorText={(e) => errorMessage(e, "Couldn't unlink. Try again.")}
+      >
+        Its agents stop acting as you right away. An agent that asks again sends you to link it again.
+      </ConfirmDialog>
+    </Section>
   );
 }

@@ -594,13 +594,17 @@ func (s *Service) listSection(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// searchRoute: GET /v1/files/orgs/{orgID}/search?q=&cursor= (member).
+// searchRoute: GET /v1/files/orgs/{orgID}/search?q=&kind=&owner=&modified_after=&modified_before=&location=&starred=1&shared_with_me=1&cursor= (member).
 func (s *Service) searchRoute(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
 	org := orgParam(r)
 	p := httpx.ParsePage(r)
-	page, err := s.searchItems(ctx, s.d.Pool, me, false, &org, r.URL.Query().Get("q"), p.Cursor, p.Limit)
+	f, err := parseSearchFilters(r.URL.Query().Get)
+	if err != nil {
+		return err
+	}
+	page, err := s.searchItems(ctx, s.d.Pool, me, false, &org, r.URL.Query().Get("q"), f, p.Cursor, p.Limit)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,11 @@ type Kind struct {
 	// agent scope lets agents read that item. Nil: data {"kind", "id"} when
 	// present, else the kind's feature (its prefix) decides as a whole.
 	AgentTarget func(data map[string]any) (kind, id string)
+	// Group names the resource notifications of this kind are about, for
+	// grouping in the inbox and muting ("channels.channel", channelID). Nil:
+	// AgentTarget, else data {"kind", "id"}. Data "thread_id", or a link
+	// that opens a thread (?thread=<id>), narrows the group to that thread.
+	Group func(data map[string]any) (kind, id string)
 }
 
 // Kinds that are sent but never listed in preferences or subject to them.

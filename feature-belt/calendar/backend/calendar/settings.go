@@ -3,6 +3,7 @@ package calendar
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/httpx"
@@ -27,6 +28,11 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) error {
 		WeekStart        *int             `json:"week_start"`
 		WorkingHours     *[]HoursInterval `json:"working_hours"`
 		DefaultReminders *[]int           `json:"default_reminders"`
+		WorkLocations    *[]WorkLocation  `json:"work_locations"`
+		// SecondaryTimezone: a zone, or "" for none.
+		SecondaryTimezone *string   `json:"secondary_timezone"`
+		WorldClocks       *[]string `json:"world_clocks"`
+		AgendaEmail       *bool     `json:"agenda_email"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
@@ -65,17 +71,58 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 		st.DefaultReminders = rem
 	}
+	if in.WorkLocations != nil {
+		locs, err := validateWorkLocations(*in.WorkLocations)
+		if err != nil {
+			return err
+		}
+		st.WorkLocations = locs
+	}
+	if in.SecondaryTimezone != nil {
+		if *in.SecondaryTimezone == "" {
+			st.SecondaryTimezone = nil
+		} else if !validZone(*in.SecondaryTimezone) {
+			return httpx.BadRequest("Pick a valid second time zone.")
+		} else {
+			v := *in.SecondaryTimezone
+			st.SecondaryTimezone = &v
+		}
+	}
+	if in.WorldClocks != nil {
+		if len(*in.WorldClocks) > 6 {
+			return httpx.BadRequest("Up to 6 world clocks.")
+		}
+		clocks := []string{}
+		for _, z := range *in.WorldClocks {
+			if !validZone(z) {
+				return httpx.BadRequest("Pick valid time zones for world clocks.")
+			}
+			if !slices.Contains(clocks, z) {
+				clocks = append(clocks, z)
+			}
+		}
+		st.WorldClocks = clocks
+	}
+	if in.AgendaEmail != nil {
+		if *in.AgendaEmail && tz == "" {
+			return httpx.BadRequest("Pick your time zone first: the agenda goes out at 6 AM your time.")
+		}
+		st.AgendaEmail = *in.AgendaEmail
+	}
 	hours, _ := json.Marshal(st.WorkingHours)
+	locs, _ := json.Marshal(st.WorkLocations)
 	var tzArg *string
 	if tz != "" {
 		tzArg = &tz
 	}
 	if _, err := s.d.Pool.Exec(r.Context(), `
-		INSERT INTO calendar_settings (user_id, timezone, week_start, working_hours, default_reminders)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO calendar_settings (user_id, timezone, week_start, working_hours, default_reminders, work_locations, secondary_timezone, world_clocks, agenda_email)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone, week_start = EXCLUDED.week_start,
-		  working_hours = EXCLUDED.working_hours, default_reminders = EXCLUDED.default_reminders, updated_at = now()`,
-		id.UserID, tzArg, st.WeekStart, hours, toInt32(st.DefaultReminders)); err != nil {
+		  working_hours = EXCLUDED.working_hours, default_reminders = EXCLUDED.default_reminders,
+		  work_locations = EXCLUDED.work_locations, secondary_timezone = EXCLUDED.secondary_timezone,
+		  world_clocks = EXCLUDED.world_clocks, agenda_email = EXCLUDED.agenda_email, updated_at = now()`,
+		id.UserID, tzArg, st.WeekStart, hours, toInt32(st.DefaultReminders), locs, st.SecondaryTimezone, st.WorldClocks, st.AgendaEmail); err != nil {
 		return err
 	}
 	out, err := s.loadSettings(r.Context(), s.d.Pool, id.UserID)

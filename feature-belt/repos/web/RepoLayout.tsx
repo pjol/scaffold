@@ -12,12 +12,13 @@ import {
   useCreateReposLink,
   useImportConnectedRepo,
   useRepo,
+  useReposArchive,
   useTopic,
   type ApiError,
   type ReposRepo,
 } from "@scaffoldapp/shared";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, InfoTip, Menu, Skeleton, SkeletonGroup, SourceBadge, cn, motion, toast, useMotionTokens } from "@scaffoldapp/ui-web";
-import { Check, Code2, Copy, ExternalLink, FolderInput, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequest, KeyRound, Link2, RefreshCw, Settings, Users } from "lucide-react";
+import { BarChart3, Check, CircleDot, Code2, Copy, Download, ExternalLink, FolderInput, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequest, KeyRound, Link2, RefreshCw, Settings, Tag, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useId, useState, type ReactNode } from "react";
@@ -123,11 +124,21 @@ function RepoHeader({ repo }: { repo: ReposRepo }) {
   const base = `/repos/${repo.id}`;
   const platform = reposPlatformName(repo);
   const accessUrl = reposPlatformAccessUrl(repo);
+  const own = !platform;
   const tabs = [
     { href: base, label: "Code", icon: Code2, active: (p: string) => p === base || /\/(blob|edit|upload|search)$/.test(p) },
+    ...(own
+      ? [{ href: `${base}/issues`, label: "Issues", icon: CircleDot, count: repo.open_issues, active: (p: string) => /\/(issues|labels|milestones)(\/|$)/.test(p.slice(base.length)) }]
+      : []),
     { href: `${base}/pulls`, label: reposPullNoun(repo, true), icon: GitPullRequest, count: repo.open_pulls, active: (p: string) => p.startsWith(`${base}/pulls`) || p.startsWith(`${base}/compare`) },
     { href: `${base}/commits`, label: "Commits", icon: GitCommitHorizontal, active: (p: string) => p.startsWith(`${base}/commits`) },
     { href: `${base}/branches`, label: "Branches", icon: GitBranch, active: (p: string) => p.startsWith(`${base}/branches`) },
+    ...(own
+      ? [
+          { href: `${base}/releases`, label: "Releases", icon: Tag, count: repo.releases, active: (p: string) => p.startsWith(`${base}/releases`) },
+          { href: `${base}/insights`, label: "Insights", icon: BarChart3, active: (p: string) => p.startsWith(`${base}/insights`) },
+        ]
+      : []),
     ...(repo.can_manage && reposSupports(repo, "settings")
       ? [{ href: `${base}/settings`, label: "Settings", icon: Settings, active: (p: string) => p.startsWith(`${base}/settings`) }]
       : []),
@@ -256,6 +267,16 @@ function RepoTabs({ tabs, pathname }: { tabs: { href: string; label: string; ico
 
 function CloneMenu({ repo }: { repo: ReposRepo }) {
   const [copied, setCopied] = useState(false);
+  const archive = useReposArchive(repo.id);
+  const own = !reposPlatformName(repo);
+  const download = async (format: "zip" | "tar.gz") => {
+    try {
+      const link = await archive.mutateAsync({ ref: repo.default_branch, format });
+      window.location.assign(link.url);
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't start the download."));
+    }
+  };
   return (
     <Menu
       align="end"
@@ -299,6 +320,17 @@ function CloneMenu({ repo }: { repo: ReposRepo }) {
           <Link href="/settings/git-credentials" className="type-label text-primary-strong underline underline-offset-2 hover:no-underline">
             Git credentials
           </Link>
+        ) : null}
+        {own && !repo.empty ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <span className="type-label text-fg-muted">Download {repo.default_branch}</span>
+            <Button size="sm" variant="outline" leftIcon={<Download />} loading={archive.isPending && archive.variables?.format === "zip"} onClick={() => void download("zip")}>
+              ZIP
+            </Button>
+            <Button size="sm" variant="outline" leftIcon={<Download />} loading={archive.isPending && archive.variables?.format === "tar.gz"} onClick={() => void download("tar.gz")}>
+              tar.gz
+            </Button>
+          </div>
         ) : null}
       </div>
     </Menu>

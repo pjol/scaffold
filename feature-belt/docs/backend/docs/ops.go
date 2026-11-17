@@ -131,7 +131,7 @@ func (s *Service) apply(ctx context.Context, me uuid.UUID, page *Page, ops []Op,
 		if b.pc.rules, err = memberRules(ctx, tx, p.OrgID, ops); err != nil {
 			return err
 		}
-		b.pc.ctx, b.pc.q, b.pc.pageID, b.pc.orgID = ctx, tx, p.ID, p.OrgID
+		b.pc.ctx, b.pc.q, b.pc.pageID, b.pc.orgID, b.pc.me = ctx, tx, p.ID, p.OrgID, me
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM docs_blocks WHERE page_id = $1`, p.ID).Scan(&b.count); err != nil {
 			return err
 		}
@@ -191,7 +191,7 @@ func (s *Service) apply(ctx context.Context, me uuid.UUID, page *Page, ops []Op,
 			res.Rejected = b.rejected
 		}
 		mentions = b.mentions
-		return nil
+		return syncReminders(ctx, tx, p, res.Blocks, b.deleted, me)
 	})
 	if err != nil {
 		return nil, err
@@ -290,28 +290,35 @@ func (b *batch) existing(id uuid.UUID) (*Block, bool, error) {
 	return &blk, true, nil
 }
 
-// checkParent validates a new parent block: on this page, a type that holds
-// children, not the block itself or inside it, and not too deep.
-func (b *batch) checkParent(self uuid.UUID, parent *uuid.UUID) (ok bool, code, msg string, err error) {
+// checkParent validates a new parent block for a block of typ: on this
+// page, a type that holds children, not the block itself or inside it, not
+// too deep, and the column rules (a column list holds 2–5 columns and
+// nothing else; columns go only in column lists; no columns inside columns;
+// no synced block inside another).
+func (b *batch) checkParent(self uuid.UUID, typ string, parent *uuid.UUID) (ok bool, code, msg string, err error) {
 	if parent == nil {
+		if typ == "column" {
+			return false, "invalid_parent", "A column goes inside a column list.", nil
+		}
 		return true, "", "", nil
 	}
 	if *parent == self {
 		return false, "invalid_parent", "A block can't go inside itself.", nil
 	}
 	rows, err := b.tx.Query(b.ctx, `
-		WITH RECURSIVE up (id, parent_id, type, depth) AS (
-			SELECT id, parent_id, type, 1 FROM docs_blocks WHERE id = $1 AND page_id = $2
+		WITH RECURSIVE up (id, parent_id, type, props, depth) AS (
+			SELECT id, parent_id, type, props, 1 FROM docs_blocks WHERE id = $1 AND page_id = $2
 			UNION ALL
-			SELECT d.id, d.parent_id, d.type, up.depth + 1 FROM up JOIN docs_blocks d ON d.id = up.parent_id WHERE up.depth < 64
+			SELECT d.id, d.parent_id, d.type, d.props, up.depth + 1 FROM up JOIN docs_blocks d ON d.id = up.parent_id WHERE up.depth < 64
 		)
-		SELECT id, type FROM up ORDER BY depth`, *parent, b.page.ID)
+		SELECT id, type, props FROM up ORDER BY depth`, *parent, b.page.ID)
 	if err != nil {
 		return false, "", "", err
 	}
 	type anc struct {
-		ID   uuid.UUID
-		Type string
+		ID    uuid.UUID
+		Type  string
+		Props []byte
 	}
 	chain, err := pgx.CollectRows(rows, pgx.RowToStructByPos[anc])
 	if err != nil {
@@ -320,12 +327,33 @@ func (b *batch) checkParent(self uuid.UUID, parent *uuid.UUID) (ok bool, code, m
 	if len(chain) == 0 {
 		return false, "gone", "The block it goes in was deleted.", nil
 	}
-	if !slices.Contains(nestable, chain[0].Type) {
+	if !holdsChildren(chain[0].Type, propsAny(chain[0].Props)) {
 		return false, "invalid_parent", "That block can't hold other blocks.", nil
+	}
+	if (chain[0].Type == "column_list") != (typ == "column") {
+		if typ == "column" {
+			return false, "invalid_parent", "A column goes inside a column list.", nil
+		}
+		return false, "invalid_parent", "A column list holds only columns.", nil
+	}
+	if chain[0].Type == "column_list" {
+		var n int
+		if err := b.tx.QueryRow(b.ctx, `SELECT count(*) FROM docs_blocks WHERE parent_id = $1 AND id <> $2`, *parent, self).Scan(&n); err != nil {
+			return false, "", "", err
+		}
+		if n >= maxColumns {
+			return false, "too_many_columns", fmt.Sprintf("Use up to %d columns.", maxColumns), nil
+		}
 	}
 	for _, a := range chain {
 		if a.ID == self {
 			return false, "invalid_parent", "A block can't go inside one of its own nested blocks.", nil
+		}
+		if typ == "column_list" && a.Type == "column" {
+			return false, "invalid_parent", "Columns can't go inside other columns.", nil
+		}
+		if typ == "synced_block" && a.Type == "synced_block" {
+			return false, "invalid_parent", "A synced block can't go inside another synced block.", nil
 		}
 	}
 	if len(chain) >= maxBlockDepth {
@@ -347,7 +375,7 @@ func (b *batch) create(op Op) error {
 	if b.count >= maxBlocks {
 		return httpx.NewError(http.StatusConflict, "page_full", fmt.Sprintf("A page holds up to %d blocks. Move some into a subpage.", maxBlocks))
 	}
-	ok, code, msg, err := b.checkParent(op.ID, op.ParentID)
+	ok, code, msg, err := b.checkParent(op.ID, op.Type, op.ParentID)
 	if err != nil {
 		return err
 	}
@@ -355,6 +383,7 @@ func (b *batch) create(op Op) error {
 		b.reject(op, code, msg)
 		return nil
 	}
+	b.pc.prev = nil
 	n, err := normalizeProps(b.pc, op.Type, op.Props)
 	if err != nil {
 		return err
@@ -393,6 +422,10 @@ func (b *batch) update(op Op) error {
 		}
 		typ = op.Type
 	}
+	if typ != cur.Type && (slices.Contains(structural, typ) || slices.Contains(structural, cur.Type)) {
+		b.reject(op, "invalid_type", "Columns and synced blocks can't turn into other blocks.")
+		return nil
+	}
 	curRaw, _ := json.Marshal(cur.Props)
 	merged := propsMap(curRaw)
 	for k, v := range op.Props {
@@ -409,7 +442,9 @@ func (b *batch) update(op Op) error {
 			}
 		}
 	}
+	b.pc.prev = cur.Props
 	n, err := normalizeProps(b.pc, typ, merged)
+	b.pc.prev = nil
 	if err != nil {
 		return err
 	}
@@ -419,7 +454,7 @@ func (b *batch) update(op Op) error {
 		return err
 	}
 	b.changed[op.ID] = true
-	if typ != cur.Type && !slices.Contains(nestable, typ) {
+	if holdsChildren(cur.Type, cur.Props) && !holdsChildren(typ, n.props) {
 		if err := b.liftChildren(cur); err != nil {
 			return err
 		}
@@ -460,7 +495,7 @@ func (b *batch) move(op Op) error {
 	if !validKey(op.Position) {
 		return httpx.BadRequest("A move needs a valid position.")
 	}
-	_, ok, err := b.existing(op.ID)
+	cur, ok, err := b.existing(op.ID)
 	if err != nil {
 		return err
 	}
@@ -468,7 +503,7 @@ func (b *batch) move(op Op) error {
 		b.reject(op, "gone", "That block was deleted.")
 		return nil
 	}
-	ok, code, msg, err := b.checkParent(op.ID, op.ParentID)
+	ok, code, msg, err := b.checkParent(op.ID, cur.Type, op.ParentID)
 	if err != nil {
 		return err
 	}

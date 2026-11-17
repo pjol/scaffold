@@ -38,6 +38,8 @@ import { LoadMore } from "@/components/shell/LoadMore";
 import { PresenceAvatar } from "@/features/presence";
 import { AddPeopleDialog } from "./Dialogs";
 
+import { WebhooksSection } from "./Webhooks";
+
 export type DetailsTab = "about" | "members" | "pinned" | "files";
 
 function EditableField({ label, value, multiline, max, disabled, onSave }: { label: string; value: string; multiline?: boolean; max: number; disabled: boolean; onSave: (v: string) => Promise<unknown> }) {
@@ -139,6 +141,37 @@ function About({ channel, onClose }: { channel: ChannelsDetail; onClose: () => v
       {!direct && (p.set_default || p.edit || p.archive || channel.member) && (
         <section className="flex flex-col gap-3">
           <h3 className="type-title-sm text-fg">Settings</h3>
+          {p.edit && !channel.archived && (
+            <Switch
+              checked={channel.posting === "admins"}
+              onCheckedChange={(v) => update.mutate({ posting: v ? "admins" : "everyone" }, { onError: (e) => toast.error(errorMessage(e)) })}
+              label="Only admins post"
+              info={`For announcements: the channel's admins and the ${orgsNoun()}'s admins post; everyone else reads and reacts.`}
+            />
+          )}
+          {p.edit && !channel.archived && channel.posting === "admins" && (
+            <Switch
+              checked={channel.replies_open}
+              onCheckedChange={(v) => update.mutate({ replies_open: v }, { onError: (e) => toast.error(errorMessage(e)) })}
+              label="Members can reply in threads"
+            />
+          )}
+          {p.manage_retention && (
+            <Field label="Keep messages" info="Overrides the workspace's setting for this channel. Older messages and their files are deleted for good. Recorded in the audit log.">
+              <Select
+                value={String(channel.retention_days ?? 0)}
+                onValueChange={(v) => update.mutate({ retention_days: Number(v) }, { onSuccess: () => toast.success("Retention saved."), onError: (e) => toast.error(errorMessage(e)) })}
+                options={[
+                  { value: "0", label: "Use the workspace setting" },
+                  { value: "7", label: "7 days" },
+                  { value: "30", label: "30 days" },
+                  { value: "90", label: "90 days" },
+                  { value: "365", label: "1 year" },
+                  ...(channel.retention_days && ![7, 30, 90, 365].includes(channel.retention_days) ? [{ value: String(channel.retention_days), label: `${channel.retention_days} days` }] : []),
+                ]}
+              />
+            </Field>
+          )}
           {p.set_default && channel.kind === "public" && !channel.archived && (
             <Switch
               checked={channel.is_default}
@@ -166,6 +199,8 @@ function About({ channel, onClose }: { channel: ChannelsDetail; onClose: () => v
           </div>
         </section>
       )}
+
+      {!direct && p.manage_integrations && <WebhooksSection channel={channel} />}
 
       <ConfirmDialog
         open={confirm === "leave"}

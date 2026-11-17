@@ -2,9 +2,7 @@ import {
   errorMessage,
   filesConnectedPath,
   filesFormatSize,
-  filesIsTextPreview,
   filesKindLabel,
-  filesParseCsv,
   isConnectionErrorCode,
   sourceProductLabel,
   useActiveOrg,
@@ -15,7 +13,6 @@ import {
   useFilesConnectedItem,
   useFilesConnectedPreviewUrl,
   useFilesConnectedSearch,
-  useFilesConnectedText,
   useFilesCopyToFiles,
   useFilesCreateShortcut,
   useFilesSources,
@@ -23,37 +20,17 @@ import {
   type FilesConnectedSource,
   type PagedQueryResult,
 } from "@scaffoldapp/shared";
-import {
-  Banner,
-  Button,
-  ConnectPrompt,
-  ConnectedSection,
-  EmptyState,
-  ErrorState,
-  Input,
-  ListGroup,
-  ListRow,
-  ProviderIcon,
-  Screen,
-  Skeleton,
-  SkeletonRow,
-  SourceBadge,
-  Text,
-  connectedSectionItems,
-  toast,
-  useTheme,
-} from "@scaffoldapp/ui-native";
+import { Banner, Button, ConnectedSection, connectedSectionItems, ConnectPrompt, EmptyState, ErrorState, FilePreview, Input, ListGroup, ListRow, ProviderIcon, Screen, Skeleton, SkeletonRow, SourceBadge, Text, toast, useTheme } from "@scaffoldapp/ui-native";
 import { Image } from "expo-image";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { Copy, Download, ExternalLink, FolderOpen, HardDrive, Link2, Search, Unplug, Users } from "lucide-react-native";
-import { useMemo, useState } from "react";
-import { Linking, Pressable, RefreshControl, ScrollView, View } from "react-native";
+import { useState } from "react";
+import { Linking, Pressable, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
 import { filesOpenConnectedInBrowser, filesSaveOrShareConnected } from "./actions";
 import { filesIconTone, filesItemIcon } from "./icons";
-import { FILES_MONO, FilesMarkdown } from "./Markdown";
 
 const routeOf = (path: string) => path.slice(1) as never;
 
@@ -313,12 +290,10 @@ function ConnFolder({ item, orgId }: { item: FilesConnectedItem; orgId: string |
 function ConnFile({ item, orgId, path }: { item: FilesConnectedItem; orgId: string | null; path: string[] }) {
   const theme = useTheme();
   const api = useApi();
-  const image = item.preview === "image";
-  const text = filesIsTextPreview(item.preview) && item.preview !== "svg";
-  const url = useFilesConnectedPreviewUrl(item.connection_id, item.ref, orgId, image);
-  const content = useFilesConnectedText(item.connection_id, item.ref, orgId, text);
   const platformOnly = item.native && item.preview === "other";
-  const rows = useMemo(() => (item.preview === "csv" && content.data ? filesParseCsv(content.data.text, 201).rows : []), [item.preview, content.data]);
+  const url = useFilesConnectedPreviewUrl(item.connection_id, item.ref, orgId, !platformOnly);
+  // Google's own documents stream as PDF renderings.
+  const mime = item.native && item.preview === "pdf" ? "application/pdf" : item.mime_type;
   return (
     <Screen
       edges={["bottom"]}
@@ -338,58 +313,20 @@ function ConnFile({ item, orgId, path }: { item: FilesConnectedItem; orgId: stri
       }
     >
       {item.native ? <Banner tone="info" title={`${filesKindLabel(item)} files are read-only here.`} /> : null}
-      {image ? (
-        url.isPending ? (
-          <Skeleton height={320} />
-        ) : url.isError ? (
-          <ErrorState compact title="Couldn't load the preview" onRetry={() => void url.refetch()} />
-        ) : (
-          <Image source={{ uri: url.data.url }} style={{ width: "100%", aspectRatio: 1, borderRadius: theme.radius.lg, backgroundColor: theme.colors.sunken }} contentFit="contain" accessibilityLabel={item.name} />
-        )
-      ) : text ? (
-        content.isPending ? (
-          <Skeleton height={320} />
-        ) : content.isError ? (
-          <ConnError error={content.error} onRetry={() => void content.refetch()} />
-        ) : item.preview === "markdown" ? (
-          <View style={{ backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border, padding: theme.space[4] }}>
-            <FilesMarkdown text={content.data.text} />
-          </View>
-        ) : item.preview === "csv" ? (
-          <ScrollView horizontal style={{ borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.lg, backgroundColor: theme.colors.surface }}>
-            <View>
-              {rows.map((r, i) => (
-                <View key={i} style={{ flexDirection: "row", borderTopWidth: i ? 1 : 0, borderColor: theme.colors.border, backgroundColor: i ? undefined : theme.colors.sunken }}>
-                  {r.map((c, j) => (
-                    <Text key={j} role="label" weight={i ? undefined : 600} style={{ width: 128, paddingHorizontal: theme.space[3], paddingVertical: theme.space[2] }} numberOfLines={2}>
-                      {c}
-                    </Text>
-                  ))}
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-        ) : (
-          <ScrollView horizontal style={{ backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border }} contentContainerStyle={{ padding: theme.space[4] }}>
-            <Text role="label" selectable style={{ fontFamily: FILES_MONO }}>
-              {content.data.text.split("\n").slice(0, 2000).join("\n")}
-            </Text>
-          </ScrollView>
-        )
-      ) : (
+      {platformOnly ? (
         <View style={{ alignItems: "center", gap: theme.space[3], paddingVertical: theme.space[10], backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border }}>
           <ProviderIcon provider={item.source.provider} product={item.source.product} size={32} />
           <Text role="titleSm" align="center">
-            {platformOnly ? `${filesKindLabel(item)} open only in ${product(item)}` : `Open to view this ${filesKindLabel(item).toLowerCase()}`}
+            {`${filesKindLabel(item)} open only in ${product(item)}`}
           </Text>
-          {!platformOnly ? (
-            <Button variant="secondary" leftIcon={ExternalLink} onPress={() => void filesOpenConnectedInBrowser(api.http, item, orgId)}>
-              Open in browser
-            </Button>
-          ) : null}
         </View>
+      ) : url.isPending ? (
+        <Skeleton height={320} />
+      ) : url.isError ? (
+        <ConnError error={url.error} onRetry={() => void url.refetch()} />
+      ) : (
+        <FilePreview url={url.data.url} name={item.name} mime={mime} size={item.size || null} />
       )}
-      {content.data?.truncated ? <Banner tone="info" title="Showing the first 1 MB." /> : null}
       <Text role="titleSm" accessibilityRole="header">
         Details
       </Text>

@@ -66,6 +66,9 @@ func (k *Kit) Doctor(ctx context.Context, in DoctorInput) (DoctorOutput, error) 
 	} else {
 		out.add("ok", "manifest", "%s (%s) · surfaces %s", p.Name, p.Slug, strings.Join(p.Surfaces, ", "))
 	}
+	if summary := p.layoutSummary(); summary != "" {
+		out.add("ok", "layout", "adopted: %s", summary)
+	}
 
 	cat, _, err := k.Catalog()
 	if err != nil {
@@ -87,7 +90,7 @@ func (k *Kit) Doctor(ctx context.Context, in DoctorInput) (DoctorOutput, error) 
 	}
 	checkEnvExamples(&out, dir, p)
 	checkSharedExports(&out, dir, p)
-	checkHouseRules(&out, dir)
+	checkHouseRules(&out, dir, p)
 	return out, nil
 }
 
@@ -119,6 +122,10 @@ func (k *Kit) checkFeatures(out *DoctorOutput, p *Project, cat map[string]*Featu
 
 func checkMigrations(out *DoctorOutput, dir string, p *Project, cat map[string]*Feature) {
 	if !p.HasSurface("backend") {
+		return
+	}
+	if p.isCustom("backend") {
+		out.add("ok", "migrations", "backend is custom (layout.custom): its migrations follow its own scheme, not the ledger")
 		return
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "backend", "migrations"))
@@ -193,9 +200,9 @@ func (k *Kit) checkAnchors(out *DoctorOutput, dir string, p *Project, cat map[st
 	}
 	sort.Strings(files)
 	for _, file := range files {
-		b, err := os.ReadFile(filepath.Join(dir, file))
+		b, err := os.ReadFile(filepath.Join(dir, p.physical(file)))
 		if err != nil {
-			out.add("warn", "anchors", "%s missing; features that wire into it need manual stitching", file)
+			out.add("warn", "anchors", "%s missing; features that wire into it need manual stitching", p.physical(file))
 			missing++
 			continue
 		}
@@ -205,7 +212,7 @@ func (k *Kit) checkAnchors(out *DoctorOutput, dir string, p *Project, cat map[st
 				found = found || isAnchorLine(l, a)
 			}
 			if !found {
-				out.add("warn", "anchors", "%s lost anchor scaffold:%s; restore the comment so `scaffold add` can wire into it", file, a)
+				out.add("warn", "anchors", "%s lost anchor scaffold:%s; restore the comment so `scaffold add` can wire into it", p.physical(file), a)
 				missing++
 			}
 		}
@@ -267,11 +274,14 @@ var (
 	bannedCopy = regexp.MustCompile(`(?i)["'>][^"'<]*\b(seamless(?:ly)?|elevate|unlock|delve|curated|journey|effortless(?:ly)?|supercharge|game-?changer|cutting-edge|revolutioni[sz]e)\b`)
 )
 
-func checkHouseRules(out *DoctorOutput, dir string) {
+func checkHouseRules(out *DoctorOutput, dir string, p *Project) {
 	type hit struct{ rule, where string }
 	var hits []hit
 	roots := []string{"web/app", "web/src", "mobile/app", "mobile/src"}
 	for _, root := range roots {
+		if p.customSurfaceOf(root+"/") != "" {
+			continue // a custom surface keeps its own rules (its CLAUDE.md)
+		}
 		base := filepath.Join(dir, root)
 		_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -328,7 +338,7 @@ var exportDecl = regexp.MustCompile(`(?m)^export\s+(?:declare\s+)?(?:async\s+)?(
 func checkSharedExports(out *DoctorOutput, dir string, p *Project) {
 	owners := map[string][]string{}
 	for name := range p.Features {
-		root := filepath.Join(dir, "packages", "shared", "src", name)
+		root := filepath.Join(dir, filepath.FromSlash(p.physical("packages/shared/src/"+name)))
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".ts") {
 				return nil

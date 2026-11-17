@@ -9,18 +9,23 @@ import {
   errorMessage,
   isPresenceDND,
   isPresenceEmoji,
+  presenceDndSource,
   presenceDndUntil,
   presenceStatusRequest,
   presenceUntilLabel,
   useClearPresenceStatus,
+  useCreatePresenceStatusPreset,
+  useDeletePresenceStatusPreset,
   useMyPresence,
+  usePresenceStatusPresets,
   useSetPresenceDND,
   useSetPresenceStatus,
   type PresenceClearAfter,
 } from "@scaffoldapp/shared";
 import { Button, Dialog, Field, IconButton, Input, Menu, MenuItem, Select, cn, toast } from "@scaffoldapp/ui-web";
-import { SmilePlus, X } from "lucide-react";
+import { BookmarkPlus, CalendarClock, SmilePlus, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ScheduleDialog } from "./ScheduleDialog";
 import { openPresenceDialog, usePresenceDialog } from "./store";
 
 const clearLabel = new Map(PRESENCE_CLEAR_AFTER_OPTIONS.map((o) => [o.value, o.label]));
@@ -138,28 +143,13 @@ function StatusDialog({ open }: { open: boolean }) {
           />
         </div>
         {empty ? (
-          <ul className="flex flex-col gap-1" aria-label="Suggested statuses">
-            {PRESENCE_STATUS_PRESETS.map((p) => (
-              <li key={p.text}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEmoji(p.emoji);
-                    setText(p.text);
-                    setClearAfter(p.clear_after);
-                  }}
-                  className="flex min-h-tap-sm w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring"
-                >
-                  <span aria-hidden className="type-body-lg">
-                    {p.emoji}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate type-body text-fg">{p.text}</span>
-                  <span className="shrink-0 type-caption text-fg-muted">{clearLabel.get(p.clear_after)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
+          <PresetList
+            onPick={(p) => {
+              setEmoji(p.emoji);
+              setText(p.text);
+              setClearAfter(p.clear_after);
+            }}
+          />        ) : (
           <div className="flex flex-col gap-4">
             <Field label="Clear after">
               <Select value={clearAfter} onValueChange={(v) => setClearAfter(v as PresenceClearAfter)} options={PRESENCE_CLEAR_AFTER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} />
@@ -174,10 +164,84 @@ function StatusDialog({ open }: { open: boolean }) {
                 placeholder="Type or paste an emoji"
               />
             </Field>
+            <SaveAsPreset emoji={emoji} text={text.trim()} clearAfter={clearAfter} />
           </div>
         )}
       </div>
     </Dialog>
+  );
+}
+
+type PresetChoice = { emoji: string; text: string; clear_after: PresenceClearAfter };
+
+function PresetRow({ p, onPick, onRemove }: { p: PresetChoice; onPick: (p: PresetChoice) => void; onRemove?: () => void }) {
+  return (
+    <li className="group flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => onPick(p)}
+        className="flex min-h-tap-sm min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <span aria-hidden className="type-body-lg">
+          {p.emoji}
+        </span>
+        <span className="min-w-0 flex-1 truncate type-body text-fg">{p.text}</span>
+        <span className="shrink-0 type-caption text-fg-muted">{clearLabel.get(p.clear_after)}</span>
+      </button>
+      {onRemove ? <IconButton size="sm" variant="ghost" label={`Remove “${p.text || p.emoji}”`} icon={<X />} onClick={onRemove} /> : null}
+    </li>
+  );
+}
+
+/** The app's default statuses, then the ones you saved (removable). */
+function PresetList({ onPick }: { onPick: (p: PresetChoice) => void }) {
+  const saved = usePresenceStatusPresets();
+  const remove = useDeletePresenceStatusPreset();
+  const own = saved.data?.items ?? [];
+  return (
+    <div className="flex flex-col gap-4">
+      <ul className="flex flex-col gap-1" aria-label="Suggested statuses">
+        {PRESENCE_STATUS_PRESETS.map((p) => (
+          <PresetRow key={p.text} p={p} onPick={onPick} />
+        ))}
+      </ul>
+      {own.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <h3 className="px-3 type-label text-fg-muted">Saved</h3>
+          <ul className="flex flex-col gap-1" aria-label="Saved statuses">
+            {own.map((p) => (
+              <PresetRow key={p.id} p={p} onPick={onPick} onRemove={() => remove.mutate(p.id, { onError: (e) => toast.error(errorMessage(e)) })} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** "Save as a preset" for the status being written, unless it is already one. */
+function SaveAsPreset({ emoji, text, clearAfter }: { emoji: string; text: string; clearAfter: PresenceClearAfter }) {
+  const saved = usePresenceStatusPresets();
+  const create = useCreatePresenceStatusPreset();
+  const known =
+    PRESENCE_STATUS_PRESETS.some((p) => p.emoji === emoji && p.text === text) || (saved.data?.items ?? []).some((p) => p.emoji === emoji && p.text === text);
+  if (known || (!emoji && !text)) return null;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="self-start"
+      leftIcon={<BookmarkPlus />}
+      loading={create.isPending}
+      onClick={() =>
+        create.mutate(
+          { emoji, text, clear_after: clearAfter },
+          { onSuccess: () => toast.success("Saved to your statuses."), onError: (e) => toast.error(errorMessage(e, "Couldn't save it.")) },
+        )
+      }
+    >
+      Save to my statuses
+    </Button>
   );
 }
 
@@ -186,6 +250,7 @@ function DndDialog({ open }: { open: boolean }) {
   const mine = useMyPresence();
   const dnd = useSetPresenceDND();
   const on = isPresenceDND(mine.data);
+  const bySchedule = presenceDndSource(mine.data) === "schedule";
   const close = () => openPresenceDialog(null);
   const pick = (until: string | null) =>
     dnd.mutate(until, {
@@ -201,7 +266,16 @@ function DndDialog({ open }: { open: boolean }) {
       onOpenChange={(o) => !o && close()}
       title={on ? `Paused ${presenceUntilLabel(mine.data?.dnd_until)}` : "Pause notifications"}
       size="sm"
-      info="While paused you get no push notifications. Messages and badges still arrive in the app."
+      info={
+        bySchedule
+          ? "Your notification schedule paused them. Resuming lets notifications through until your next quiet hours."
+          : "While paused you get no push notifications. Messages and badges still arrive in the app."
+      }
+      footer={
+        <Button variant="ghost" leftIcon={<CalendarClock />} onClick={() => openPresenceDialog("schedule")}>
+          {mine.data?.schedule?.enabled ? "Edit schedule" : "Set a schedule"}
+        </Button>
+      }
     >
       <ul className="flex flex-col gap-2">
         {on && (
@@ -223,13 +297,14 @@ function DndDialog({ open }: { open: boolean }) {
   );
 }
 
-/** Both presence dialogs, opened from the account menu (`openPresenceDialog`). Mounted once per session. */
+/** The presence dialogs, opened from the account menu (`openPresenceDialog`). Mounted once per session. */
 export function PresenceDialogs() {
   const open = usePresenceDialog();
   return (
     <>
       <StatusDialog open={open === "status"} />
       <DndDialog open={open === "dnd"} />
+      <ScheduleDialog open={open === "schedule"} />
     </>
   );
 }

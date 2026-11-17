@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, ListRow } from "@scaffoldapp/ui-web";
+import { Button, ListGroup, ListRow } from "@scaffoldapp/ui-web";
 import Link from "next/link";
 import { Fragment } from "react";
 import { supportLinks } from "@/features/registry";
@@ -41,7 +41,7 @@ export function SupportLinks({ variant }: { variant: "buttons" | "inline" | "lis
     );
   }
   return (
-    <Card padding="none" className="p-1">
+    <ListGroup>
       <ul className="flex flex-col">
         {supportLinks.map((l) => {
           const Icon = l.icon;
@@ -62,6 +62,6 @@ export function SupportLinks({ variant }: { variant: "buttons" | "inline" | "lis
           );
         })}
       </ul>
-    </Card>
+    </ListGroup>
   );
 }

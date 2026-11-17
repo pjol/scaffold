@@ -31,10 +31,20 @@ import {
   type CalendarNewEventDraft,
   type CalendarPerson,
   type CalendarScope,
+  type CalendarAutoDecline,
+  type CalendarEventRoom,
+  type CalendarEventType,
+  calendarDayStart,
+  formatCalendarDay,
+  formatCalendarTime,
+  useActiveOrg,
+  useCalendarCalendars,
+  useCalendarFindTime,
+  useCalendarRooms,
 } from "@scaffoldapp/shared";
-import { Avatar, Button, Chip, EmptyState, ErrorState, Field, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, Sheet, Skeleton, Switch, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Avatar, Button, Chip, EmptyState, ErrorState, Field, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, SegmentedControl, Sheet, Skeleton, Switch, Text, TextArea, toast, useTheme } from "@scaffoldapp/ui-native";
 import { router } from "expo-router";
-import { CalendarX, Check, Mail, Plus, Search, X } from "lucide-react-native";
+import { CalendarX, Check, DoorOpen, Mail, Plus, Search, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { View } from "react-native";
 import { CalendarDateTimeRow, useCalendarZone } from "./parts";
@@ -71,10 +81,15 @@ interface Form {
   calendar: string;
   /** Meeting provider for "add": "<option id>|<connection>". */
   provider: string;
+  eventType: CalendarEventType;
+  autoDecline: CalendarAutoDecline;
+  declineMessage: string;
+  rooms: CalendarEventRoom[];
 }
 
 const calKey = (r: CalendarCalendarRef) => `${r.connection_id}|${r.calendar_id}`;
 const calRef = (k: string): CalendarCalendarRef | null => {
+  if (k.startsWith("cal:")) return null;
   const i = k.indexOf("|");
   return i > 0 ? { connection_id: k.slice(0, i), calendar_id: k.slice(i + 1) } : null;
 };
@@ -98,7 +113,7 @@ interface Prefill {
   videoAvailable: boolean;
 }
 
-function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, reminders: number[]): Form {
+function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, reminders: number[], eventType: CalendarEventType = "default"): Form {
   if (e) {
     const tz = e.timezone || zone;
     const startDate = e.all_day && e.start_date ? e.start_date : calendarDateKey(e.starts_at, tz);
@@ -116,28 +131,37 @@ function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, 
       guests: e.attendees.map((a): Guest => (a.user_id ? { kind: "user", person: { id: a.user_id, display_name: a.name, avatar_url: a.avatar_url } } : { kind: "email", email: a.email })),
       conference: "keep",
       reminders: e.reminders,
-      calendar: "app",
+      calendar: e.calendar ? `cal:${e.calendar.id}` : "app",
       provider: "",
+      eventType: e.event_type ?? "default",
+      autoDecline: e.auto_decline ?? "none",
+      declineMessage: e.decline_message ?? "",
+      rooms: e.rooms ?? [],
     };
   }
   const { draft } = prefill;
   const { startsAt: start, endsAt: end } = calendarDraftTimes(draft);
+  const allDay = eventType === "out_of_office" && calendarMinutesOfDay(start, zone) === 0 && calendarMinutesOfDay(end, zone) === 0;
   return {
-    title: draft.title ?? "",
+    title: draft.title ?? (eventType === "out_of_office" ? "Out of office" : eventType === "focus" ? "Focus time" : ""),
     description: draft.description ?? "",
     location: "",
-    allDay: false,
+    allDay,
     startDate: calendarDateKey(start, zone),
     startTime: hhmm(calendarMinutesOfDay(start, zone)),
-    endDate: calendarDateKey(end, zone),
+    endDate: allDay ? calendarDateKey(start, zone) : calendarDateKey(end, zone),
     endTime: hhmm(calendarMinutesOfDay(end, zone)),
     timezone: zone,
     repeat: "none",
     guests: [...prefill.people.map((person): Guest => ({ kind: "user", person })), ...calendarDraftGuests(draft).emails.map((email): Guest => ({ kind: "email", email }))],
     conference: draft.video && prefill.videoAvailable ? "add" : "keep",
-    reminders,
+    reminders: eventType === "default" ? reminders : [],
     calendar: "app",
     provider: "",
+    eventType,
+    autoDecline: eventType === "default" ? "none" : "new",
+    declineMessage: "",
+    rooms: [],
   };
 }
 
@@ -145,7 +169,7 @@ function initial(e: CalendarEventDetail | null, zone: string, prefill: Prefill, 
  * Create or edit an event (modal). Edit with `id` (and `occurrence` for one occurrence of a
  * series); create prefilled from `draft` (a new-event link: title, times, guests, video).
  */
-export function EventFormScreen({ id, occurrence, draft = {} }: { id?: string; occurrence?: string; draft?: CalendarNewEventDraft }) {
+export function EventFormScreen({ id, occurrence, draft = {}, eventType }: { id?: string; occurrence?: string; draft?: CalendarNewEventDraft; eventType?: CalendarEventType }) {
   const theme = useTheme();
   const event = useCalendarEvent(id, occurrence ?? null);
   const settings = useCalendarSettings();
@@ -168,7 +192,7 @@ export function EventFormScreen({ id, occurrence, draft = {} }: { id?: string; o
       </Screen>
     );
   }
-  if (event.data && event.data.role !== "owner") {
+  if (event.data && !event.data.can_edit) {
     return (
       <Screen edges={["bottom"]} centered>
         <EmptyState icon={CalendarX} title="Only the organizer can edit this event" />
@@ -176,16 +200,28 @@ export function EventFormScreen({ id, occurrence, draft = {} }: { id?: string; o
     );
   }
   const videoAvailable = settings.data?.video_available ?? false;
-  return <Form event={event.data ?? null} zone={zone} prefill={{ draft, people: people.data?.items ?? [], videoAvailable }} defaults={settings.data?.default_reminders ?? [10]} videoAvailable={videoAvailable} />;
+  return (
+    <Form
+      event={event.data ?? null}
+      zone={zone}
+      prefill={{ draft, people: people.data?.items ?? [], videoAvailable }}
+      defaults={settings.data?.default_reminders ?? [10]}
+      videoAvailable={videoAvailable}
+      {...(eventType ? { eventType } : {})}
+    />
+  );
 }
 
-function Form({ event, zone, prefill, defaults, videoAvailable }: { event: CalendarEventDetail | null; zone: string; prefill: Prefill; defaults: number[]; videoAvailable: boolean }) {
+function Form({ event, zone, prefill, defaults, videoAvailable, eventType }: { event: CalendarEventDetail | null; zone: string; prefill: Prefill; defaults: number[]; videoAvailable: boolean; eventType?: CalendarEventType }) {
   const theme = useTheme();
   const s = theme.space;
   const c = theme.colors;
-  const [f, setF] = useState<Form>(() => initial(event, zone, prefill, defaults));
+  const [f, setF] = useState<Form>(() => initial(event, zone, prefill, defaults, eventType));
+  const calendars = useCalendarCalendars();
+  const appCalendars = (calendars.data?.items ?? []).filter((x) => x.level === "edit" || x.level === "manage");
+  const block = f.eventType !== "default";
   const [error, setError] = useState<{ title?: string; time?: string }>({});
-  const [sheet, setSheet] = useState<"repeat" | "guests" | "scope" | "calendar" | "provider" | null>(null);
+  const [sheet, setSheet] = useState<"repeat" | "guests" | "scope" | "calendar" | "provider" | "rooms" | null>(null);
   const create = useCreateCalendarEvent();
   const createConnected = useCreateCalendarConnectedEvent();
   // New events can go to a connected calendar (Google, Outlook), whose platform invites guests.
@@ -196,8 +232,12 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
   const providers = calendarConferenceOptions(sources.data, target);
   const provider = providers.find((o) => `${o.id}|${o.connection_id ?? ""}` === f.provider) ?? providers[0];
   const calendarLabel = (key: string) => {
+    if (key.startsWith("cal:")) {
+      const cal = appCalendars.find((x) => x.id === key.slice(4));
+      return cal ? (cal.mine ? cal.name : `${cal.name} · ${cal.team_name ? "team" : (cal.owner?.display_name ?? "")}`) : "Calendar";
+    }
     const found = calendarFindCalendar(sources.data, calRef(key));
-    if (!found) return "This app's calendar";
+    if (!found) return appCalendars.find((x) => x.is_primary && x.mine)?.name ?? "This app's calendar";
     const name = found.calendar.primary && found.calendar.name === found.source.account ? sourceProductLabel(found.source.provider ?? "", found.source.product) : found.calendar.name;
     return `${name} · ${found.source.account}`;
   };
@@ -252,6 +292,17 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
     if (event) {
       if (scope) b.scope = scope;
       b.occurrence_start = event.occurrence_start;
+    }
+    const calId = f.calendar.startsWith("cal:") ? f.calendar.slice(4) : null;
+    if (calId && scope !== "this" && (!event || event.calendar?.id !== calId)) b.calendar_id = calId;
+    if (!event && block) b.event_type = f.eventType;
+    if (block) {
+      b.auto_decline = f.autoDecline;
+      b.decline_message = f.declineMessage.trim();
+      delete b.attendees;
+      delete b.conference;
+    } else if (scope !== "this") {
+      b.room_ids = f.rooms.map((r) => r.id);
     }
     return b;
   };
@@ -315,6 +366,45 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
       <Field label="Title" error={error.title} required>
         <Input value={f.title} onChangeText={(v) => set("title", v)} placeholder="Add a title" maxLength={200} autoFocus={!event} />
       </Field>
+      {!event && !target ? (
+        <SegmentedControl<CalendarEventType>
+          accessibilityLabel="Kind of event"
+          value={f.eventType}
+          onValueChange={(v) =>
+            setF((x) => ({
+              ...x,
+              eventType: v,
+              autoDecline: v === "default" ? "none" : "new",
+              title: !x.title || ["Out of office", "Focus time"].includes(x.title) ? (v === "out_of_office" ? "Out of office" : v === "focus" ? "Focus time" : "") : x.title,
+            }))
+          }
+          options={[
+            { value: "default", label: "Event" },
+            { value: "out_of_office", label: "Out of office" },
+            { value: "focus", label: "Focus" },
+          ]}
+        />
+      ) : null}
+      {block ? (
+        <View style={{ gap: s[3] }}>
+          <ListGroup title="Invitations during it">
+            {(
+              [
+                ["new", "Decline new invitations"],
+                ["all", "Decline new and existing"],
+                ["none", "Don't decline"],
+              ] as const
+            ).map(([v, label]) => (
+              <ListRow key={v} title={label} chevron={false} trailing={f.autoDecline === v ? <Check size={20} color={c.primary} accessibilityLabel="Selected" /> : undefined} onPress={() => set("autoDecline", v)} />
+            ))}
+          </ListGroup>
+          {f.autoDecline !== "none" ? (
+            <Field label="Message" info="Sent to organizers with the decline.">
+              <Input value={f.declineMessage} onChangeText={(v) => set("declineMessage", v)} maxLength={500} placeholder={f.eventType === "focus" ? "In focus time; ask me after" : "Away until Monday"} />
+            </Field>
+          ) : null}
+        </View>
+      ) : null}
       <View style={{ gap: s[3] }}>
         <Switch value={f.allDay} onValueChange={(v) => set("allDay", v)} label="All day" />
         <Field label="Starts" error={error.time}>
@@ -339,7 +429,7 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
           </Text>
         ) : null}
       </View>
-      {!event && writable.length > 0 ? (
+      {(!event || event.role === "owner") && (writable.length > 0 || appCalendars.length > 1) ? (
         <ListGroup>
           <ListRow
             title="Calendar"
@@ -355,12 +445,26 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
       ) : null}
       <ListGroup>
         <ListRow title={repeatLabel[f.repeat]} info={custom ? "Change custom repeats on the web." : undefined} onPress={custom ? undefined : () => setSheet("repeat")} />
-        <ListRow title={f.guests.length === 0 ? "Add guests" : `${f.guests.length} ${f.guests.length === 1 ? "guest" : "guests"}`} onPress={() => setSheet("guests")} />
+        {block ? null : <ListRow title={f.guests.length === 0 ? "Add guests" : `${f.guests.length} ${f.guests.length === 1 ? "guest" : "guests"}`} onPress={() => setSheet("guests")} />}
+        {block || target ? null : (
+          <ListRow title={f.rooms.length === 0 ? "Add a room" : f.rooms.map((r) => r.name).join(", ")} leading={<DoorOpen size={20} color={c.textMuted} />} onPress={() => setSheet("rooms")} />
+        )}
       </ListGroup>
-      <Field label="Location">
-        <Input value={f.location} onChangeText={(v) => set("location", v)} maxLength={500} placeholder="Room, address or link" />
-      </Field>
-      {videoAvailable || providers.length > 0 || event?.conference_url ? (
+      {!block && !f.allDay && f.guests.some((g) => g.kind === "user") ? (
+        <Suggestions
+          guests={f.guests.flatMap((g) => (g.kind === "user" ? [g.person.id] : []))}
+          zone={f.timezone}
+          date={f.startDate}
+          minutes={Math.max(15, toMin(f.endTime) - toMin(f.startTime) + calendarDaysBetween(f.startDate, f.endDate) * 1440)}
+          onPick={(st, en) => setF((x) => ({ ...x, startDate: calendarDateKey(st, x.timezone), startTime: hhmm(calendarMinutesOfDay(st, x.timezone)), endDate: calendarDateKey(en, x.timezone), endTime: hhmm(calendarMinutesOfDay(en, x.timezone)) }))}
+        />
+      ) : null}
+      {block ? null : (
+        <Field label="Location">
+          <Input value={f.location} onChangeText={(v) => set("location", v)} maxLength={500} placeholder="Room, address or link" />
+        </Field>
+      )}
+      {!block && (videoAvailable || providers.length > 0 || event?.conference_url) ? (
         <View style={{ gap: s[2] }}>
           <Switch
             value={f.conference === "add" || (!!event?.conference_url && f.conference !== "remove")}
@@ -403,7 +507,10 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
 
       <Sheet open={sheet === "calendar"} onClose={() => setSheet(null)} title="Calendar">
         <ListGroup>
-          {["app", ...writable.map((w) => calKey({ connection_id: w.source.id, calendar_id: w.calendar.id }))].map((k) => (
+          {[
+            ...(appCalendars.length > 0 ? appCalendars.filter((x) => !event || x.mine || x.team_id).map((x) => `cal:${x.id}`) : ["app"]),
+            ...(event ? [] : writable.map((w) => calKey({ connection_id: w.source.id, calendar_id: w.calendar.id }))),
+          ].map((k) => (
             <ListRow
               key={k}
               title={calendarLabel(k)}
@@ -454,6 +561,15 @@ function Form({ event, zone, prefill, defaults, videoAvailable }: { event: Calen
         </ListGroup>
       </Sheet>
       <GuestsSheet open={sheet === "guests"} onClose={() => setSheet(null)} guests={f.guests} onChange={(g) => set("guests", g)} />
+      <RoomsSheet
+        open={sheet === "rooms"}
+        onClose={() => setSheet(null)}
+        rooms={f.rooms}
+        onChange={(r) => set("rooms", r)}
+        from={f.allDay ? null : calendarFromWall(f.startDate, toMin(f.startTime), f.timezone)}
+        to={f.allDay ? null : calendarFromWall(f.endDate, toMin(f.endTime), f.timezone)}
+        {...(event ? { eventId: event.event_id } : {})}
+      />
       <Sheet open={sheet === "scope"} onClose={() => setSheet(null)} title="Save recurring event">
         <ListGroup>
           {(
@@ -538,6 +654,84 @@ function GuestsSheet({ open, onClose, guests, onChange }: { open: boolean; onClo
           </ListGroup>
         ) : null}
       </View>
+    </Sheet>
+  );
+}
+
+/** Simplified find a time: when the guests (and you) are all free in everyone's working hours. */
+function Suggestions({ guests, zone, date, minutes, onPick }: { guests: string[]; zone: string; date: string; minutes: number; onPick: (s: string, e: string) => void }) {
+  const theme = useTheme();
+  const s = theme.space;
+  const from = useMemo(() => new Date(Math.max(Math.ceil(Date.now() / 900_000) * 900_000, new Date(calendarDayStart(date, zone)).getTime())).toISOString(), [date, zone]);
+  const find = useCalendarFindTime({ user_ids: guests, from, to: calendarDayStart(calendarAddDays(date, 7), zone), duration: minutes });
+  if (find.isPending) return <Skeleton height={theme.tap.sm} />;
+  if (find.isError) return <Text role="caption" tone="muted">{errorMessage(find.error, "Couldn't find free times.")}</Text>;
+  const slots = find.data.slots.slice(0, 6);
+  return (
+    <View style={{ gap: s[2] }}>
+      <Text role="label" tone="muted">
+        {slots.length > 0 ? "Everyone's free" : "No time this week when everyone's free"}
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: s[2] }}>
+        {slots.map((sl) => (
+          <Chip key={sl.starts_at} size="sm" icon={Plus} onPress={() => onPick(sl.starts_at, sl.ends_at)}>
+            {`${formatCalendarDay(calendarDateKey(sl.starts_at, zone))} ${formatCalendarTime(sl.starts_at, zone)}`}
+          </Chip>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** Rooms and resources of the workspace, free or busy at the event's time; tap to book or drop one. */
+function RoomsSheet({ open, onClose, rooms, onChange, from, to, eventId }: { open: boolean; onClose: () => void; rooms: CalendarEventRoom[]; onChange: (r: CalendarEventRoom[]) => void; from: string | null; to: string | null; eventId?: string }) {
+  const theme = useTheme();
+  const c = theme.colors;
+  const { org } = useActiveOrg();
+  const list = useCalendarRooms(open && org && from && to ? { org_id: org.id, from, to, ...(eventId ? { exclude_event: eventId } : {}) } : null);
+  const picked = new Set(rooms.map((r) => r.id));
+  return (
+    <Sheet open={open} onClose={onClose} title="Rooms and resources" snapPoints={["75%"]}>
+      {!org ? (
+        <EmptyState icon={DoorOpen} title={`Rooms belong to a ${orgsNoun()}`} />
+      ) : !from || !to ? (
+        <EmptyState icon={DoorOpen} title="Pick a start and end time first" />
+      ) : list.isPending ? (
+        <View style={{ gap: theme.space[2] }}>
+          <Skeleton height={theme.tap.lg} />
+          <Skeleton height={theme.tap.lg} />
+        </View>
+      ) : list.isError ? (
+        <ErrorState title="Couldn't load rooms" info={errorMessage(list.error)} onRetry={() => void list.refetch()} />
+      ) : list.data.items.length === 0 ? (
+        <EmptyState icon={DoorOpen} title="No rooms yet" />
+      ) : (
+        <ListGroup>
+          {list.data.items.map((r) => {
+            const on = picked.has(r.id);
+            const usable = on || (r.can_book && r.free !== false);
+            return (
+              <ListRow
+                key={r.id}
+                title={r.name}
+                {...([r.building, r.capacity ? `${r.capacity} people` : ""].filter(Boolean).length ? { info: [r.building, r.capacity ? `${r.capacity} people` : ""].filter(Boolean).join(" · ") } : {})}
+                chevron={false}
+                disabled={!usable}
+                trailing={
+                  on ? (
+                    <Check size={20} color={c.primary} accessibilityLabel="Booked" />
+                  ) : (
+                    <Text role="label" tone={usable ? "muted" : "subtle"}>
+                      {!r.can_book ? "Can't book" : r.free === false ? "Busy then" : "Free"}
+                    </Text>
+                  )
+                }
+                onPress={() => onChange(on ? rooms.filter((x) => x.id !== r.id) : [...rooms, { id: r.id, name: r.name, kind: r.kind, building: r.building, capacity: r.capacity }])}
+              />
+            );
+          })}
+        </ListGroup>
+      )}
     </Sheet>
   );
 }

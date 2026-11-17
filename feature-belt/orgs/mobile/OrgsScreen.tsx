@@ -100,7 +100,7 @@ export function OrgsScreen() {
                 info={`${inv.invited_by_name ? `${inv.invited_by_name} invited you` : "You were invited"} as ${inv.role === "admin" ? "an admin" : "a member"}.`}
                 leading={<Avatar name={inv.org.name} src={inv.org.avatar_url} size="md" />}
               />
-              <View style={{ flexDirection: "row", gap: s[2], paddingHorizontal: s[4] }}>
+              <View style={{ flexDirection: "row", gap: s[2] }}>
                 <Button
                   variant="ghost"
                   size="md"

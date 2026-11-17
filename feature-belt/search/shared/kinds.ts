@@ -96,9 +96,38 @@ export function searchProviderLabel(name: string): string {
   return providerLabels[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-/** The features that didn't answer, named for people, for a "results may be incomplete" notice. */
+/** The features that didn't answer (timeout or error), named for people, for a "results may be incomplete" notice. */
 export function unansweredSearchProviders(providers: readonly { name: string; status: string }[]): string[] {
-  return providers.filter((p) => p.status !== "ok").map((p) => searchProviderLabel(p.name));
+  return providers.filter((p) => p.status === "timeout" || p.status === "error").map((p) => searchProviderLabel(p.name));
+}
+
+/** Features left out because they can't apply an operator in the query: "Docs (is: isn't supported)". */
+export function skippedSearchProviders(providers: readonly { name: string; status: string; reason?: string }[]): string[] {
+  return providers.filter((p) => p.status === "skipped").map((p) => `${searchProviderLabel(p.name)}${p.reason ? ` (${p.reason})` : ""}`);
+}
+
+/** Hits of one feature, best first; `total` is how many it returned (more than shown when capped). */
+export interface SearchFeatureGroup {
+  feature: string;
+  label: string;
+  items: SearchResult[];
+  total: number;
+}
+
+/** Groups hits by the feature that returned them (Messages and channels together under Channels), ordered by their best hit. */
+export function groupSearchResultsByFeature(items: readonly SearchResult[], providers?: readonly { name: string; count: number }[]): SearchFeatureGroup[] {
+  const groups = new Map<string, SearchFeatureGroup>();
+  for (const item of items) {
+    const feature = item.kind.split(".")[0] ?? item.kind;
+    let g = groups.get(feature);
+    if (!g) {
+      g = { feature, label: searchProviderLabel(feature), items: [], total: 0 };
+      groups.set(feature, g);
+    }
+    g.items.push(item);
+  }
+  for (const g of groups.values()) g.total = Math.max(g.items.length, providers?.find((p) => p.name === g.feature)?.count ?? 0);
+  return [...groups.values()];
 }
 
 /**

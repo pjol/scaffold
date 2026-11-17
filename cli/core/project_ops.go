@@ -177,8 +177,11 @@ type AddOutput struct {
 	NpmDeps   []string     `json:"npm_deps,omitempty"`
 	Stitch    []StitchList `json:"stitch,omitempty"`
 	Warnings  []string     `json:"warnings,omitempty"`
-	Next      []string     `json:"next,omitempty"`
-	DryRun    bool         `json:"dry_run,omitempty"`
+	// Manual lists what an adopted project's custom surfaces (layout.custom) need by
+	// hand: feature code, wiring and env vars scaffold did not write into them.
+	Manual []string `json:"manual,omitempty"`
+	Next   []string `json:"next,omitempty"`
+	DryRun bool     `json:"dry_run,omitempty"`
 }
 
 func (o AddOutput) Text() string {
@@ -198,6 +201,12 @@ func (o AddOutput) Text() string {
 	}
 	for _, n := range o.Next {
 		fmt.Fprintf(&b, "  → %s\n", n)
+	}
+	if len(o.Manual) > 0 {
+		b.WriteString("\nPort by hand (custom surfaces, see layout in scaffold.json):\n")
+		for _, m := range o.Manual {
+			fmt.Fprintf(&b, "  - %s\n", m)
+		}
 	}
 	for _, s := range o.Stitch {
 		fmt.Fprintf(&b, "\nStitch %s (spec: %s):\n", s.Feature, s.Spec)
@@ -241,6 +250,10 @@ func (k *Kit) Add(ctx context.Context, in AddInput) (AddOutput, error) {
 			if _, err := os.Stat(src); os.IsNotExist(err) {
 				continue
 			}
+			if s := p.customSurfaceOf(fm.Dst); s != "" {
+				out.Manual = append(out.Manual, fmt.Sprintf("%s: port feature-belt/%s/%s into %s (the %s surface is custom)", f.Name, f.Name, fm.Src, fm.Dst, s))
+				continue
+			}
 			written, err := p.copyTree(src, dir, fm.Dst, in.DryRun, in.Force)
 			if err != nil {
 				return out, fmt.Errorf("%s: %w", f.Name, err)
@@ -254,6 +267,10 @@ func (k *Kit) Add(ctx context.Context, in AddInput) (AddOutput, error) {
 				out.Warnings = append(out.Warnings, fmt.Sprintf("%s: two wire entries insert the same line into %s (%s); only one lands — give each its own constant", f.Name, w.File, strings.TrimSpace(w.Insert)))
 			}
 			seenWire[key] = true
+			if p.customSurfaceOf(w.File) != "" {
+				out.Manual = append(out.Manual, fmt.Sprintf("%s: in %s, at the spot scaffold:%s marks in the template: %s", f.Name, w.File, w.Anchor, strings.TrimSpace(w.Insert)))
+				continue
+			}
 			changed, err := p.applyWire(dir, w, in.DryRun)
 			if err != nil {
 				out.Warnings = append(out.Warnings, err.Error())
@@ -280,6 +297,11 @@ func (k *Kit) Add(ctx context.Context, in AddInput) (AddOutput, error) {
 			}
 			out.NpmDeps = append(out.NpmDeps, added...)
 		}
+		for _, v := range f.Env {
+			if p.HasSurface(v.Tier) && p.isCustom(v.Tier) {
+				out.Manual = append(out.Manual, fmt.Sprintf("%s: env %s (%s) — declare it in scaffold.json once the %s code is ported", f.Name, v.Name, v.Tier, v.Tier))
+			}
+		}
 		out.Env = append(out.Env, p.MergeEnv(f.Env)...)
 		p.Features[f.Name] = f.Version
 		out.Installed = append(out.Installed, f.Name+"@"+f.Version)
@@ -295,7 +317,7 @@ func (k *Kit) Add(ctx context.Context, in AddInput) (AddOutput, error) {
 	if _, err := k.Env(ctx, EnvInput{Dir: dir, Write: true}); err != nil {
 		return out, err
 	}
-	if p.HasSurface("backend") {
+	if p.HasSurface("backend") && !p.isCustom("backend") {
 		if err := goModTidy(ctx, filepath.Join(dir, "backend")); err != nil {
 			out.Warnings = append(out.Warnings, "go mod tidy failed; run it in backend/: "+err.Error())
 		}

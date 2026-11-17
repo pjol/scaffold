@@ -24,6 +24,7 @@ import (
 	"scaffoldapp/backend/internal/access"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
+	"scaffoldapp/backend/internal/bg"
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/jobs"
@@ -40,6 +41,10 @@ const (
 	PermExport         = "crm.export"
 	PermImport         = "crm.import"
 	PermDelete         = "crm.delete"
+	PermManageProducts = "crm.manage_products"
+	PermPublishQuotes  = "crm.publish_quotes"
+	PermWorkflows      = "crm.manage_workflows"
+	PermForms          = "crm.manage_forms"
 )
 
 // Access kinds. Records live under their team's crm.team resource, or the
@@ -50,6 +55,10 @@ const (
 	KindCompany   = "crm.company"
 	KindContact   = "crm.contact"
 	KindDeal      = "crm.deal"
+	KindTicket    = "crm.ticket"
+	KindQuote     = "crm.quote"     // under its deal; public links through access
+	KindForm      = "crm.form"      // a public lead form; its link through access
+	KindDashboard = "crm.dashboard" // saved reports, shared through access
 )
 
 // Notification kinds.
@@ -58,6 +67,9 @@ const (
 	NotifyTaskAssigned = "crm.task_assigned"
 	NotifyTaskReminder = "crm.task_reminder"
 	NotifyAssigned     = "crm.assigned"
+	NotifyQuoteDecided = "crm.quote_decided"
+	NotifyForm         = "crm.form_submitted"
+	NotifyWorkflow     = "crm.workflow"
 )
 
 // Realtime events. crm:<record id> carries record and timeline changes to
@@ -80,6 +92,7 @@ const (
 	exportsPerHour  = 20
 	settingsPerHour = 300
 	maxBulkIDs      = 200
+	publishesPerHour = 60
 	maxNoteChars    = 20000
 )
 
@@ -89,6 +102,20 @@ type Service struct {
 	// booted remembers orgs whose settings row, workspace resource and
 	// default pipeline exist (bootstrap), so the check runs once per process.
 	booted sync.Map
+	// inline runs background follow-ups (workflows, scores) in the caller's
+	// goroutine: tests only.
+	inline bool
+}
+
+// background runs a best-effort follow-up of a committed write.
+func (s *Service) background(ctx context.Context, name string, fn func(context.Context) error) {
+	if s.inline {
+		if err := fn(context.WithoutCancel(ctx)); err != nil {
+			slog.WarnContext(ctx, "crm: "+name+" failed", "err", err)
+		}
+		return
+	}
+	bg.Go(context.WithoutCancel(ctx), name, fn)
 }
 
 // New registers the access kinds, org permissions and notification kinds.
@@ -124,6 +151,32 @@ func New(d *app.Deps) *Service {
 			Link: func(id uuid.UUID) string { return o.link(id) },
 		})
 	}
+	access.RegisterKind(access.Kind{Name: KindQuote, Label: "quote", AdminsManage: true, Permission: PermAccess, LinkPermission: PermPublishQuotes,
+		PublicPath: func(token string) string { return "/q/" + token },
+		Title: func(ctx context.Context, q db.Querier, id uuid.UUID) (string, error) {
+			var number, title string
+			err := q.QueryRow(ctx, `SELECT number, title FROM crm_quotes WHERE id = $1`, id).Scan(&number, &title)
+			return "Quote " + number + " · " + title, err
+		},
+		Link: func(id uuid.UUID) string { return "/crm/quotes/" + id.String() },
+	})
+	access.RegisterKind(access.Kind{Name: KindForm, Label: "form", AdminsManage: true, Permission: PermAccess, LinkPermission: PermForms,
+		PublicPath: func(token string) string { return "/forms/" + token },
+		Title: func(ctx context.Context, q db.Querier, id uuid.UUID) (string, error) {
+			var name string
+			err := q.QueryRow(ctx, `SELECT name FROM crm_forms WHERE id = $1`, id).Scan(&name)
+			return name, err
+		},
+		Link: func(id uuid.UUID) string { return "/crm/forms/" + id.String() },
+	})
+	access.RegisterKind(access.Kind{Name: KindDashboard, Label: "dashboard", AdminsManage: true, Permission: PermAccess,
+		Title: func(ctx context.Context, q db.Querier, id uuid.UUID) (string, error) {
+			var name string
+			err := q.QueryRow(ctx, `SELECT name FROM crm_dashboards WHERE id = $1`, id).Scan(&name)
+			return name, err
+		},
+		Link: func(id uuid.UUID) string { return "/crm/reports/" + id.String() },
+	})
 	member := []string{orgs.RoleOwner, orgs.RoleAdmin, orgs.RoleMember}
 	admins := []string{orgs.RoleOwner, orgs.RoleAdmin}
 	access.RegisterPermission(access.Permission{Key: PermAccess, Title: "Use the CRM", DefaultRoles: member,
@@ -136,6 +189,17 @@ func New(d *app.Deps) *Service {
 		Info: "Create and update companies, contacts and deals from a CSV file."})
 	access.RegisterPermission(access.Permission{Key: PermDelete, Title: "Delete and merge CRM records", DefaultRoles: admins,
 		Info: "Delete records (one at a time or in bulk) and merge duplicates. Needs edit access to each record too."})
+	access.RegisterPermission(access.Permission{Key: PermManageProducts, Title: "Manage CRM products", DefaultRoles: admins,
+		Info: "Add, change and archive products in the product library. Everyone who uses the CRM can add products to deals."})
+	access.RegisterPermission(access.Permission{Key: PermPublishQuotes, Title: "Publish CRM quotes", DefaultRoles: member,
+		Info: "Publish a quote as a public link buyers open to accept or decline it. Needs edit access to the deal and \"Make public links\" too; unpublished links stop working when it's taken away."})
+	access.RegisterPermission(access.Permission{Key: PermWorkflows, Title: "Manage CRM workflows", DefaultRoles: admins,
+		Info: "Create and turn on workflows. A workflow runs as the person who turned it on, with their access."})
+	access.RegisterPermission(access.Permission{Key: PermForms, Title: "Manage CRM forms", DefaultRoles: admins,
+		Info: "Create lead forms and publish them as public links or embeds. Needs \"Make public links\" too; published forms stop working when it's taken away."})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyQuoteDecided, Label: "Quotes accepted or declined", Push: true, AgentTarget: recordNotifyTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyForm, Label: "CRM form submissions", Push: false, AgentTarget: recordNotifyTarget})
+	notifications.RegisterKind(notifications.Kind{ID: NotifyWorkflow, Label: "CRM workflow notifications", Push: true, AgentTarget: recordNotifyTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyMention, Label: "CRM mentions", Push: true, AgentTarget: recordNotifyTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyTaskAssigned, Label: "CRM tasks assigned to you", Push: true, AgentTarget: recordNotifyTarget})
 	notifications.RegisterKind(notifications.Kind{ID: NotifyTaskReminder, Label: "CRM task reminders", Push: true, AgentTarget: recordNotifyTarget})
@@ -143,6 +207,7 @@ func New(d *app.Deps) *Service {
 	access.OnChange(s.onAccessChange)
 	access.OnPermissionChange(s.permissionChanged)
 	orgs.OnMemberRemoved(s.memberRemoved)
+	unfurlService.Store(s)
 	return s
 }
 
@@ -191,9 +256,22 @@ func (s *Service) MountUser(r chi.Router) {
 	orgWrite.Patch("/crm/orgs/{orgID}/views/{viewID}", httpx.Handler(s.updateView))
 	orgWrite.Delete("/crm/orgs/{orgID}/views/{viewID}", httpx.Handler(s.deleteView))
 
-	// Records.
+	// Records. Tickets are the app's own only: no connected-source wrappers.
 	for _, o := range objectTypes {
 		o := o
+		if o == objTicket {
+			org.Get("/crm/orgs/{orgID}/tickets", httpx.Handler(s.listRecords(o)))
+			orgWrite.Post("/crm/orgs/{orgID}/tickets", httpx.Handler(s.createRecord(o)))
+			r.Get("/crm/tickets/{id}", httpx.Handler(s.getRecord(o)))
+			write.Patch("/crm/tickets/{id}", httpx.Handler(s.updateRecord(o)))
+			write.Delete("/crm/tickets/{id}", httpx.Handler(s.deleteRecord(o)))
+			r.Get("/crm/tickets/{id}/timeline", httpx.Handler(s.timeline(o)))
+			write.Post("/crm/tickets/{id}/activities", httpx.Handler(s.createActivity(o)))
+			write.Post("/crm/tickets/{id}/stage", httpx.Handler(s.moveTicketStage))
+			write.Post("/crm/tickets/{id}/contacts", httpx.Handler(s.addTicketContact))
+			write.Delete("/crm/tickets/{id}/contacts/{contactID}", httpx.Handler(s.removeTicketContact))
+			continue
+		}
 		org.Get("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.xListRecords(o, s.listRecords(o))))
 		orgWrite.Post("/crm/orgs/{orgID}/"+o.path(), httpx.Handler(s.xCreateRecord(o, s.createRecord(o))))
 		r.Get("/crm/"+o.path()+"/{id}", httpx.Handler(s.xGetRecord(o, s.getRecord(o))))
@@ -234,6 +312,29 @@ func (s *Service) MountUser(r chi.Router) {
 	write.Delete("/crm/companies/{id}/links/{linkID}", httpx.Handler(s.deleteLink))
 	org.Get("/crm/orgs/{orgID}/duplicates", httpx.Handler(s.duplicates))
 
+	// Products, line items, quotes.
+	products := org.With(auth.RequireActive, access.RequirePermission(PermManageProducts), auth.RateLimit(settingsPerHour, time.Hour))
+	org.Get("/crm/orgs/{orgID}/products", httpx.Handler(s.listProducts))
+	products.Post("/crm/orgs/{orgID}/products", httpx.Handler(s.createProduct))
+	products.Patch("/crm/orgs/{orgID}/products/{productID}", httpx.Handler(s.updateProduct))
+	products.Delete("/crm/orgs/{orgID}/products/{productID}", httpx.Handler(s.deleteProduct))
+	r.Get("/crm/deals/{id}/line-items", httpx.Handler(s.listLineItems))
+	write.Post("/crm/deals/{id}/line-items", httpx.Handler(s.addLineItem))
+	write.Put("/crm/deals/{id}/line-items/order", httpx.Handler(s.reorderLineItems))
+	write.Put("/crm/deals/{id}/amount-source", httpx.Handler(s.setAmountSource))
+	write.Patch("/crm/line-items/{itemID}", httpx.Handler(s.updateLineItem))
+	write.Delete("/crm/line-items/{itemID}", httpx.Handler(s.removeLineItem))
+	r.Get("/crm/deals/{id}/quotes", httpx.Handler(s.listQuotes))
+	write.Post("/crm/deals/{id}/quotes", httpx.Handler(s.createQuote))
+	r.Get("/crm/quotes/{quoteID}", httpx.Handler(s.getQuote))
+	write.Patch("/crm/quotes/{quoteID}", httpx.Handler(s.updateQuote))
+	write.Post("/crm/quotes/{quoteID}/refresh", httpx.Handler(s.refreshQuoteItems))
+	r.With(auth.RequireActive, auth.RateLimit(publishesPerHour, time.Hour)).Post("/crm/quotes/{quoteID}/publish", httpx.Handler(s.publishQuote))
+	write.Post("/crm/quotes/{quoteID}/unpublish", httpx.Handler(s.unpublishQuote))
+	write.Delete("/crm/quotes/{quoteID}", httpx.Handler(s.deleteQuote))
+
+	s.mountDepth(r, org, orgWrite, write)
+
 	// Bulk, merge, import, export.
 	org.With(auth.RequireActive, auth.RateLimit(bulkPerHour, time.Hour)).Post("/crm/orgs/{orgID}/bulk", httpx.Handler(s.bulk))
 	org.With(auth.RequireActive, access.RequirePermission(PermDelete), auth.RateLimit(mergesPerHour, time.Hour)).
@@ -253,6 +354,9 @@ func (s *Service) MountUser(r chi.Router) {
 func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "crm.task_reminders", time.Minute, s.sendReminders)
 	go jobs.Every(ctx, s.d.Pool, "crm.stale_imports", 10*time.Minute, s.failStaleImports)
+	go jobs.Every(ctx, s.d.Pool, "crm.workflow_runs", 30*time.Second, s.runDueWorkflows)
+	go jobs.Every(ctx, s.d.Pool, "crm.workflow_dates", time.Hour, s.enrollDates)
+	go jobs.Every(ctx, s.d.Pool, "crm.rescore", 6*time.Hour, s.rescoreAll)
 }
 
 // AuthorizeTopic owns crm:<uuid>: an org id admits members with crm.access;
@@ -404,6 +508,10 @@ func (s *Service) send(ctx context.Context, n notify.Notification) {
 func agentName(ctx context.Context) *string {
 	a, ok := auth.AgentFrom(ctx)
 	if !ok {
+		if c := chainFrom(ctx); c.name != "" {
+			name := "workflow “" + c.name + "”"
+			return &name
+		}
 		return nil
 	}
 	name := strings.TrimSpace(a.Client)

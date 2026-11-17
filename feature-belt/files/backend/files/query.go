@@ -38,7 +38,8 @@ const itemColumns = `
 	i.created_at, i.updated_at, i.trashed_at, i.trashed_by, tu.display_name, tu.avatar_url, i.public_disabled_at IS NOT NULL, a.lvl,
 	EXISTS (SELECT 1 FROM files_stars st WHERE st.user_id = $1 AND st.item_id = i.id),
 	l.has_link OR EXISTS (SELECT 1 FROM access_grants g WHERE g.resource_kind = 'files.item' AND g.resource_id = i.id),
-	l.has_link, lk.provider, lk.product, lk.mime_type, lk.folder`
+	l.has_link, lk.provider, lk.product, lk.mime_type, lk.folder,
+	i.locked_by, lku.display_name, lku.avatar_url, i.locked_at, i.lock_note, i.color, i.content_source`
 
 // itemJoins add the people and the public-link flag.
 const itemJoins = `
@@ -48,7 +49,8 @@ const itemJoins = `
 	CROSS JOIN LATERAL (SELECT EXISTS (
 		SELECT 1 FROM access_links k WHERE k.resource_kind = 'files.item' AND k.resource_id = i.id
 		  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())) AS has_link) l
-	LEFT JOIN files_links lk ON lk.item_id = i.id`
+	LEFT JOIN files_links lk ON lk.item_id = i.id
+	LEFT JOIN users lku ON lku.id = i.locked_by`
 
 // levelJoin computes the caller's level per row (bounded lists).
 const levelJoin = ` CROSS JOIN LATERAL (SELECT access_level($1, 'files.item', i.id, $2) AS lvl) a`
@@ -66,11 +68,15 @@ func scanItem(row pgx.Row, extra ...any) (*Item, error) {
 		lvl                                         int
 		scProvider, scProduct, scMime               *string
 		scFolder                                    *bool
+		lockBy                                      *uuid.UUID
+		lockName, lockAvatar                        *string
+		lockAt                                      *time.Time
+		lockNote                                    string
 	)
 	dest := []any{&it.ID, &it.OrgID, &it.ParentID, &it.Type, &it.Name, &it.Drive, &it.OwnerID, &it.MimeType, &it.Size, &it.TextLike,
 		&it.VersionID, &it.VersionCount, &createdBy, &createdName, &createdAvatar, &updatedBy, &updatedName, &updatedAvatar,
 		&it.CreatedAt, &it.UpdatedAt, &it.TrashedAt, &trashedBy, &trashedName, &trashedAvatar, &it.PublicDisabled, &lvl, &it.Starred, &it.Shared, &it.PublicLink,
-		&scProvider, &scProduct, &scMime, &scFolder}
+		&scProvider, &scProduct, &scMime, &scFolder, &lockBy, &lockName, &lockAvatar, &lockAt, &lockNote, &it.Color, &it.Content}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -78,6 +84,9 @@ func scanItem(row pgx.Row, extra ...any) (*Item, error) {
 	it.CreatedBy = person(createdBy, createdName, createdAvatar)
 	it.UpdatedBy = person(updatedBy, updatedName, updatedAvatar)
 	it.TrashedBy = person(trashedBy, trashedName, trashedAvatar)
+	if lockAt != nil {
+		it.Lock = &LockInfo{By: person(lockBy, lockName, lockAvatar), At: *lockAt, Note: lockNote}
+	}
 	if scProvider != nil {
 		it.Shortcut = &ShortcutInfo{Provider: *scProvider, Product: derefStr(scProduct), MimeType: derefStr(scMime), Folder: scFolder != nil && *scFolder}
 	}
@@ -137,11 +146,22 @@ func (s *Service) getItem(ctx context.Context, q db.Querier, me, id uuid.UUID) (
 
 // load checks the caller's level on an item (404 without view, 403 below
 // min; agent-capped) and reads it.
+// Asking for edit or more on a file someone else checked out answers 423
+// item_locked.
 func (s *Service) load(ctx context.Context, q db.Querier, me, id uuid.UUID, min access.Level) (*Item, error) {
 	if _, err := access.Require(ctx, q, me, Kind, id, min); err != nil {
 		return nil, err
 	}
-	return s.getItem(ctx, q, me, id)
+	it, err := s.getItem(ctx, q, me, id)
+	if err != nil {
+		return nil, err
+	}
+	if min >= access.Edit {
+		if err := lockedForOthers(it, me); err != nil {
+			return nil, err
+		}
+	}
+	return it, nil
 }
 
 // loadLive is load for items that must not be in the trash.
@@ -360,35 +380,148 @@ type searchCursor struct {
 	ID uuid.UUID `json:"id"`
 }
 
-// searchItems finds live items the caller can open by name, or by the text
-// of small text files. orgID nil searches every org they belong to.
-func (s *Service) searchItems(ctx context.Context, q db.Querier, me uuid.UUID, viaAgent bool, orgID *uuid.UUID, query, cursor string, limit int) (httpx.Page[SearchHit], error) {
+// SearchFilters narrow a search like Drive's advanced search. Zero values
+// don't filter.
+type SearchFilters struct {
+	Kind           string     // folder image video audio pdf document spreadsheet presentation text archive
+	Owner          string     // me | others | a user id (whose My drive; shared folders count their creator)
+	ModifiedAfter  *time.Time // updated at or after
+	ModifiedBefore *time.Time // updated before
+	Location       string     // my | shared | a folder id (everything inside it)
+	Starred        bool
+	SharedWithMe   bool // in other people's My drives
+}
+
+func (f SearchFilters) empty() bool {
+	return f.Kind == "" && f.Owner == "" && f.ModifiedAfter == nil && f.ModifiedBefore == nil && f.Location == "" && !f.Starred && !f.SharedWithMe
+}
+
+// kindMimes are the stored types behind each document kind filter.
+var kindMimes = map[string][]string{
+	"document": {"application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.oasis.opendocument.text", "application/rtf", "application/x-iwork-pages-sffpages", "text/markdown"},
+	"spreadsheet": {"application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.oasis.opendocument.spreadsheet", "application/x-iwork-numbers-sffnumbers", "text/csv", "text/tab-separated-values"},
+	"presentation": {"application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/vnd.oasis.opendocument.presentation", "application/x-iwork-keynote-sffkey"},
+	"archive": {"application/zip", "application/x-zip-compressed", "application/gzip", "application/x-gzip", "application/x-tar",
+		"application/x-7z-compressed", "application/vnd.rar", "application/x-rar-compressed", "application/java-archive"},
+}
+
+// SearchKinds are the values SearchFilters.Kind takes.
+var SearchKinds = []string{"folder", "image", "video", "audio", "pdf", "document", "spreadsheet", "presentation", "text", "archive"}
+
+// where adds the filters to a query whose args already hold $1 (caller).
+func (f SearchFilters) where(args *[]any) (string, error) {
+	var parts []string
+	arg := func(v any) string {
+		*args = append(*args, v)
+		return fmt.Sprintf("$%d", len(*args))
+	}
+	switch f.Kind {
+	case "":
+	case "folder":
+		parts = append(parts, "i.type = 'folder'")
+	case "image", "video", "audio":
+		parts = append(parts, "i.type = 'file' AND i.mime_type LIKE "+arg(f.Kind+"/%"))
+	case "pdf":
+		parts = append(parts, "i.type = 'file' AND i.mime_type = 'application/pdf'")
+	case "text":
+		parts = append(parts, "i.type = 'file' AND i.text_like AND i.mime_type NOT IN ('text/csv', 'text/tab-separated-values', 'image/svg+xml')")
+	case "document", "spreadsheet", "presentation", "archive":
+		parts = append(parts, "i.type = 'file' AND i.mime_type = ANY("+arg(kindMimes[f.Kind])+")")
+	default:
+		return "", httpx.BadRequest("kind must be one of " + strings.Join(SearchKinds, ", ") + ".")
+	}
+	switch f.Owner {
+	case "":
+	case "me":
+		parts = append(parts, "COALESCE(i.owner_id, i.created_by) = $1")
+	case "others":
+		parts = append(parts, "COALESCE(i.owner_id, i.created_by) IS DISTINCT FROM $1")
+	default:
+		id, err := uuid.Parse(f.Owner)
+		if err != nil {
+			return "", httpx.BadRequest("owner must be me, others or a person's id.")
+		}
+		parts = append(parts, "COALESCE(i.owner_id, i.created_by) = "+arg(id))
+	}
+	if f.ModifiedAfter != nil {
+		parts = append(parts, "i.updated_at >= "+arg(*f.ModifiedAfter))
+	}
+	if f.ModifiedBefore != nil {
+		parts = append(parts, "i.updated_at < "+arg(*f.ModifiedBefore))
+	}
+	switch f.Location {
+	case "":
+	case "my":
+		parts = append(parts, "i.drive = 'my' AND i.owner_id = $1")
+	case "shared":
+		parts = append(parts, "i.drive = 'shared'")
+	default:
+		id, err := uuid.Parse(f.Location)
+		if err != nil {
+			return "", httpx.BadRequest("location must be my, shared or a folder id.")
+		}
+		parts = append(parts, `i.id IN (WITH RECURSIVE sub AS (
+			SELECT id, 0 AS depth FROM files_items WHERE parent_id = `+arg(id)+`
+			UNION ALL SELECT c.id, sub.depth + 1 FROM files_items c JOIN sub ON c.parent_id = sub.id WHERE sub.depth < 64
+		) SELECT id FROM sub)`)
+	}
+	if f.Starred {
+		parts = append(parts, "EXISTS (SELECT 1 FROM files_stars fs WHERE fs.user_id = $1 AND fs.item_id = i.id)")
+	}
+	if f.SharedWithMe {
+		parts = append(parts, "i.drive = 'my' AND i.owner_id <> $1")
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return " AND (" + strings.Join(parts, ") AND (") + ")", nil
+}
+
+// searchItems finds live items the caller can open by name or by their text
+// (text files, and what was extracted from PDFs and office documents),
+// narrowed by filters. An empty query with filters lists the matches newest
+// first. orgID nil searches every org they belong to.
+func (s *Service) searchItems(ctx context.Context, q db.Querier, me uuid.UUID, viaAgent bool, orgID *uuid.UUID, query string, f SearchFilters, cursor string, limit int) (httpx.Page[SearchHit], error) {
 	query = strings.Join(strings.Fields(query), " ")
 	if len([]rune(query)) > 200 {
 		query = string([]rune(query)[:200])
 	}
-	if query == "" {
+	if query == "" && f.empty() {
 		return httpx.Page[SearchHit]{Items: []SearchHit{}}, nil
 	}
 	args := []any{me, viaAgent, query, likeEscape(query), orgID}
+	match := `TRUE`
+	if query != "" {
+		match = `(i.name ILIKE '%' || $4 || '%' OR i.search_vector @@ websearch_to_tsquery('simple', $3))`
+	}
+	filter, err := f.where(&args)
+	if err != nil {
+		return httpx.Page[SearchHit]{}, err
+	}
 	sql := `SELECT ` + itemColumns + `, sc.score,
-		CASE WHEN sc.score < 0.6 THEN substr(i.content_text, greatest(1, strpos(lower(i.content_text), lower($3)) - 60), 180) ELSE '' END
+		CASE WHEN $3 <> '' AND sc.score < 0.6 AND i.content_text IS NOT NULL
+		     THEN ts_headline('simple', left(i.content_text, 200000), websearch_to_tsquery('simple', $3),
+		                      'StartSel="", StopSel="", MaxWords=28, MinWords=12, MaxFragments=1, FragmentDelimiter=" … "')
+		     ELSE '' END
 		FROM files_items i` + itemJoins + visibleJoin + `
 		CROSS JOIN LATERAL (SELECT CASE
+			WHEN $3 = '' THEN 0.5
 			WHEN lower(i.name) = lower($3) THEN 1.0
 			WHEN lower(i.name) LIKE lower($4) || '%' THEN 0.9
 			WHEN i.name ILIKE '%' || $4 || '%' THEN 0.75
 			ELSE 0.5 END::float8 AS score) sc
-		WHERE ($5::uuid IS NULL OR i.org_id = $5) AND i.trashed_at IS NULL
-		  AND (i.name ILIKE '%' || $4 || '%'
-		       OR (i.content_text IS NOT NULL AND to_tsvector('simple', COALESCE(i.content_text, '')) @@ websearch_to_tsquery('simple', $3)))`
+		WHERE ($5::uuid IS NULL OR i.org_id = $5) AND i.trashed_at IS NULL AND ` + match + filter
 	if cursor != "" {
 		var c searchCursor
 		if err := httpx.DecodeCursor(cursor, &c); err != nil {
 			return httpx.Page[SearchHit]{}, err
 		}
+		n := len(args)
 		args = append(args, c.S, c.T, c.ID)
-		sql += ` AND (sc.score < $6 OR (sc.score = $6 AND (i.updated_at, i.id) < ($7, $8)))`
+		sql += fmt.Sprintf(` AND (sc.score < $%d OR (sc.score = $%d AND (i.updated_at, i.id) < ($%d, $%d)))`, n+1, n+1, n+2, n+3)
 	}
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(` ORDER BY sc.score DESC, i.updated_at DESC, i.id DESC LIMIT $%d`, len(args))
@@ -418,6 +551,31 @@ func (s *Service) searchItems(ctx context.Context, q db.Querier, me uuid.UUID, v
 		hits = append(hits, h)
 	}
 	return httpx.NewPage(hits, limit, func(h SearchHit) any { return searchCursor{S: h.Score, T: h.Item.UpdatedAt, ID: h.Item.ID} }), nil
+}
+
+// parseSearchFilters reads ?kind=&owner=&modified_after=&modified_before=&location=&starred=1&shared_with_me=1.
+func parseSearchFilters(get func(string) string) (SearchFilters, error) {
+	f := SearchFilters{Kind: get("kind"), Owner: get("owner"), Location: get("location"), Starred: get("starred") == "1" || get("starred") == "true",
+		SharedWithMe: get("shared_with_me") == "1" || get("shared_with_me") == "true"}
+	for _, p := range []struct {
+		key string
+		dst **time.Time
+	}{{"modified_after", &f.ModifiedAfter}, {"modified_before", &f.ModifiedBefore}} {
+		v := get(p.key)
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			d, derr := time.Parse("2006-01-02", v)
+			if derr != nil {
+				return f, httpx.BadRequest(p.key + " must be a date (2026-03-01) or a timestamp.")
+			}
+			t = d
+		}
+		*p.dst = &t
+	}
+	return f, nil
 }
 
 // ---- path ------------------------------------------------------------------------
@@ -495,13 +653,15 @@ func rootOf(it *Item, me uuid.UUID) string {
 
 // ---- thumbnails and versions -------------------------------------------------------
 
-// addThumbs gives image items a short-lived inline URL of their current
-// version (presigning is local: no storage round trip).
+// addThumbs gives items a short-lived inline URL of their current version's
+// thumbnail (made by the background pass, or a video poster from the
+// browser); an image still waiting for one uses itself when it is small.
+// Presigning is local: no storage round trip.
 func (s *Service) addThumbs(ctx context.Context, q db.Querier, items []*Item) {
 	var ids []uuid.UUID
 	byVersion := map[uuid.UUID]*Item{}
 	for _, it := range items {
-		if it.Preview == "image" && it.VersionID != nil {
+		if it.Type == TypeFile && it.VersionID != nil {
 			ids = append(ids, *it.VersionID)
 			byVersion[*it.VersionID] = it
 		}
@@ -509,7 +669,7 @@ func (s *Service) addThumbs(ctx context.Context, q db.Querier, items []*Item) {
 	if len(ids) == 0 {
 		return
 	}
-	rows, err := q.Query(ctx, `SELECT id, storage_key FROM files_versions WHERE id = ANY($1)`, ids)
+	rows, err := q.Query(ctx, `SELECT id, storage_key, thumb_key FROM files_versions WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return
 	}
@@ -517,13 +677,21 @@ func (s *Service) addThumbs(ctx context.Context, q db.Querier, items []*Item) {
 	for rows.Next() {
 		var id uuid.UUID
 		var key string
-		if rows.Scan(&id, &key) != nil {
+		var thumb *string
+		if rows.Scan(&id, &key, &thumb) != nil {
 			return
 		}
 		it := byVersion[id]
-		ct, cd := servePolicy(it.MimeType, it.Name, it.TextLike, true)
-		if u, err := s.d.Storage.PresignGetWith(ctx, key, urlTTL, storage.GetOptions{ContentType: ct, Disposition: cd}); err == nil {
-			it.ThumbURL = &u
+		switch {
+		case thumb != nil:
+			if u, err := s.thumbFor(ctx, *thumb); err == nil {
+				it.ThumbURL = &u
+			}
+		case it.Preview == "image" && isRasterSmall(it.Size):
+			ct, cd := servePolicy(it.MimeType, it.Name, it.TextLike, true)
+			if u, err := s.d.Storage.PresignGetWith(ctx, key, urlTTL, storage.GetOptions{ContentType: ct, Disposition: cd}); err == nil {
+				it.ThumbURL = &u
+			}
 		}
 	}
 }

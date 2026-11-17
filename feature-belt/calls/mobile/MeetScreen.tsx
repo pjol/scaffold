@@ -1,5 +1,6 @@
 import {
   callsDeniedMessage,
+  callsEndpoints,
   errorMessage,
   isApiError,
   useCallsJoinInfo,
@@ -7,6 +8,7 @@ import {
   useCancelCallsKnock,
   useJoinCallsMeeting,
   useKnockCallsMeeting,
+  useEndpoints,
   useMe,
   type CallsJoinInfo,
   type CallsJoinToken,
@@ -48,6 +50,7 @@ export function MeetScreen() {
   const join = useJoinCallsMeeting();
   const knock = useKnockCallsMeeting();
   const cancel = useCancelCallsKnock();
+  const api = useEndpoints(callsEndpoints);
   const [step, setStep] = useState<Step>({ kind: "prejoin" });
   const [camera, setCamera] = useState(true);
   const [mic, setMic] = useState(true);
@@ -123,6 +126,8 @@ export function MeetScreen() {
             setStep({ kind: "over", why });
             void info.refetch();
           }}
+          onSwitch={(token, state) => setStep({ kind: "call", token, camera: state.camera, mic: state.mic })}
+          mainToken={() => api.join(data.meeting_id)}
         />
       </>
     );
@@ -187,6 +192,7 @@ export function MeetScreen() {
           Live now
         </Text>
       ) : null}
+      {data.recording ? <Banner tone="warning" title="This call is being recorded. Joining means you agree to be in the recording." /> : null}
       <View style={{ flexDirection: "row", gap: theme.space[4], justifyContent: "center", paddingVertical: theme.space[8] }}>
         <View style={{ alignItems: "center", gap: theme.space[2] }}>
           <IconButton label={mic ? "Join with microphone off" : "Join with microphone on"} icon={mic ? Mic : MicOff} variant={mic ? "secondary" : "danger"} size="xl" onPress={() => setMic((m) => !m)} />

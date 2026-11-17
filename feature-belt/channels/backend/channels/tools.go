@@ -53,10 +53,13 @@ func (s *Service) Tools() []app.Tool {
 			Handler:  s.toolReadThread,
 		},
 		{
-			Name:        "channels_search_messages",
-			Description: "Search messages the caller can read, newest first. The query may include in:#channel, from:@name, from:me, has:file and is:thread.",
+			Name: "channels_search_messages",
+			Description: "Search messages the caller can read, newest first. The query may include in:#channel, from:@name, from:me, with:@name, to:me, " +
+				"has:file, has:link, has:pin, has:reaction, is:thread, is:saved, before:YYYY-MM-DD, after:YYYY-MM-DD, on:YYYY-MM-DD and " +
+				"during:today|yesterday|week|month|year|YYYY-MM.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"query":{"type":"string","minLength":2},
+				"tz":{"type":"string","description":"IANA time zone for dates (default: the caller's)."},
 				"org_id":{"type":"string","format":"uuid","description":"Only this ` + orgs.Noun() + `."},
 				"channel_id":{"type":"string","format":"uuid","description":"Only this channel."},
 				"limit":{"type":"integer","minimum":1,"maximum":50,"description":"How many messages (default 20)."}
@@ -79,6 +82,53 @@ func (s *Service) Tools() []app.Tool {
 			Handler:  s.toolPost,
 			Target:   postTarget,
 			Preview:  s.postPreview,
+		},
+		{
+			Name: "channels_schedule_message",
+			Description: "Schedule a message to be sent later as the caller in a channel or direct message they belong to (or a thread reply). " +
+				"Give send_at (RFC 3339) or when (\"tomorrow at 9am\", \"in 2 hours\", \"friday\").",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"channel_id":{"type":"string","format":"uuid"},
+				"text":{"type":"string","minLength":1,"maxLength":8000},
+				"thread_root_id":{"type":"string","format":"uuid","description":"Reply in this thread."},
+				"send_at":{"type":"string","format":"date-time"},
+				"when":{"type":"string","description":"A time phrase, read in tz."},
+				"tz":{"type":"string","description":"IANA time zone (default: the caller's)."}
+			},"required":["channel_id","text"],"additionalProperties":false}`),
+			Handler: s.toolSchedule,
+			Target:  postTarget,
+			Preview: s.schedulePreview,
+		},
+		{
+			Name: "channels_set_reminder",
+			Description: "Set a reminder for the caller (only for themselves): about a message (message_id) or a text, at send_at (RFC 3339) or " +
+				"when (\"in 20 minutes\", \"tomorrow\", \"next week\").",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"org_id":{"type":"string","format":"uuid","description":"The ` + orgs.Noun() + ` the reminder belongs to (needed without message_id)."},
+				"message_id":{"type":"string","format":"uuid"},
+				"text":{"type":"string","maxLength":1000},
+				"send_at":{"type":"string","format":"date-time"},
+				"when":{"type":"string"},
+				"tz":{"type":"string"}
+			},"additionalProperties":false}`),
+			Handler: s.toolRemind,
+			Target:  remindTarget,
+			Preview: s.remindPreview,
+		},
+		{
+			Name:        "channels_create_poll",
+			Description: "Post a poll as the caller in a channel or direct message they belong to: a question and 2 to 10 options, one or several choices, named or anonymous.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"channel_id":{"type":"string","format":"uuid"},
+				"question":{"type":"string","minLength":1,"maxLength":300},
+				"options":{"type":"array","items":{"type":"string","minLength":1,"maxLength":200},"minItems":2,"maxItems":10},
+				"multiple":{"type":"boolean","description":"People may choose several options."},
+				"anonymous":{"type":"boolean","description":"Votes are counted but voters aren't shown."},
+				"thread_root_id":{"type":"string","format":"uuid"}
+			},"required":["channel_id","question","options"],"additionalProperties":false}`),
+			Handler: s.toolPoll,
+			Target:  postTarget,
+			Preview: s.pollPreview,
 		},
 	}
 }
@@ -317,6 +367,7 @@ func (s *Service) toolReadThread(ctx context.Context, caller *auth.Identity, inp
 func (s *Service) toolSearch(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 	in, err := decodeTool[struct {
 		Query     string     `json:"query"`
+		TZ        string     `json:"tz"`
 		OrgID     *uuid.UUID `json:"org_id"`
 		ChannelID *uuid.UUID `json:"channel_id"`
 		Limit     int        `json:"limit"`
@@ -332,7 +383,13 @@ func (s *Service) toolSearch(ctx context.Context, caller *auth.Identity, input j
 			return nil, err
 		}
 	}
-	hits, err := s.searchMessages(ctx, caller.UserID, in.OrgID, in.ChannelID, in.Query, cursor{}, clampLimit(in.Limit, 20, 50))
+	loc := time.UTC
+	if in.OrgID != nil {
+		loc = zoneFor(ctx, s.d.Pool, caller.UserID, *in.OrgID, in.TZ)
+	} else if in.TZ != "" && validZone(in.TZ) {
+		loc, _ = time.LoadLocation(in.TZ)
+	}
+	hits, err := s.searchMessages(ctx, caller.UserID, in.OrgID, in.ChannelID, in.Query, loc, cursor{}, clampLimit(in.Limit, 20, 50))
 	if err != nil {
 		return nil, err
 	}

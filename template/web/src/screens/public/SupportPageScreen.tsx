@@ -1,6 +1,6 @@
 "use client";
 
-import { Card, ListRow } from "@scaffoldapp/ui-web";
+import { ListGroup, ListRow } from "@scaffoldapp/ui-web";
 import { FileText, ShieldCheck, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { SupportContact } from "@/components/account/SupportContact";
@@ -14,7 +14,7 @@ export function SupportPageScreen() {
       <h1 className="type-title text-fg lg:type-display">Support</h1>
       <div className="flex flex-col gap-section">
         <SupportContact />
-        <Card padding="none" className="p-1">
+        <ListGroup>
           <ul className="flex flex-col">
             {[
               { href: "/legal/terms", label: "Terms of Service", Icon: FileText },
@@ -36,7 +36,7 @@ export function SupportPageScreen() {
               </li>
             ))}
           </ul>
-        </Card>
+        </ListGroup>
       </div>
     </div>
   );

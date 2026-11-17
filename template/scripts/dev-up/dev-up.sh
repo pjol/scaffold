@@ -16,7 +16,8 @@
 #   --reset-db           drop and recreate the dev database (asks), then migrate + seed
 #   --no-seed            skip cmd/seed (the server still migrates at boot)
 #   --clone-from <url>   restore a remote Postgres instead of seeding, then run scrub.sql
-#   --web-prod           serve a production build (built in the background) instead of next dev
+#   --web-dev            next dev (hot reload; each page compiles on its first visit) instead
+#                        of the production build served by default (--web-prod, still accepted)
 #   --lan | --tunnel     Expo for physical devices (LAN IP / Expo tunnel); default localhost
 #   --ios | --android    open the simulator / emulator once Metro is up
 #   --s3 | --redis       MinIO (the minio binary, else docker) / Redis (docker) on the
@@ -45,7 +46,7 @@ usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0";
 
 CMD="boot"
 RUN_BACKEND=1 RUN_WEB=1 RUN_MOBILE=1
-RESET_DB=0 SEED=1 CLONE_FROM="" WEB_PROD=0 EXPO_HOST="localhost"
+RESET_DB=0 SEED=1 CLONE_FROM="" WEB_PROD=1 EXPO_HOST="localhost"
 OPEN_IOS=0 OPEN_ANDROID=0 WANT_S3=0 WANT_REDIS=0 PUBLIC=0 ASSUME_YES=0
 if [[ $# -gt 0 ]]; then
   case "$1" in menu|status|stop) CMD="$1"; shift ;; esac
@@ -61,6 +62,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && -n "$2" ]] || die "--clone-from needs a postgres:// URL"
       CLONE_FROM="$2"; shift ;;
     --clone-from=*) CLONE_FROM="${1#--clone-from=}" ;;
+    --web-dev) WEB_PROD=0 ;;
     --web-prod) WEB_PROD=1 ;;
     --lan) [[ "$EXPO_HOST" == "tunnel" ]] && die "--lan and --tunnel are exclusive"; EXPO_HOST="lan" ;;
     --tunnel) [[ "$EXPO_HOST" == "lan" ]] && die "--lan and --tunnel are exclusive"; EXPO_HOST="tunnel" ;;
@@ -85,7 +87,7 @@ DEVUP_MODE="boot"
 ARMED=0 CLEANED=0 PG_STOP_ON_EXIT=0
 PORT_BASE="" API_PORT="" WEB_PORT="" PG_PORT="" METRO_PORT="" MINIO_PORT="" REDIS_PORT=""
 API_URL="" WEB_URL="" PUBLIC_URL="" LAN_IP="" PG_MODE="" PG_BIN="" DATABASE_URL="" MAIL_SINK_DIR="" MINIO_BIN=""
-WEB_MODE="dev" WEB_BUILD_PID=""
+WEB_MODE="dev" WEB_BUILD_PID="" WEB_BUILD_CURRENT=0
 ON_START_BG=arm_cleanup
 
 step() { echo; c_blue "[$1/12] $2"; }
@@ -517,6 +519,7 @@ RUN_BACKEND=$RUN_BACKEND
 RUN_WEB=$RUN_WEB
 RUN_MOBILE=$RUN_MOBILE
 WEB_MODE=$WEB_MODE
+WEB_PROD=$WEB_PROD
 EXPO_HOST=$EXPO_HOST
 STARTED_AT=$(date +%s)
 EOF
@@ -563,12 +566,6 @@ install_deps() {
       c_dim "  go modules current"
     fi
   fi
-  if [[ "$WEB_PROD" -eq 1 ]]; then
-    c_dim "  building web for production in the background (logs/web-build.log)"
-    env_unset_args "$ROOT/web/.env.local"
-    START_BG_WAITABLE=1 start_bg web-build "$ROOT" env ${UNSET_ARGS[@]+"${UNSET_ARGS[@]}"} pnpm --filter "$WEB_PKG" exec next build \
-      && WEB_BUILD_PID="$LAST_PID"
-  fi
 }
 
 generated_assets() {
@@ -604,6 +601,56 @@ generated_assets() {
   fi
   [[ "$did" -eq 1 ]] || c_dim "  nothing to regenerate (tokens need node_modules; no icons script)"
   return 0
+}
+
+# The production web build (the default; --web-dev skips it). It starts after the
+# generated assets so it sees fresh tokens, and runs while Postgres and the backend
+# come up. next build inlines NEXT_PUBLIC_* values, so a build stays current only
+# while web/.env.local and Node are unchanged and nothing under web/ or packages/
+# (or a root manifest) is newer than the build's start. .data/web-build.stamp holds
+# that key, and its mtime is when the build started.
+
+web_build_key() { printf '%s %s\n' "$(node --version 2>/dev/null)" "$(cksum 2>/dev/null <"$ROOT/web/.env.local")"; }
+
+web_build_current() {
+  local stamp="$DATA_DIR/web-build.stamp" f newer
+  [[ -f "$stamp" && -f "$ROOT/web/.next/BUILD_ID" ]] || return 1
+  [[ "$(cat "$stamp")" == "$(web_build_key)" ]] || return 1
+  for f in "$ROOT/node_modules" "$ROOT/package.json" "$ROOT/pnpm-lock.yaml" "$ROOT/pnpm-workspace.yaml" "$ROOT/tsconfig.base.json"; do
+    [[ -e "$f" && "$f" -nt "$stamp" ]] && return 1
+  done
+  newer="$(find "$ROOT/web" "$ROOT/packages" \( -name node_modules -o -name .next -o -name .turbo \) -prune -o -type f \
+    ! -name .env.local ! -name next-env.d.ts ! -name '*.tsbuildinfo' ! -name .DS_Store -newer "$stamp" -print 2>/dev/null | head -n 1)"
+  [[ -z "$newer" ]]
+}
+
+# web_build_begin / web_build_end <rc> bracket a build: the old stamp goes first (a
+# failed build leaves .next half-written), and the new one is kept only on success.
+web_build_begin() {
+  rm -f "$DATA_DIR/web-build.stamp"
+  web_build_key >"$DATA_DIR/web-build.pending"
+}
+
+web_build_end() {
+  if [[ "$1" -eq 0 && -f "$DATA_DIR/web-build.pending" ]]; then
+    mv "$DATA_DIR/web-build.pending" "$DATA_DIR/web-build.stamp"
+  else
+    rm -f "$DATA_DIR/web-build.pending"
+  fi
+}
+
+web_build_start() {
+  [[ "$WEB_PROD" -eq 1 ]] || return 0
+  if web_build_current; then
+    WEB_BUILD_CURRENT=1
+    c_dim "  web production build current (web/.next)"
+    return 0
+  fi
+  c_dim "  building web for production in the background (logs/web-build.log)"
+  web_build_begin
+  env_unset_args "$ROOT/web/.env.local"
+  START_BG_WAITABLE=1 start_bg web-build "$ROOT" env ${UNSET_ARGS[@]+"${UNSET_ARGS[@]}"} pnpm --filter "$WEB_PKG" exec next build \
+    && WEB_BUILD_PID="$LAST_PID"
 }
 
 # ---- step 7: postgres -------------------------------------------------------
@@ -895,34 +942,35 @@ start_web() { # start_web dev|start
 }
 
 web_up() {
-  local holder rc
+  local holder rc=1
   holder="$(port_owner "$WEB_PORT")"
   [[ -z "$holder" ]] || { c_red "  port $WEB_PORT is held by $holder, not ours: web not started"; return 1; }
-  if [[ "$WEB_PROD" -eq 1 && -n "$WEB_BUILD_PID" ]]; then
-    c_dim "  waiting for the production build (logs/web-build.log)…"
-    local deadline=$((SECONDS + 900))
-    while kill -0 "$WEB_BUILD_PID" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do sleep 1; done
-    if kill -0 "$WEB_BUILD_PID" 2>/dev/null; then
-      stop_service web-build
-      rc=124
-    else
-      wait "$WEB_BUILD_PID" 2>/dev/null
-      rc=$?
+  WEB_MODE="dev"
+  if [[ "$WEB_PROD" -eq 1 ]]; then
+    if [[ "$WEB_BUILD_CURRENT" -eq 1 ]]; then
+      rc=0
+    elif [[ -n "$WEB_BUILD_PID" ]]; then
+      c_dim "  waiting for the production build (logs/web-build.log)…"
+      local deadline=$((SECONDS + 900))
+      while kill -0 "$WEB_BUILD_PID" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do sleep 1; done
+      if kill -0 "$WEB_BUILD_PID" 2>/dev/null; then
+        stop_service web-build
+        rc=124
+      else
+        wait "$WEB_BUILD_PID" 2>/dev/null
+        rc=$?
+      fi
+      rm -f "$RUN_DIR/web-build.pid"
+      web_build_end "$rc"
     fi
-    rm -f "$RUN_DIR/web-build.pid"
     if [[ "$rc" -eq 0 ]]; then
       WEB_MODE="prod"
-      start_web start
     else
-      tail -n 20 "$LOG_DIR/web-build.log"
-      c_yellow "  production build failed (exit $rc): falling back to next dev"
-      WEB_MODE="dev"
-      start_web dev
+      [[ -f "$LOG_DIR/web-build.log" ]] && tail -n 20 "$LOG_DIR/web-build.log"
+      c_yellow "  production build failed (exit $rc): falling back to next dev; fix it, then R rebuilds"
     fi
-  else
-    WEB_MODE="dev"
-    start_web dev
   fi
+  if [[ "$WEB_MODE" == "prod" ]]; then start_web start; else start_web dev; fi
   write_stack_env
   wait_for "$WEB_URL/" "web ($WEB_MODE)" 180 "$LAST_PID" "$LOG_DIR/web.log" up \
     || c_yellow "  web is not answering yet: R restarts it, l tails logs/web.log"
@@ -1043,7 +1091,13 @@ print_summary() {
   [[ -n "$PUBLIC_URL" ]] && echo "  Public    $PUBLIC_URL → API (webhooks: $PUBLIC_URL/webhooks/<provider>)"
   if [[ "$RUN_WEB" -eq 1 ]]; then
     if pid_alive web; then
-      echo "  Web       $WEB_URL   ($WEB_MODE; logs/web.log)"
+      if [[ "$WEB_MODE" == "prod" ]]; then
+        echo "  Web       $WEB_URL   (production build: R rebuilds after web changes; logs/web.log)"
+      elif [[ "$WEB_PROD" -eq 1 ]]; then
+        c_yellow "  Web       $WEB_URL   (next dev: the production build failed, logs/web-build.log)"
+      else
+        echo "  Web       $WEB_URL   (next dev; logs/web.log)"
+      fi
       echo "  Admin     $WEB_URL/admin"
     else
       c_red "  Web       not running: see logs/web.log (R restarts it)"
@@ -1186,24 +1240,31 @@ menu_restart_backend() {
 
 menu_restart_web() {
   [[ -f "$ROOT/web/package.json" ]] || { c_yellow "  no web/"; return 0; }
+  # What the boot asked for, so a build that failed at boot is retried here.
+  # A stack.env from before WEB_PROD was recorded only has the mode.
+  local prod="${WEB_PROD:-}" rc
+  [[ -n "$prod" ]] || { [[ "${WEB_MODE:-dev}" == "prod" ]] && prod=1 || prod=0; }
   stop_service web
   wait_port_free "$WEB_PORT" 10 || { c_red "  port $WEB_PORT is still held by $(port_owner "$WEB_PORT")"; return 0; }
-  if [[ "${WEB_MODE:-dev}" == "prod" ]]; then
+  WEB_MODE="dev"
+  if [[ "$prod" -eq 1 ]]; then
     c_dim "  rebuilding for production (logs/web-build.log; Ctrl-C cancels)…"
+    web_build_begin
     env_unset_args "$ROOT/web/.env.local"
-    if run_shielded bash -c 'cd "$1" && shift && exec "$@"' _ "$ROOT" env ${UNSET_ARGS[@]+"${UNSET_ARGS[@]}"} \
-      pnpm --filter "$WEB_PKG" exec next build >"$LOG_DIR/web-build.log" 2>&1; then
-      DEVUP_ALLOW_START=1 start_web start
+    run_shielded bash -c 'cd "$1" && shift && exec "$@"' _ "$ROOT" env ${UNSET_ARGS[@]+"${UNSET_ARGS[@]}"} \
+      pnpm --filter "$WEB_PKG" exec next build >"$LOG_DIR/web-build.log" 2>&1
+    rc=$?
+    web_build_end "$rc"
+    if [[ "$rc" -eq 0 ]]; then
+      WEB_MODE="prod"
     else
       tail -n 20 "$LOG_DIR/web-build.log"
       c_yellow "  build failed: starting next dev instead"
-      WEB_MODE="dev"
-      DEVUP_ALLOW_START=1 start_web dev
     fi
-  else
-    DEVUP_ALLOW_START=1 start_web dev
   fi
-  wait_for "$WEB_URL/" "web" 180 "$LAST_PID" "$LOG_DIR/web.log" up || true
+  if [[ "$WEB_MODE" == "prod" ]]; then DEVUP_ALLOW_START=1 start_web start; else DEVUP_ALLOW_START=1 start_web dev; fi
+  [[ "$DEVUP_MODE" == "boot" ]] && write_stack_env
+  wait_for "$WEB_URL/" "web ($WEB_MODE)" 180 "$LAST_PID" "$LOG_DIR/web.log" up || true
 }
 
 menu_seed() {
@@ -1257,7 +1318,9 @@ menu_print() {
   echo; c_dim "  services"
   menu_item l "logs"
   [[ "$backend" -eq 1 ]] && menu_item r "rebuild + restart backend"
-  [[ "$web" -eq 1 ]] && menu_item R "restart web"
+  if [[ "$web" -eq 1 ]]; then
+    if [[ "${WEB_PROD:-0}" -eq 1 || "${WEB_MODE:-dev}" == "prod" ]]; then menu_item R "rebuild + restart web"; else menu_item R "restart web"; fi
+  fi
   menu_item c "doctor + preflight"
   echo; c_dim "  data"
   menu_item s "seed"
@@ -1470,6 +1533,7 @@ boot() {
 
   step 6 "Generated assets"
   generated_assets
+  web_build_start
 
   step 7 "Postgres"
   postgres_up

@@ -70,7 +70,7 @@ const (
 // call", for one target calendar.
 type ConferenceOption struct {
 	ID           string `json:"id"`                      // ProviderApp, ProviderZoom, …
-	Label        string `json:"label"`                   // "Forum call", "Zoom"
+	Label        string `json:"label"`                   // "Scaffold App call", "Zoom"
 	Platform     string `json:"platform,omitempty"`      // connections registry id (google, microsoft, zoom); "" for the app's own
 	ConnectionID string `json:"connection_id,omitempty"` // the account it uses
 	Account      string `json:"account,omitempty"`

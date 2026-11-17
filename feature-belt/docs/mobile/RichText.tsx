@@ -1,4 +1,4 @@
-import { docsFormatDate, docsTitle, type DocsRefs, type DocsSpan } from "@scaffoldapp/shared";
+import { docsColorParts, docsFormatDate, docsTitle, type DocsColor, type DocsRefs, type DocsSpan } from "@scaffoldapp/shared";
 import { Text, useTheme, type TextProps } from "@scaffoldapp/ui-native";
 import { router } from "expo-router";
 import { Linking, Platform } from "react-native";
@@ -18,16 +18,37 @@ export function mentionLabel(sp: DocsSpan, refs: DocsRefs): string {
     if (p && p.title === null) return "No access";
     return p?.title ? `${p.icon ? `${p.icon} ` : ""}${docsTitle(p.title)}` : sp.text;
   }
-  return docsFormatDate(m.date) || sp.text;
+  const day = docsFormatDate(m.date) || sp.text;
+  return `${day}${m.time ? ` ${m.time}` : ""}${m.remind_at ? " ⏰" : ""}`;
+}
+
+/** A swatch colour as React Native styles (text colour, or a highlight behind default text). */
+export function useSwatchStyle(): (c: DocsColor | null | undefined) => { color?: string; backgroundColor?: string } | null {
+  const theme = useTheme();
+  return (c) => {
+    if (!c) return null;
+    const [hue, bg] = docsColorParts(c);
+    const sw = theme.swatches[hue];
+    return bg ? { backgroundColor: sw.bg } : { color: sw.fg };
+  };
 }
 
 /** Rich text as nested Text: marks, links (http, https, mailto), mention chips. */
 export function RichText({ spans, refs, pageHref, ...props }: { spans: readonly DocsSpan[]; refs: DocsRefs; pageHref?: (id: string) => string | null } & TextProps) {
   const theme = useTheme();
   const c = theme.colors;
+  const swatch = useSwatchStyle();
   return (
     <Text {...props}>
       {spans.map((s, i) => {
+        if (s.equation) {
+          // Equations stay TeX on mobile (rendered on the web), styled as code.
+          return (
+            <Text key={i} role={props.role ?? "body"} accessibilityLabel={`Equation: ${s.text}`} style={{ fontFamily: MONO, color: c.text, backgroundColor: c.sunken }}>
+              {s.text}
+            </Text>
+          );
+        }
         if (s.mention) {
           const label = mentionLabel(s, refs);
           if (s.mention.type === "page") {
@@ -62,6 +83,7 @@ export function RichText({ spans, refs, pageHref, ...props }: { spans: readonly 
               deco ? { textDecorationLine: deco } : null,
               s.code ? { fontFamily: MONO, backgroundColor: c.sunken } : null,
               s.link ? { color: c.primaryStrong, textDecorationLine: "underline" } : null,
+              swatch(s.color),
             ]}
             {...(s.link ? { onPress: () => open(s.link!), accessibilityRole: "link" as const } : {})}
           >

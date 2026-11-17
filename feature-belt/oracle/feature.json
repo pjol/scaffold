@@ -1,0 +1,216 @@
+{
+  "name": "oracle",
+  "title": "Price oracle",
+  "version": "1.0.0",
+  "summary": "Prices for any asset from many sources: every print is screened for manipulation, aggregated into a slew-limited published price with live, stale and seed status, daily history and baskets; staff watch sources and observations and post prices by hand.",
+  "requires": [],
+  "surfaces": [
+    "backend",
+    "web",
+    "mobile"
+  ],
+  "migration_block": 3000,
+  "env": [
+    {
+      "name": "ORACLE_PUBLISH_INTERVAL",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "3s",
+      "doc": "How often targets are recomputed and prices slew and publish (500ms to 1m)."
+    },
+    {
+      "name": "ORACLE_SOURCES_ENABLED",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "true",
+      "doc": "Poll sources. false keeps feeds on their seed or last price; pushed and staff prints still screen and publish (tests, air-gapped machines)."
+    },
+    {
+      "name": "ORACLE_DISABLE_SOURCES",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "",
+      "doc": "Comma-separated source names not to poll (http)."
+    },
+    {
+      "name": "ORACLE_LEARN_PREMIUMS",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "true",
+      "doc": "Learn each venue's premium over the others and remove it before screening; a premium fixed on a source row always wins."
+    },
+    {
+      "name": "ORACLE_PUBLIC_READS",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "true",
+      "doc": "Serve feeds, prices, history and observations without sign-in. false puts them behind sign-in."
+    },
+    {
+      "name": "ORACLE_PRICE_RETENTION",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "720h",
+      "doc": "How long published price points are kept (at least 24h); daily history is kept regardless."
+    },
+    {
+      "name": "ORACLE_OBSERVATION_RETENTION",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "4320h",
+      "doc": "How long screened observations are kept (at least 720h; keep it above the longest feed lookback)."
+    },
+    {
+      "name": "ORACLE_PRINTS_PER_MINUTE",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "30",
+      "doc": "Staff prints allowed per admin per minute."
+    },
+    {
+      "name": "ORACLE_HTTP_MIN_GAP",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "1s",
+      "doc": "The http source's spacing between requests to one API host (at least 100ms)."
+    },
+    {
+      "name": "ORACLE_HTTP_CADENCE",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "60s",
+      "doc": "How often the http source polls a source row without its own params.every (at least 10s)."
+    },
+    {
+      "name": "ORACLE_DECISION_URL",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "",
+      "doc": "Decision model endpoint speaking the decisions format (state + yes/no questions), e.g. https://openrouter.ai/api/alpha/decisions. Unset = statistical screen only."
+    },
+    {
+      "name": "ORACLE_DECISION_API_KEY",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "secret": true,
+      "doc": "Bearer key for ORACLE_DECISION_URL.",
+      "source": "The decision service's dashboard (OpenRouter: Keys)."
+    },
+    {
+      "name": "ORACLE_DECISION_MODEL",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "",
+      "doc": "Model id sent with each decision request (e.g. typesafe/jev-1.13); the answering snapshot is recorded on each observation."
+    },
+    {
+      "name": "ORACLE_DECISION_MAX_RPS",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "20",
+      "doc": "Decision requests per second at most."
+    },
+    {
+      "name": "ORACLE_DECISION_TIMEOUT",
+      "tier": "backend",
+      "group": "oracle",
+      "required": "optional",
+      "default": "2s",
+      "doc": "Time limit per decision request; on timeout the statistical verdict stands."
+    }
+  ],
+  "files": [
+    {
+      "src": "backend/oracle",
+      "dst": "backend/internal/oracle"
+    },
+    {
+      "src": "backend/feature_oracle.go",
+      "dst": "backend/internal/api/feature_oracle.go"
+    },
+    {
+      "src": "migrations",
+      "dst": "backend/migrations"
+    },
+    {
+      "src": "shared",
+      "dst": "packages/shared/src/oracle"
+    },
+    {
+      "src": "web",
+      "dst": "web/src/features/oracle"
+    },
+    {
+      "src": "web-app",
+      "dst": "web/app"
+    },
+    {
+      "src": "mobile",
+      "dst": "mobile/src/features/oracle"
+    },
+    {
+      "src": "mobile-app",
+      "dst": "mobile/app"
+    }
+  ],
+  "wire": [
+    {
+      "file": "packages/shared/src/index.ts",
+      "anchor": "exports",
+      "insert": "export * from \"./oracle\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { oracleAdminNav, oracleHomeTile, oracleNav } from \"./oracle/nav\";"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "nav",
+      "insert": "oracleNav,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "oracleHomeTile,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "admin-nav",
+      "insert": "oracleAdminNav,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "imports",
+      "insert": "import { oracleHome } from \"./oracle/registry\";"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "home",
+      "insert": "oracleHome,"
+    }
+  ],
+  "stitch": [
+    "Decide who reads prices: anyone (default) or signed-in people (ORACLE_PUBLIC_READS=false); rename \"Prices\" in web/src/features/oracle/nav.ts and mobile/src/features/oracle/registry.tsx if the product calls them something else.",
+    "Create the feeds the product needs (Admin → Oracle → New feed, or the API) with a pace profile each; set a seed only when you trust it within ±30%.",
+    "Sources beyond JSON-HTTP: implement oracle.Source (and HistorySource for backfill) in your own package and oracle.RegisterSource(name, factory) from an init(), with one Task.Lane per API host and an honest Budget; push-only sources use oracle.RegisterPushSource and Service.Push.",
+    "Where one market is the truth, give its venue a fixed premium of 0 so learned premiums measure the others against it.",
+    "Consumers read Service.Current(ctx, key) or follow oracle.price (Service.OnPublish on the leader); treat stale and seed as \"don't act\".",
+    "Optionally set ORACLE_DECISION_URL, ORACLE_DECISION_API_KEY and ORACLE_DECISION_MODEL, and watch Admin → Oracle → Sources for calls, failures and cost.",
+    "Replace the dev seeds in backend/internal/oracle/seed.go (BTC-USD polls three public exchange APIs; the metals take seeded staff prints)."
+  ]
+}

@@ -16,11 +16,17 @@ export interface CallsDevicePrefs {
   camera: boolean;
   /** Join with the microphone on. */
   mic: boolean;
-  /** Background blur on the camera. */
-  blur: boolean;
+  /** Show your own video mirrored (only to you). */
+  mirror: boolean;
+  /** Show your own tile. */
+  selfView: boolean;
+  /** Microphone processing (WebRTC constraints). */
+  noiseSuppression: boolean;
+  echoCancellation: boolean;
+  autoGainControl: boolean;
 }
 
-const DEFAULT_PREFS: CallsDevicePrefs = { camera: true, mic: true, blur: false };
+const DEFAULT_PREFS: CallsDevicePrefs = { camera: true, mic: true, mirror: true, selfView: true, noiseSuppression: true, echoCancellation: true, autoGainControl: true };
 
 function read<T>(store: () => Storage, key: string): T | null {
   try {

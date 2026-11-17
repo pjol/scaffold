@@ -14,7 +14,7 @@ The fixed foundation. `../template/` is the foundation as running code; these fi
 3. **Zero-key development**: `scripts/dev-up/dev-up.sh` runs the whole stack with no third-party keys (dev auth, local storage, mail sink). Production refuses to boot without the real services.
 4. **No stubs or fake data in runtime code.** Unconfigured features return an honest error; dev data lives in the database via `cmd/seed`.
 5. **Users own their data**: in-app account deletion, data export and consent are wired through every module (`AccountDeleter`, `AccountExporter`). UGC requires moderation.
-6. **Design**: tokens only, the 4 px spacing system and relationship ladder, no subtitles (tooltips), front pages only where necessary, motion with reduced-motion support, skeleton/empty/error on every async view, nothing that looks AI-generated.
+6. **Design**: tokens only, the 4 px spacing system and relationship ladder, no subtitles (tooltips), no nesting as a general pattern, front pages only where necessary, motion with reduced-motion support, skeleton/empty/error on every async view, nothing that looks AI-generated.
 7. **Copy is meaning-first**: factual, short, numerals, no banned words.
 8. **Env**: standard names, declared in `scaffold.json`, documented in `ENV.md`, secrets never in clients, git or logs.
 9. **Migrations**: forward-only, numbered by the ledger, never edited after applying.
@@ -38,6 +38,7 @@ The fixed foundation. `../template/` is the foundation as running code; these fi
 | Project docs, branch scopes, hours | `docs-set.md` |
 | Deletion, consent, UGC, payments rules, store review | `compliance.md` |
 | Versions, layout, ports, commands | `stack.md` |
+| An existing project that wasn't made by `scaffold new` (adopt, layout, custom surfaces) | `adopt.md` |
 
 Read the whole file for the area you're touching; they're short on purpose.
 

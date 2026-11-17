@@ -35,6 +35,7 @@ import (
 	"scaffoldapp/backend/internal/notify"
 	"scaffoldapp/backend/internal/orgs"
 	"scaffoldapp/backend/internal/realtime"
+	"scaffoldapp/backend/internal/storage"
 )
 
 // ItemType is the drive item type of a repository.
@@ -55,13 +56,18 @@ const (
 	KindPullComment     = "repos.pull_comment"
 	KindPullReview      = "repos.pull_review"
 	KindPullMerged      = "repos.pull_merged"
+	KindIssueAssigned   = "repos.issue_assigned"
+	KindIssueActivity   = "repos.issue_activity"
+	KindMentioned       = "repos.mentioned"
 )
 
 // Realtime events on repos:<repo id> (anyone who can view the repository).
 const (
-	EventRefsChanged = "repos.refs_changed" // {repo_id}: a branch or tag moved
-	EventPullChanged = "repos.pull_changed" // {repo_id, number}: anything on a pull request
-	EventRepoChanged = "repos.repo_changed" // {repo_id}: settings or protection
+	EventRefsChanged   = "repos.refs_changed"   // {repo_id}: a branch or tag moved
+	EventPullChanged   = "repos.pull_changed"   // {repo_id, number}: anything on a pull request
+	EventRepoChanged   = "repos.repo_changed"   // {repo_id}: settings, protection, labels, milestones
+	EventIssueChanged  = "repos.issue_changed"  // {repo_id, number}: anything on an issue
+	EventStatusChanged = "repos.status_changed" // {repo_id, sha}: a commit status was posted
 )
 
 // PermCreate is the org permission to make repositories.
@@ -180,6 +186,10 @@ func New(d *app.Deps) *Service {
 	notifications.RegisterKind(notifications.Kind{ID: KindPullComment, Label: "Pull request comments", Push: true, AgentTarget: repoTarget})
 	notifications.RegisterKind(notifications.Kind{ID: KindPullReview, Label: "Reviews of your pull requests", Push: true, Email: true, AgentTarget: repoTarget})
 	notifications.RegisterKind(notifications.Kind{ID: KindPullMerged, Label: "Merged pull requests", Push: false, AgentTarget: repoTarget})
+	notifications.RegisterKind(notifications.Kind{ID: KindIssueAssigned, Label: "Issues and pull requests assigned to you", Push: true, Email: true, AgentTarget: repoTarget})
+	notifications.RegisterKind(notifications.Kind{ID: KindIssueActivity, Label: "Activity on issues you're in", Push: true, AgentTarget: repoTarget})
+	notifications.RegisterKind(notifications.Kind{ID: KindMentioned, Label: "Mentions in repositories", Push: true, Email: true, AgentTarget: repoTarget})
+	storage.RegisterPurpose(storage.Purpose{Name: AssetPurpose, AnyType: true, MaxBytes: s.maxPushBytes})
 	access.RegisterPermission(access.Permission{
 		Key: PermCreate, Title: "Create repositories",
 		Info:         "Make git repositories in folders they can edit, and turn folders into repositories.",
@@ -227,6 +237,13 @@ func (s *Service) Name() string { return "repos" }
 
 func (s *Service) MountRoot(r chi.Router) {
 	r.HandleFunc("/git/*", s.serveGit)
+	r.Get("/git-archive/{token}", s.serveArchive)
+}
+
+// MountPublic serves the one route CI tokens open (they authenticate
+// themselves; nothing else accepts them).
+func (s *Service) MountPublic(r chi.Router) {
+	r.With(auth.RateLimit(600, time.Minute)).Post("/repos/{repoID}/statuses/{sha}", httpx.Handler(s.postStatus))
 }
 
 func (s *Service) MountUser(r chi.Router) {
@@ -301,6 +318,74 @@ func (s *Service) MountUser(r chi.Router) {
 	pullWrite.Post("/repos/{repoID}/pulls/{number}/reviewers", httpx.Handler(s.requestReviewers))
 	pullWrite.Delete("/repos/{repoID}/pulls/{number}/reviewers/{userID}", httpx.Handler(s.removeReviewer))
 	r.Get("/repos/{repoID}/people", s.viaRead(s.repoPeople, s.xPeople))
+
+	// Pull request depth (the app's own repositories).
+	pullWrite.Post("/repos/{repoID}/pulls/{number}/ready", httpx.Handler(s.setDraft(false)))
+	pullWrite.Post("/repos/{repoID}/pulls/{number}/draft", httpx.Handler(s.setDraft(true)))
+	pullWrite.Put("/repos/{repoID}/pulls/{number}/labels", httpx.Handler(s.setPullLabels))
+	pullWrite.Put("/repos/{repoID}/pulls/{number}/assignees", httpx.Handler(s.setPullAssignees))
+	pullWrite.Put("/repos/{repoID}/pulls/{number}/auto-merge", httpx.Handler(s.enableAutoMerge))
+	pullWrite.Delete("/repos/{repoID}/pulls/{number}/auto-merge", httpx.Handler(s.disableAutoMerge))
+	commit.Post("/repos/{repoID}/pulls/{number}/update-branch", httpx.Handler(s.updateBranch))
+	commit.Post("/repos/{repoID}/pulls/{number}/suggestions", httpx.Handler(s.applySuggestions))
+	r.Get("/repos/{repoID}/pulls/{number}/viewed", httpx.Handler(s.viewedFiles))
+	comment.Put("/repos/{repoID}/pulls/{number}/viewed", httpx.Handler(s.setViewed(true)))
+	comment.Delete("/repos/{repoID}/pulls/{number}/viewed", httpx.Handler(s.setViewed(false)))
+	r.Get("/repos/{repoID}/pulls/{number}/reviews/pending", httpx.Handler(s.pendingReview))
+	comment.Delete("/repos/{repoID}/pulls/{number}/reviews/pending", httpx.Handler(s.discardPendingReview))
+
+	// Issues, labels, milestones, reactions, templates.
+	issueWrite := active.With(auth.RateLimit(issuesPerHour, time.Hour))
+	r.Get("/repos/{repoID}/issues", httpx.Handler(s.listIssues))
+	issueWrite.Post("/repos/{repoID}/issues", httpx.Handler(s.createIssueRoute))
+	r.Get("/repos/{repoID}/issues/{number}", httpx.Handler(s.getIssue))
+	pullWrite.Patch("/repos/{repoID}/issues/{number}", httpx.Handler(s.updateIssueRoute))
+	pullWrite.Delete("/repos/{repoID}/issues/{number}", httpx.Handler(s.deleteIssue))
+	pullWrite.Put("/repos/{repoID}/issues/{number}/labels", httpx.Handler(s.setIssueLabels))
+	pullWrite.Put("/repos/{repoID}/issues/{number}/assignees", httpx.Handler(s.setIssueAssignees))
+	r.Get("/repos/{repoID}/issues/{number}/timeline", httpx.Handler(s.issueTimeline))
+	comment.Post("/repos/{repoID}/issues/{number}/comments", httpx.Handler(s.addIssueCommentRoute))
+	comment.Patch("/repos/{repoID}/issues/{number}/comments/{commentID}", httpx.Handler(s.editIssueComment))
+	comment.Delete("/repos/{repoID}/issues/{number}/comments/{commentID}", httpx.Handler(s.deleteIssueComment))
+	comment.Put("/repos/{repoID}/reactions", httpx.Handler(s.react(true)))
+	comment.Delete("/repos/{repoID}/reactions", httpx.Handler(s.react(false)))
+	r.Get("/repos/{repoID}/templates", httpx.Handler(s.listTemplates))
+	r.Get("/repos/{repoID}/labels", httpx.Handler(s.listLabels))
+	repoWrite.Post("/repos/{repoID}/labels", httpx.Handler(s.createLabel))
+	repoWrite.Patch("/repos/{repoID}/labels/{labelID}", httpx.Handler(s.updateLabel))
+	repoWrite.Delete("/repos/{repoID}/labels/{labelID}", httpx.Handler(s.deleteLabel))
+	r.Get("/repos/{repoID}/milestones", httpx.Handler(s.listMilestones))
+	repoWrite.Post("/repos/{repoID}/milestones", httpx.Handler(s.saveMilestone))
+	r.Get("/repos/{repoID}/milestones/{milestoneID}", httpx.Handler(s.getMilestone))
+	repoWrite.Patch("/repos/{repoID}/milestones/{milestoneID}", httpx.Handler(s.saveMilestone))
+	repoWrite.Delete("/repos/{repoID}/milestones/{milestoneID}", httpx.Handler(s.deleteMilestone))
+
+	// Statuses (read), CI tokens, releases, tags, archives, insights, webhooks.
+	r.Get("/repos/{repoID}/commit-states", httpx.Handler(s.commitStates))
+	r.Get("/repos/{repoID}/ci-tokens", httpx.Handler(s.listCITokens))
+	repoWrite.Post("/repos/{repoID}/ci-tokens", httpx.Handler(s.createCIToken))
+	repoWrite.Delete("/repos/{repoID}/ci-tokens/{tokenID}", httpx.Handler(s.revokeCIToken))
+	r.Get("/repos/{repoID}/releases", httpx.Handler(s.listReleases))
+	repoWrite.Post("/repos/{repoID}/releases", httpx.Handler(s.createRelease))
+	r.Get("/repos/{repoID}/releases/notes", httpx.Handler(s.releaseNotes))
+	r.Get("/repos/{repoID}/releases/{releaseID}", httpx.Handler(s.getRelease))
+	repoWrite.Patch("/repos/{repoID}/releases/{releaseID}", httpx.Handler(s.updateRelease))
+	repoWrite.Delete("/repos/{repoID}/releases/{releaseID}", httpx.Handler(s.deleteRelease))
+	repoWrite.Post("/repos/{repoID}/releases/{releaseID}/assets", httpx.Handler(s.addAsset))
+	r.Get("/repos/{repoID}/releases/{releaseID}/assets/{assetID}", httpx.Handler(s.downloadAsset))
+	repoWrite.Delete("/repos/{repoID}/releases/{releaseID}/assets/{assetID}", httpx.Handler(s.deleteAsset))
+	repoWrite.Post("/repos/{repoID}/tags", httpx.Handler(s.createTag))
+	repoWrite.Delete("/repos/{repoID}/tags", httpx.Handler(s.deleteTag))
+	r.With(auth.RateLimit(120, time.Hour)).Post("/repos/{repoID}/archive", httpx.Handler(s.createArchive))
+	r.Get("/repos/{repoID}/insights", httpx.Handler(s.getInsights))
+	r.Get("/repos/{repoID}/webhooks", httpx.Handler(s.listWebhooks))
+	repoWrite.Post("/repos/{repoID}/webhooks", httpx.Handler(s.createWebhook))
+	repoWrite.Patch("/repos/{repoID}/webhooks/{hookID}", httpx.Handler(s.updateWebhook))
+	repoWrite.Delete("/repos/{repoID}/webhooks/{hookID}", httpx.Handler(s.deleteWebhook))
+	repoWrite.Post("/repos/{repoID}/webhooks/{hookID}/ping", httpx.Handler(s.pingWebhook))
+	r.Get("/repos/{repoID}/webhooks/{hookID}/deliveries", httpx.Handler(s.listDeliveries))
+	r.Get("/repos/{repoID}/webhooks/{hookID}/deliveries/{deliveryID}", httpx.Handler(s.getDelivery))
+	repoWrite.Post("/repos/{repoID}/webhooks/{hookID}/deliveries/{deliveryID}/redeliver", httpx.Handler(s.redeliver))
 
 	// Personal git credentials (people only, never agents).
 	r.Get("/repos/credentials", httpx.Handler(s.listCredentials))
@@ -540,6 +625,12 @@ func (s *Service) sweep(ctx context.Context) error {
 		if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) > time.Hour {
 			_ = os.Rename(p, filepath.Join(s.trashDir, filepath.Base(p)))
 		}
+	}
+	if err := s.pruneDeliveries(ctx); err != nil {
+		slog.WarnContext(ctx, "repos: pruning webhook deliveries failed", "err", err)
+	}
+	if err := s.pruneArchiveTokens(ctx); err != nil {
+		slog.WarnContext(ctx, "repos: pruning archive tokens failed", "err", err)
 	}
 	// Spooled bodies and FIFO pairs older than a day.
 	entries, _ := os.ReadDir(s.tmpDir)

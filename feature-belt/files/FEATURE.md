@@ -3,10 +3,12 @@
 ## What it does
 
 - An org drive: My drive (private until shared), Shared folders (org-owned, for a team or everyone), Shared with me, Recent, Starred and Trash (restore; purged after `FILES_TRASH_DAYS`). Nested folders; names are unique per folder.
-- Upload by drag and drop (files and whole folders), pickers or the photo library; progress, cancel and retry; new versions with history (download or restore any). Rename, move (picker or drag), copy, star, trash, zip download of a selection.
-- Previews: images, PDF, video, audio, text, code, Markdown, CSV tables and SVG (drawn as an image); office and other files download. Every download is a short-lived presigned link with a forced type; anything that can run script (HTML, SVG, XML, unknown) comes back as an attachment, and an upload whose bytes don't match an inline type (HTML named `.png`) is refused.
-- Sharing through access: people, teams, the whole org, and public links (`/f/<token>`, optional expiry, revocable; needs `access.share_public`). Public pages preview and download a file or browse a folder; downloads are counted and limited per IP; visitors can report; staff turn public access off.
-- Org quota and per-file limit shown in the UI; name and text search; activity per item (uploads, versions, renames, moves, sharing); AI agents read and make single, reviewable edits as the person.
+- Upload by drag and drop (files and whole folders), pickers or the photo library; progress, cancel and retry; new versions with history (download, restore, name, keep forever). Rename, move (picker or drag), copy, star, folder colours, trash, zip download of a selection; check out / check in (others can't change a checked-out file; managers break locks); hand a My drive item to a colleague.
+- Previews through the core kit (`FilePreview`, concrete/web.md → File previews): images (zoom), video, audio, PDF, text, code, Markdown, CSV/TSV, JSON, SVG, Word/Excel/PowerPoint and OpenDocument, zip listings, fonts. Server thumbnails for images and office files that carry a preview picture; video posters from the uploading browser. Every download is a short-lived presigned link with a forced type; anything that can run script (HTML, SVG, XML, unknown) comes back as an attachment, and an upload whose bytes don't match an inline type (HTML named `.png`) is refused.
+- Sharing through access: people, teams, the whole org, and public links (`/f/<token>`, optional expiry, revocable; needs `access.share_public`) with a password, downloads off and an open count. Public pages preview and download a file or browse a folder; downloads are counted and limited per IP; visitors can report; staff turn public access off.
+- File requests: an upload-only link into a folder (`/f/request/<token>`) for people without an account, with an end date, a file count and size limit, the sender's name and email, and a notification per file.
+- Comments on files and folders: threads, replies, @mentions (notified when they can open it), resolve, anchors to a PDF page or a video moment.
+- Search by name and by text (text files, PDFs, Word, Excel, PowerPoint, OpenDocument) with filters: type, owner, modified, location, starred, shared with me. Storage per person; activity per item; AI agents search, read document text, comment and make single, reviewable edits as the person.
 - Connected drives (with the `connectors` feature): Google Drive (My Drive, Shared with me, shared drives), OneDrive and SharePoint libraries show under "Connected", browsed, previewed and changed live with each person's own account; Copy into Files, shortcuts colleagues open with their own connection, Save to Google Drive / OneDrive.
 
 ## Data
@@ -23,6 +25,11 @@
 | `files_object_deletions` | objects to delete, filled by triggers on version and unfinished upload rows (purge, org deletion, pruning) |
 | `files_links` | a shortcut item's target on a connected platform: provider, product, the platform's id, name/kind/web address the pinner chose (never content or tokens) |
 | `files_connected_downloads` | 15-minute links that stream a connected file through the API (token sha256, person, connection, ref, type, disposition) |
+| `files_comments` | threads and replies on an item: author, body, mentions, anchor (`{page}` or `{seconds}`), resolved |
+| `files_link_settings`, `files_link_unlocks` | per access link: bcrypt password, downloads on/off, opens; 12-hour password proofs (sha256) |
+| `files_requests`, `files_request_uploads` | file requests (token sha256, folder, limits, end date, creator) and what was sent (sender name and email, the file it became) |
+
+Versions carry `thumb_key`, `processed_at` (the background pass), `name` and `keep_forever`; items carry `content_text` + `content_source` (text / extracted), `search_vector` (name weight A, text B), a lock (`locked_by`, `locked_at`, `lock_note`) and `color` (a semantic colour token name).
 
 Every item is an access resource of kind `files.item` with its folder as parent.
 
@@ -36,16 +43,20 @@ Every item is an access resource of kind `files.item` with its folder as parent.
 | Owner | a My drive's person manages everything in it, whoever uploaded; shared folders have no owner: their creator gets manage and org owners and admins manage everything in them, restricted subfolders included |
 | Org permission `files.create_shared_folders` | create top-level shared folders (default owner, admin) |
 | Staff (support, admin) | list public items, turn public access off and on (audited) |
-| AI agent of a person | the person's level capped by their agent scope and at edit; no delete, trash, sharing, or moves that change who can open an item (another drive, or a folder whose inherited sharing differs; also never suggested) |
+| AI agent of a person | the person's level capped by their agent scope and at edit; no delete, trash, sharing, link options, file requests, locks, owner changes, or moves that change who can open an item (another drive, or a folder whose inherited sharing differs; also never suggested) |
 
-Comment is view here (files have no comments). Org admins don't see a member's private My drive items.
+| Comment | comment, reply, resolve your own threads; edit can resolve any; delete your own (manage: any) |
+| Check out | edit checks a file out; only that person changes it (rename, move, versions, edits, trash) until they check it in; manage breaks the lock |
+| File requests | edit on the folder + `access.share_public` + `files.file_requests` (default owner, admin, member); the link stops when its creator loses any of them; close: creator or manage |
+
+Org admins don't see a member's private My drive items.
 
 ## API
 
 | Method | Path | Guard | Purpose |
 |---|---|---|---|
 | GET | `/v1/files/types` | user | registered item types |
-| GET | `/v1/files/orgs/{orgID}/drive` · `/items?section=&sort=&dir=&thumbs=1` · `/search?q=` | member | quota and limits · a section (keyset) · name and text search |
+| GET | `/v1/files/orgs/{orgID}/drive` · `/items?section=&sort=&dir=&thumbs=1` · `/search?q=&kind=&owner=&modified_after=&modified_before=&location=&starred=1&shared_with_me=1` · `/storage` · `/requests` | member | quota and limits · a section (keyset) · name and text search with filters (filters alone list matches) · usage per person (everyone's for owners/admins) · your file requests |
 | POST | `/v1/files/orgs/{orgID}/folders` · `/files` | member, active | `{parent_id?, name, shared?, general?}` · text file `{name, text}` (empty files too) |
 | POST · DELETE | `/v1/files/orgs/{orgID}/uploads` · `/v1/files/uploads/{id}/complete` · `/v1/files/uploads/{id}` | edit on the folder or file | presign `{parent_id?, item_id?, name, content_type, size}` · complete `{on_conflict}` (checks size and type) · cancel |
 | POST | `/v1/files/orgs/{orgID}/archives` · DELETE `…/trash` | member | zip link `{ids}` · empty trash (manage) |
@@ -53,7 +64,16 @@ Comment is view here (files have no comments). Org admins don't see a member's p
 | GET | `/v1/files/items/{id}` · `/children` · `/url?disposition=&version=` · `/text` · `/versions` · `/activity` | view | item with path · folder listing · download link · text (1 MB) · history · activity |
 | PATCH · POST | `/v1/files/items/{id}` · `/move` · `/copy` · `/trash` · `/restore` · `/versions/{vid}/restore` | edit (copy: view + edit on target) | rename · move (manage across drives) · copy · trash · restore · restore version |
 | PUT · DELETE | `/v1/files/items/{id}/star` · DELETE `/v1/files/items/{id}` | view · manage | star · delete a trashed item for good |
-| GET | `/v1/files/public/{token}` · `/items/{id}` · `/children` · `/url` · `/text` | public, per-IP limits | what a link opens (no account; refuses agent credentials) |
+| POST · DELETE | `/v1/files/items/{id}/lock` `{note}` · DELETE `…/lock` | edit · locker or manage | check out · check in / break (423 `item_locked` for others' edits) |
+| PUT · PATCH · POST | `…/color` `{color}` · `…/versions/{vid}` `{name?, keep_forever?}` · `…/owner` `{user_id}` · PUT `…/thumbnail` `{image}` | edit · edit · owner · edit | folder colour · name/keep a version · hand a top-level My drive item over (you keep edit) · a video/PDF poster (≤ 700 KB, re-encoded) |
+| GET · POST | `…/comments?status=open\|resolved` · POST `…/comments` `{body, thread_id?, mentions?, anchor?}` | view · comment | threads with replies (keyset) · comment or reply → `{comment, not_notified}` |
+| PATCH · DELETE | `/v1/files/comments/{id}` `{body?}` / `{resolved}` · DELETE | author / author or edit · author or manage | edit · resolve or reopen · delete |
+| GET · PUT | `…/public-links` · `…/public-links/{linkID}` `{password?, allow_download?}` | manage, people only | the item's working links with options and opens · set them (`""` removes the password) |
+| GET · POST | `…/requests` · POST `…/requests` `{title, instructions?, expires_at?, max_files?, max_file_mb?, require_email?}` | edit on the folder | its requests · make one (url and token once) |
+| POST · GET | `/v1/files/requests/{id}/close` · `/uploads` | creator or manage · edit | close · who sent what |
+| GET | `/v1/files/public/{token}` · `/items/{id}` · `/children` · `/url` · `/text` (`?proof=`) | public, per-IP limits | what a link opens (no account; refuses agent credentials); 401 `link_password_required`, 403 `download_disabled` |
+| POST | `/v1/files/public/{token}/password` `{password}` | public, 10/min per IP | → `{proof}` (12 h) |
+| GET · POST | `/v1/files/requests/public/{token}` · `/uploads` `{name, content_type, size, uploader_name, uploader_email}` · `/uploads/{id}/complete` | public, per-IP limits, refuses agent credentials | what the request asks · presigned PUT · the file lands in the folder as the creator; 404 `request_not_found` once closed, ended, full or its creator lost access |
 | GET | `/files-archive/{token}` | zip token | streams the zip, re-checking access per item |
 | GET · POST | `/v1/admin/files/public?status=` · `/items/{id}` · `/disable` · `/enable` | support, audited | public items with traffic; turn public access off and on |
 
@@ -70,16 +90,16 @@ Connected drives (`connected_*.go`; every route as the caller through `app.Conne
 | POST | `/v1/files/items/{id}/save-to` `{connection_id, parent_ref?}` | view + write capability | Save to Google Drive / OneDrive |
 | GET | `/files-connected/{token}` | link token | streams the file (Range passed through), forced type and disposition |
 
-Errors: 404 without view, 403 `access_level_required` / `agent_forbidden` (an agent's move that would change who can open the item), 409 `name_taken` / `item_trashed` / `restore_parent` / `target_changed`, 422 `content_type_mismatch` / `size_mismatch`, 507 `quota_exceeded`. Realtime: `files:<folder id>` (and the org id for shared folders, `user:` for My drive) carry `files.changed`; lost access revokes them. Notification `files.public_disabled`. Moderation target `files.item` (remove = turn public access off). Search: `files.item` (`Context` = org · folder, or My drive / Shared folders / Shared with me; scoped by `app.SearchOrg`). Agent tools: `files_search`, `files_list_folder`, `files_get_item`, `files_read_text` (read); `files_create_text_file`, `files_replace_lines`, `files_rename`, `files_move` (Target + exact Preview; edits refuse a stale `base_version_id`).
+Errors: 404 without view, 403 `access_level_required` / `agent_forbidden` (an agent's move that would change who can open the item), 423 `item_locked`, 409 `name_taken` / `item_trashed` / `restore_parent` / `target_changed`, 422 `content_type_mismatch` / `size_mismatch`, 507 `quota_exceeded`. Realtime: `files:<folder id>` (and the org id for shared folders, `user:` for My drive) carry `files.changed` (and `files.comments` on the item); lost access revokes them. Notifications `files.public_disabled`, `files.comment_mention`, `files.comment_reply`, `files.request_upload`. Moderation targets `files.item` (remove = turn public access off) and `files.comment` (remove = delete); comments pass `moderation.Check`. Job `files.process` (15 s) makes thumbnails and extracts text (≤ 40 MB files, 256 KB of text; PDF via ledongthuc/pdf, OOXML/ODF via stdlib zip+XML, capped against zip bombs). Search: `files.item` (`Context` = org · folder, or My drive / Shared folders / Shared with me; scoped by `app.SearchOrg`). Agent tools: `files_search` (text and filters), `files_list_folder`, `files_get_item`, `files_read_text` (text files, and extracted text of PDFs and office files, read-only), `files_list_comments` (read); `files_create_text_file`, `files_replace_lines`, `files_rename`, `files_move`, `files_comment` (Target + exact Preview; edits refuse a stale `base_version_id`).
 
 ## Screens
 
 | Where | Web | Mobile |
 |---|---|---|
-| Drive | `/files`, `/files/shared`, `/shared-with-me`, `/recent`, `/starred`, `/trash`: side sections and storage meter (title menu on phones), New (folder, upload files or a folder, shared folder, registered types), search, sort, list or grid, multi-select bar (download, move, star, trash; restore and delete in Trash), drop zone, keyboard (arrows, Space, Enter, ⌘A, Esc, Delete, F2, /), drag rows onto folders or crumbs, upload tray | Home → Files: section sheet, search, Add (photos, files, folder), rows with ⋮ |
-| Item | `/files/[itemID]`: folder listing with crumbs, or file preview with Details · Versions · Activity; ⋮ `ResourceMenu` everywhere (Share… and AI agent access from other features); shortcuts open their target or say Connect / Ask for access | `files/[itemID]`: folder or preview, Open in browser, Save or send, versions; ⋮ in the header; shortcuts likewise |
+| Drive | `/files`, `/files/shared`, `/shared-with-me`, `/recent`, `/starred`, `/trash`: side sections and storage meter (opens storage per person; title menu on phones), New (folder, upload files or a folder, shared folder, registered types), search with a filters row (type, owner, modified, location, starred, shared with me), sort, list or grid, multi-select bar (download, move, star, trash; restore and delete in Trash), drop zone, keyboard (arrows, Space, Enter, ⌘A, Esc, Delete, F2, /), drag rows onto folders or crumbs, upload tray | Home → Files: section sheet, search, Add (photos, files, folder), rows with ⋮ |
+| Item | `/files/[itemID]`: folder listing with crumbs, or file preview with Details (public link options) · Versions (name, keep) · Comments · Activity, the lock banner; ⋮ `ResourceMenu` everywhere (Share… and AI agent access from other features; Check out/in, Folder colour, Request files…, File requests, Transfer ownership…); shortcuts open their target or say Connect / Ask for access | `files/[itemID]`: folder or native `FilePreview`, Save or send, versions, comments (reply, resolve), lock line; ⋮ in the header (check out/in, Request files… → share sheet); search filter chips; shortcuts likewise |
 | Connected | Sidebar "Connected" (`ConnectedSection`, the open account's drives under it; `ConnectPrompt` when nothing is connected, dismissible); `/files/c/[connectionID]` drives; `/files/c/[connectionID]/[ref]` folder (same rows, grid, sort, crumbs, multi-select, keyboard, drag-move, drop-upload) or preview + details with the platform's sharing; `SourceBadge` on every row; Files search gets `SourceFilter` chips | Files home "Connected" section; `files/c/[connectionID]` drives, `files/c/[connectionID]/[ref]` browse, search, preview (image, text, Markdown, CSV; others in the browser), Open in app, Save or send, Copy into Files, Add shortcut; badges |
-| Public | `/f/[token]`: preview and Download, folder browsing, Report (signed in) | web only |
+| Public | `/f/[token]`: password gate, preview and Download (unless off), folder browsing, Report (signed in); `/f/request/[token]`: name/email, drop or choose files, progress | web only |
 | Admin | `/admin/files`: public now / turned off, traffic, turn off with a reason | none |
 
 Skeleton, empty and error states on every view; cached lists stay on screen with a "Couldn't refresh" note when offline.
@@ -105,11 +125,13 @@ Upload purpose `files` (private, any type). npm: `expo-document-picker` (mobile)
 
 ## Stitching
 
-1. Decide who creates shared folders (`files.create_shared_folders`, Settings → Permissions).
+1. Decide who creates shared folders (`files.create_shared_folders`) and who makes file requests (`files.file_requests`, with `access.share_public`) in Settings → Permissions.
 2. Set the quota, upload limit and `FILES_DELETED_ACCOUNT_KEEP_DAYS`, and say what happens to a leaver's files in the privacy policy.
-3. Production bucket: `files/` private; CORS allows PUT from the web origin. Nothing else is public.
+3. Production bucket: `files/` private; CORS allows PUT and GET (with the `Range` header) from the web origin, since previews read text, office, zip and font files in the browser. Nothing else is public.
 4. Navigation: web nav + Home tile, mobile Home entry; make it a mobile tab if central.
-5. Link to items with `files.ItemLink(id)`; `/f/(.*)` is wired into `web/proxy.ts`.
+5. Link to items with `files.ItemLink(id)`; `/f/(.*)` (public links and `/f/request/…`) is wired into `web/proxy.ts`.
+6. Say in the privacy policy that file requests collect the sender's name and email, and that text inside documents is indexed for search.
+7. Read seam for link cards: `files.ItemRef(ctx, q, viewer *auth.Identity, itemID) (*files.LinkedItem, error)` reads a folder or file as the viewer with the check of `GET /files/items/{id}` (`access_level` on `files.item`, capped by `access.ViaAgent(ctx)`), refuses trashed items, records nothing (no Recent), and returns type, name, preview kind, mime and size (files), the search icon, `Context` (org · folder when the viewer can open it, else My drive / Shared folders / Shared with me), a first-line `Snippet` of text files, `Path` (`/files/<id>` or a registered type's Link), level and `UpdatedAt`; else `files.ErrItemNotFound`. `files.ItemIDFromPath(path)` reads `/files/<id>`. Use it for `channels.RegisterUnfurler("/files/", …)`, returning nil on not found.
 
 ## Connected platforms
 
@@ -149,7 +171,7 @@ rc, it, err := files.OpenFile(ctx, me, fileID)       // current version bytes
 
 - Registered types show in listings, search, Recent and Starred with their icon, open `Link`, take the ⋮ menu, move, rename, star, trash and share like files; New offers `CreatePath`, folder menus `ConvertPath`. They aren't copied or zipped.
 - Sharing writes go through access (≥ 1.1.0): a new shared folder's creator grant (`access.AddGrant`), the owner change on a cross-drive move and an account handover (`access.SetOwnerTree`), and the seed's grants and public link (`AddGrant`, `CreateLink`). files only reads access tables (lists, search, the admin view).
-- Out of scope: office previews, thumbnails generated server side (images preview at full size), resumable multipart uploads over 5 GB, comments, file locking, offline file sync on mobile, a native public-link screen, content search beyond small text files.
+- Out of scope: legacy .doc/.xls/.ppt, RTF and iWork previews (download), PDF thumbnails and an in-app PDF renderer (the browser's viewer; phones open it), server-side office conversion (LibreOffice), labels/tags, resumable multipart uploads over 5 GB (storage presigns single PUTs), offline sync on mobile, a native public-link or request screen, mention pickers on mobile, OCR.
 
 ## Provenance
 
@@ -157,6 +179,8 @@ New in the forum belt, modelled on Google Drive (My drive, shared drives, Shared
 
 ## Changes
 
+- 1.3.1: read seam for link cards (`ItemRef`, `ItemIDFromPath`, `ErrItemNotFound`).
+- 1.3.0: previews move to the core kit (`FilePreview`: office, zip, fonts, JSON, highlighted code, virtualised CSV, image zoom); server thumbnails and video posters; text extraction (PDF, OOXML, ODF) with a weighted search vector and Drive-style filters; comments with mentions, anchors and resolve; public link password, downloads off and opens; file requests; check out / in; folder colours; named and kept versions; owner hand-over; storage per person; agent tools `files_list_comments`, `files_comment`, extracted text and filters in `files_search`/`files_read_text`; mobile on the native kit with comments, request links and filter chips. Migration 1702. Go deps golang.org/x/image, ledongthuc/pdf (BSD-3), x/crypto bcrypt.
 - 1.2.0: connected drives (needs connectors ≥ 2.0 for connections; works without): Google Drive incl. shared drives, OneDrive and SharePoint browsed, previewed and changed live with each person's connection; Copy into Files, shortcuts (new item type `link`, `files_links`), Save to Google Drive / OneDrive; connected search hits; agent tools with `source` and per-platform write tools; `GET /v1/files/sources`. Migration 1701. Verified against mock Drive v3 and Graph APIs only.
 - 1.1.3: errors, the shared-folders permission, notifications and agent tool schemas name organizations with `orgs.Noun()` (orgs ≥ 1.3.0). The S3 paths (presigned upload, completion sniffing, forced-disposition downloads, versions, copies, empty files, zips, public links, purge and account deletion) ran against MinIO.
 - 1.1.2: copy names organizations with orgs' noun (`orgsNoun`…, orgs ≥ 1.2.0). Search results carry `OrgID` and `Context` (org · folder or drive section) and honour the `org_id` scope (search ≥ 1.1.0).

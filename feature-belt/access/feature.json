@@ -1,7 +1,7 @@
 {
   "name": "access",
   "title": "Access and teams",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "summary": "Teams inside an org, one sharing model every content feature uses (people, teams, the whole org, inherited from parents, public links), and org permissions admins assign to roles, teams and people.",
   "requires": [
     "orgs",

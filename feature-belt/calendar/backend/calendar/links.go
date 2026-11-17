@@ -30,7 +30,7 @@ const (
 type Question struct {
 	ID       string   `json:"id"`
 	Label    string   `json:"label"`
-	Type     string   `json:"type"` // short_text | long_text | phone | choice
+	Type     string   `json:"type"` // short_text | long_text | phone | email | choice | multi_choice | checkbox
 	Required bool     `json:"required"`
 	Options  []string `json:"options"`
 }
@@ -75,8 +75,41 @@ type BookingLink struct {
 	// (ProviderApp default); ConferenceConnectionID its account.
 	ConferenceProvider     string  `json:"conference_provider"`
 	ConferenceConnectionID *string `json:"conference_connection_id"`
+	// Kind: personal, round_robin (one host per booking, the next free
+	// one) or collective (every host; the event lands on each calendar).
+	// Team links belong to TeamID; Hosts are its members who take bookings.
+	Kind     string     `json:"kind"`
+	TeamID   *uuid.UUID `json:"team_id"`
+	TeamName *string    `json:"team_name"`
+	Hosts    []LinkHost `json:"hosts"`
+	// SingleUse links take one booking (UsedAt once taken).
+	SingleUse bool       `json:"single_use"`
+	UsedAt    *time.Time `json:"used_at"`
+	// RedirectURL is where the booking page sends the booker after booking.
+	RedirectURL string `json:"redirect_url"`
+	// BookerReminders: minutes before the start the booker is emailed.
+	BookerReminders []int `json:"booker_reminders"`
+	// AllowGuests lets the booker add up to 10 guests by email.
+	AllowGuests bool   `json:"allow_guests"`
+	Owner       Person `json:"owner"`
+	// CanEdit: the caller made it, or leads its team.
+	CanEdit bool `json:"can_edit"`
 
-	ownerID uuid.UUID
+	ownerID  uuid.UUID
+	onlyHost *uuid.UUID // slots for one host of a team link (rescheduling a round-robin booking)
+}
+
+// LinkHost is a team link's host: priority (4 highest) and weight decide
+// round robin; WeeklyHours + Timezone replace the link's hours for them.
+type LinkHost struct {
+	User         Person           `json:"user"`
+	Priority     int              `json:"priority"`
+	Weight       int              `json:"weight"`
+	WeeklyHours  *[]HoursInterval `json:"weekly_hours"`
+	Timezone     *string          `json:"timezone"`
+	Active       bool             `json:"active"`
+	LastBookedAt *time.Time       `json:"last_booked_at"`
+	RecentCount  int              `json:"recent_count"`
 }
 
 // LinkTarget names one of the owner's connected calendars.
@@ -90,22 +123,34 @@ const linkCols = `l.id, l.owner_id, l.org_id, o.name, l.audience, l.slug, l.titl
 	l.min_notice, l.max_days_ahead, l.max_per_day, l.slot_interval, l.questions, l.confirmation_message, l.color,
 	l.active, l.allow_reschedule, l.allow_cancel, l.manage_cutoff,
 	(SELECT count(*) FROM calendar_bookings b WHERE b.link_id = l.id AND b.status = 'confirmed' AND b.starts_at > now())::int,
-	l.created_at, l.updated_at, l.write_connection_id, l.write_calendar_id, l.conference_provider, l.conference_connection_id`
+	l.created_at, l.updated_at, l.write_connection_id, l.write_calendar_id, l.conference_provider, l.conference_connection_id,
+	l.kind, l.team_id, t.name, l.single_use, l.used_at, l.redirect_url, l.booker_reminders, l.allow_guests,
+	ou.display_name, ou.avatar_url`
 
-const linkFrom = ` FROM calendar_booking_links l LEFT JOIN orgs o ON o.id = l.org_id `
+const linkFrom = ` FROM calendar_booking_links l LEFT JOIN orgs o ON o.id = l.org_id LEFT JOIN access_teams t ON t.id = l.team_id
+	JOIN users ou ON ou.id = l.owner_id `
 
 func (s *Service) scanLink(row pgx.Row) (BookingLink, error) {
 	var l BookingLink
 	var durations []int32
 	var hours, overrides, questions []byte
 	var writeConn, writeCal *string
+	var reminders []int32
 	err := row.Scan(&l.ID, &l.ownerID, &l.OrgID, &l.OrgName, &l.Audience, &l.Slug, &l.Title, &l.Description, &durations,
 		&l.LocationType, &l.LocationValue, &l.Timezone, &hours, &overrides, &l.BufferBefore, &l.BufferAfter,
 		&l.MinNotice, &l.MaxDaysAhead, &l.MaxPerDay, &l.SlotInterval, &questions, &l.ConfirmationMessage, &l.Color,
 		&l.Active, &l.AllowReschedule, &l.AllowCancel, &l.ManageCutoff, &l.UpcomingCount, &l.CreatedAt, &l.UpdatedAt,
-		&writeConn, &writeCal, &l.ConferenceProvider, &l.ConferenceConnectionID)
+		&writeConn, &writeCal, &l.ConferenceProvider, &l.ConferenceConnectionID,
+		&l.Kind, &l.TeamID, &l.TeamName, &l.SingleUse, &l.UsedAt, &l.RedirectURL, &reminders, &l.AllowGuests,
+		&l.Owner.DisplayName, &l.Owner.AvatarURL)
 	if err != nil {
 		return l, err
+	}
+	l.Owner.ID = l.ownerID
+	l.Hosts = []LinkHost{}
+	l.BookerReminders = make([]int, 0, len(reminders))
+	for _, m := range reminders {
+		l.BookerReminders = append(l.BookerReminders, int(m))
 	}
 	if writeConn != nil && writeCal != nil {
 		l.AddTo = &LinkTarget{ConnectionID: *writeConn, CalendarID: *writeCal}
@@ -151,6 +196,23 @@ type linkInput struct {
 	AddTo                  json.RawMessage `json:"add_to"`
 	ConferenceProvider     *string         `json:"conference_provider"`
 	ConferenceConnectionID json.RawMessage `json:"conference_connection_id"`
+	Kind                   *string         `json:"kind"`
+	TeamID                 json.RawMessage `json:"team_id"`
+	Hosts                  *[]hostInput    `json:"hosts"`
+	SingleUse              *bool           `json:"single_use"`
+	RedirectURL            *string         `json:"redirect_url"`
+	BookerReminders        *[]int          `json:"booker_reminders"`
+	AllowGuests            *bool           `json:"allow_guests"`
+}
+
+// hostInput is a host in a team link's create/update body.
+type hostInput struct {
+	UserID      uuid.UUID        `json:"user_id"`
+	Priority    *int             `json:"priority"`
+	Weight      *int             `json:"weight"`
+	WeeklyHours *[]HoursInterval `json:"weekly_hours"`
+	Timezone    *string          `json:"timezone"`
+	Active      *bool            `json:"active"`
 }
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -251,6 +313,55 @@ func (s *Service) applyLinkInput(ctx context.Context, callerID uuid.UUID, l *Boo
 	if in.ConferenceProvider != nil {
 		l.ConferenceProvider = trimProvider(*in.ConferenceProvider)
 	}
+	if in.Kind != nil {
+		l.Kind = *in.Kind
+	}
+	if len(in.TeamID) > 0 {
+		l.TeamID = nil
+		if string(in.TeamID) != "null" {
+			var id uuid.UUID
+			if err := json.Unmarshal(in.TeamID, &id); err != nil {
+				return httpx.BadRequest("team_id must be an id or null.")
+			}
+			l.TeamID = &id
+		}
+	}
+	if in.Hosts != nil {
+		if len(*in.Hosts) > maxHosts {
+			return httpx.BadRequest("Up to 20 hosts per link.")
+		}
+		l.Hosts = make([]LinkHost, 0, len(*in.Hosts))
+		seen := map[uuid.UUID]bool{}
+		for _, h := range *in.Hosts {
+			if h.UserID == uuid.Nil || seen[h.UserID] {
+				return httpx.BadRequest("Each host needs a different user_id.")
+			}
+			seen[h.UserID] = true
+			lh := LinkHost{User: Person{ID: h.UserID}, Priority: 2, Weight: 100, Active: true, WeeklyHours: h.WeeklyHours, Timezone: h.Timezone}
+			if h.Priority != nil {
+				lh.Priority = *h.Priority
+			}
+			if h.Weight != nil {
+				lh.Weight = *h.Weight
+			}
+			if h.Active != nil {
+				lh.Active = *h.Active
+			}
+			l.Hosts = append(l.Hosts, lh)
+		}
+	}
+	if in.SingleUse != nil {
+		l.SingleUse = *in.SingleUse
+	}
+	if in.RedirectURL != nil {
+		l.RedirectURL = strings.TrimSpace(*in.RedirectURL)
+	}
+	if in.BookerReminders != nil {
+		l.BookerReminders = slices.Clone(*in.BookerReminders)
+	}
+	if in.AllowGuests != nil {
+		l.AllowGuests = *in.AllowGuests
+	}
 	if len(in.ConferenceConnectionID) > 0 {
 		l.ConferenceConnectionID = nil
 		if string(in.ConferenceConnectionID) != "null" {
@@ -303,6 +414,9 @@ func (s *Service) validateLinkTarget(ctx context.Context, callerID uuid.UUID, l 
 }
 
 func (s *Service) validateLink(ctx context.Context, callerID uuid.UUID, l *BookingLink) error {
+	if err := s.validateLinkDepth(ctx, callerID, l); err != nil {
+		return err
+	}
 	switch n := len([]rune(l.Title)); {
 	case n == 0:
 		return httpx.BadRequest("Add a title.")
@@ -429,11 +543,14 @@ func (s *Service) validateLink(ctx context.Context, callerID uuid.UUID, l *Booki
 			return httpx.BadRequest("Each question needs a label up to 200 characters.")
 		}
 		switch q.Type {
-		case "short_text", "long_text", "phone":
+		case "short_text", "long_text", "phone", "email", "checkbox":
 			q.Options = []string{}
-		case "choice":
+		case "choice", "multi_choice":
 			if len(q.Options) < 2 || len(q.Options) > 20 {
 				return httpx.BadRequest("Choice questions have 2 to 20 options.")
+			}
+			if slices.ContainsFunc(q.Options, func(o string) bool { return strings.Contains(o, "\n") }) {
+				return httpx.BadRequest("Options are one line each.")
 			}
 			for j, o := range q.Options {
 				o, _ = cleanText(o, 1000)
@@ -443,7 +560,7 @@ func (s *Service) validateLink(ctx context.Context, callerID uuid.UUID, l *Booki
 				q.Options[j] = o
 			}
 		default:
-			return httpx.BadRequest("Question types are short_text, long_text, phone or choice.")
+			return httpx.BadRequest("Question types are short_text, long_text, phone, email, choice, multi_choice or checkbox.")
 		}
 	}
 	return nil
@@ -473,10 +590,29 @@ func slugify(v string) string {
 	return out
 }
 
-func (s *Service) loadOwnLink(ctx context.Context, q db.Querier, ownerID, id uuid.UUID) (BookingLink, error) {
-	l, err := s.scanLink(q.QueryRow(ctx, `SELECT `+linkCols+linkFrom+`WHERE l.id = $1 AND l.owner_id = $2 AND l.deleted_at IS NULL`, id, ownerID))
+// loadOwnLink loads a link the caller made or, for a team link, sees as a
+// member of its team (CanEdit: they made it or lead the team), with hosts.
+func (s *Service) loadOwnLink(ctx context.Context, q db.Querier, callerID, id uuid.UUID) (BookingLink, error) {
+	l, err := s.scanLink(q.QueryRow(ctx, `SELECT `+linkCols+linkFrom+`WHERE l.id = $1 AND l.deleted_at IS NULL
+		AND (l.owner_id = $2 OR (l.team_id IS NOT NULL AND EXISTS (SELECT 1 FROM access_team_members tm WHERE tm.team_id = l.team_id AND tm.user_id = $2)))`, id, callerID))
 	if db.IsNoRows(err) {
 		return l, httpx.NotFound("That booking link doesn't exist.")
+	}
+	if err != nil {
+		return l, err
+	}
+	if err := s.fillLinkAccess(ctx, q, callerID, &l); err != nil {
+		return l, err
+	}
+	return l, nil
+}
+
+// loadEditableLink is loadOwnLink for changes: 403 for team members who
+// neither made the link nor lead its team.
+func (s *Service) loadEditableLink(ctx context.Context, q db.Querier, callerID, id uuid.UUID) (BookingLink, error) {
+	l, err := s.loadOwnLink(ctx, q, callerID, id)
+	if err == nil && !l.CanEdit {
+		return l, httpx.Forbidden("Only the person who made this link or the team's leads can change it.")
 	}
 	return l, err
 }
@@ -496,7 +632,8 @@ func (s *Service) listLinks(w http.ResponseWriter, r *http.Request) error {
 		cursorT = &c.T
 	}
 	rows, err := s.d.Pool.Query(r.Context(), `SELECT `+linkCols+linkFrom+`
-		WHERE l.owner_id = $1 AND l.deleted_at IS NULL
+		WHERE l.deleted_at IS NULL
+		  AND (l.owner_id = $1 OR (l.team_id IS NOT NULL AND EXISTS (SELECT 1 FROM access_team_members tm WHERE tm.team_id = l.team_id AND tm.user_id = $1)))
 		  AND ($2::timestamptz IS NULL OR (l.created_at, l.id) < ($2, $3::uuid))
 		ORDER BY l.created_at DESC, l.id DESC LIMIT $4`, id.UserID, cursorT, c.ID, p.Limit+1)
 	if err != nil {
@@ -513,6 +650,12 @@ func (s *Service) listLinks(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	rows.Close()
+	for i := range list {
+		if err := s.fillLinkAccess(r.Context(), s.d.Pool, id.UserID, &list[i]); err != nil {
+			return err
+		}
 	}
 	httpx.OK(w, httpx.NewPage(list, p.Limit, func(l BookingLink) any {
 		return map[string]any{"t": l.CreatedAt, "id": l.ID}
@@ -546,6 +689,7 @@ func (s *Service) newLinkDefaults(ctx context.Context, userID uuid.UUID) (Bookin
 		WeeklyHours: st.WorkingHours, DateOverrides: []DateOverride{}, MinNotice: 240, MaxDaysAhead: 60,
 		SlotInterval: 30, Questions: []Question{}, Color: "primary", Active: true, AllowReschedule: true,
 		AllowCancel: true, ManageCutoff: 60, ConferenceProvider: ProviderApp, ownerID: userID,
+		Kind: LinkPersonal, Hosts: []LinkHost{}, BookerReminders: []int{24 * 60, 60}, CanEdit: true,
 	}, nil
 }
 
@@ -611,18 +755,25 @@ func (s *Service) insertLink(ctx context.Context, ownerID uuid.UUID, l *BookingL
 	hours, _ := json.Marshal(l.WeeklyHours)
 	overrides, _ := json.Marshal(l.DateOverrides)
 	questions, _ := json.Marshal(l.Questions)
-	return s.d.Pool.QueryRow(ctx, `
-		INSERT INTO calendar_booking_links (owner_id, org_id, audience, slug, title, description, durations, location_type,
-		  location_value, timezone, weekly_hours, date_overrides, buffer_before, buffer_after, min_notice, max_days_ahead,
-		  max_per_day, slot_interval, questions, confirmation_message, color, active, allow_reschedule, allow_cancel, manage_cutoff,
-		  write_connection_id, write_calendar_id, conference_provider, conference_connection_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
-		  $26, $27, $28, $29)
-		RETURNING id`,
-		ownerID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
-		l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
-		l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule, l.AllowCancel,
-		l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID).Scan(newID)
+	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO calendar_booking_links (owner_id, org_id, audience, slug, title, description, durations, location_type,
+			  location_value, timezone, weekly_hours, date_overrides, buffer_before, buffer_after, min_notice, max_days_ahead,
+			  max_per_day, slot_interval, questions, confirmation_message, color, active, allow_reschedule, allow_cancel, manage_cutoff,
+			  write_connection_id, write_calendar_id, conference_provider, conference_connection_id,
+			  kind, team_id, single_use, redirect_url, booker_reminders, allow_guests)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+			  $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+			RETURNING id`,
+			ownerID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
+			l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
+			l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule, l.AllowCancel,
+			l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID,
+			l.Kind, l.TeamID, l.SingleUse, l.RedirectURL, toInt32(l.BookerReminders), l.AllowGuests).Scan(newID); err != nil {
+			return err
+		}
+		return saveHosts(ctx, tx, *newID, l.Hosts)
+	})
 }
 
 func (l *BookingLink) addToConn() *string {
@@ -649,9 +800,12 @@ func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
 	}
-	l, err := s.loadOwnLink(r.Context(), s.d.Pool, id.UserID, lid)
+	l, err := s.loadEditableLink(r.Context(), s.d.Pool, id.UserID, lid)
 	if err != nil {
 		return err
+	}
+	if in.Kind != nil && *in.Kind != l.Kind {
+		return httpx.BadRequest("A link's kind can't change; make a new link.")
 	}
 	if err := s.applyLinkInput(r.Context(), id.UserID, &l, in); err != nil {
 		return err
@@ -664,18 +818,28 @@ func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
 	hours, _ := json.Marshal(l.WeeklyHours)
 	overrides, _ := json.Marshal(l.DateOverrides)
 	questions, _ := json.Marshal(l.Questions)
-	_, err = s.d.Pool.Exec(r.Context(), `
-		UPDATE calendar_booking_links SET org_id = $3, audience = $4, slug = $5, title = $6, description = $7, durations = $8,
-		  location_type = $9, location_value = $10, timezone = $11, weekly_hours = $12, date_overrides = $13,
-		  buffer_before = $14, buffer_after = $15, min_notice = $16, max_days_ahead = $17, max_per_day = $18,
-		  slot_interval = $19, questions = $20, confirmation_message = $21, color = $22, active = $23,
-		  allow_reschedule = $24, allow_cancel = $25, manage_cutoff = $26, write_connection_id = $27, write_calendar_id = $28,
-		  conference_provider = $29, conference_connection_id = $30, updated_at = now()
-		WHERE id = $1 AND owner_id = $2`,
-		l.ID, id.UserID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
-		l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
-		l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule,
-		l.AllowCancel, l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID)
+	err = db.WithTx(r.Context(), s.d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), `
+			UPDATE calendar_booking_links SET org_id = $2, audience = $3, slug = $4, title = $5, description = $6, durations = $7,
+			  location_type = $8, location_value = $9, timezone = $10, weekly_hours = $11, date_overrides = $12,
+			  buffer_before = $13, buffer_after = $14, min_notice = $15, max_days_ahead = $16, max_per_day = $17,
+			  slot_interval = $18, questions = $19, confirmation_message = $20, color = $21, active = $22,
+			  allow_reschedule = $23, allow_cancel = $24, manage_cutoff = $25, write_connection_id = $26, write_calendar_id = $27,
+			  conference_provider = $28, conference_connection_id = $29, single_use = $30, redirect_url = $31,
+			  booker_reminders = $32, allow_guests = $33, used_at = CASE WHEN $30 THEN used_at END, updated_at = now()
+			WHERE id = $1`,
+			l.ID, l.OrgID, l.Audience, l.Slug, l.Title, l.Description, toInt32(l.Durations), l.LocationType,
+			l.LocationValue, l.Timezone, hours, overrides, l.BufferBefore, l.BufferAfter, l.MinNotice, l.MaxDaysAhead,
+			l.MaxPerDay, l.SlotInterval, questions, l.ConfirmationMessage, l.Color, l.Active, l.AllowReschedule,
+			l.AllowCancel, l.ManageCutoff, l.addToConn(), l.addToCal(), l.ConferenceProvider, l.ConferenceConnectionID,
+			l.SingleUse, l.RedirectURL, toInt32(l.BookerReminders), l.AllowGuests); err != nil {
+			return err
+		}
+		if in.Hosts != nil {
+			return saveHosts(r.Context(), tx, l.ID, l.Hosts)
+		}
+		return nil
+	})
 	if db.IsUniqueViolation(err, "calendar_booking_links_slug_key") {
 		return httpx.Conflict("That link name is taken. Try another.")
 	}
@@ -686,7 +850,7 @@ func (s *Service) updateLink(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	s.changed(r.Context(), "links", id.UserID)
+	s.changed(r.Context(), "links", append(s.linkWatchers(r.Context(), out), id.UserID)...)
 	httpx.OK(w, out)
 	return nil
 }
@@ -699,16 +863,20 @@ func (s *Service) deleteLink(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	l, err := s.loadEditableLink(r.Context(), s.d.Pool, id.UserID, lid)
+	if err != nil {
+		return err
+	}
 	tag, err := s.d.Pool.Exec(r.Context(), `
 		UPDATE calendar_booking_links SET deleted_at = now(), active = false, slug = slug || '~' || substr(md5(id::text), 1, 8), updated_at = now()
-		WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL`, lid, id.UserID)
+		WHERE id = $1 AND deleted_at IS NULL`, lid)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return httpx.NotFound("That booking link doesn't exist.")
 	}
-	s.changed(r.Context(), "links", id.UserID)
+	s.changed(r.Context(), "links", append(s.linkWatchers(r.Context(), l), id.UserID)...)
 	httpx.NoContent(w)
 	return nil
 }
@@ -730,7 +898,7 @@ func (s *Service) previewLink(w http.ResponseWriter, r *http.Request) error {
 	var l BookingLink
 	var err error
 	if in.LinkID != nil {
-		l, err = s.loadOwnLink(r.Context(), s.d.Pool, id.UserID, *in.LinkID)
+		l, err = s.loadEditableLink(r.Context(), s.d.Pool, id.UserID, *in.LinkID)
 	} else {
 		l, err = s.newLinkDefaults(r.Context(), id.UserID)
 	}
@@ -746,7 +914,9 @@ func (s *Service) previewLink(w http.ResponseWriter, r *http.Request) error {
 		placeholder := "Preview"
 		in.Link.Title = &placeholder
 	}
-	l.ownerID = id.UserID
+	if in.LinkID == nil {
+		l.ownerID = id.UserID
+	}
 	if err := s.applyLinkInput(r.Context(), id.UserID, &l, in.Link); err != nil {
 		return err
 	}
@@ -783,9 +953,13 @@ func (s *Service) linkSlots(ctx context.Context, q db.Querier, l BookingLink, fr
 		return []Slot{}, nil
 	}
 	pad := time.Duration(max(l.BufferBefore, l.BufferAfter)) * time.Minute
-	busy, err := s.busyFor(ctx, q, l.ownerID, lo.Add(-pad-time.Duration(duration)*time.Minute), hi.Add(pad+time.Duration(duration)*time.Minute), excludeBooking)
-	if err != nil {
-		return nil, err
+	var busy []busyItem
+	if l.Kind == LinkPersonal || l.Kind == "" {
+		var err error
+		busy, err = s.busyFor(ctx, q, l.ownerID, lo.Add(-pad-time.Duration(duration)*time.Minute), hi.Add(pad+time.Duration(duration)*time.Minute), excludeBooking)
+		if err != nil {
+			return nil, err
+		}
 	}
 	counts := map[string]int{}
 	if l.MaxPerDay != nil && l.ID != uuid.Nil {
@@ -820,5 +994,12 @@ func (s *Service) linkSlots(ctx context.Context, q db.Querier, l BookingLink, fr
 	if l.MaxPerDay != nil {
 		rules.maxPerDay = *l.MaxPerDay
 	}
-	return generateSlots(rules, lo, hi, busy, 2000), nil
+	if l.Kind == LinkPersonal || l.Kind == "" {
+		return generateSlots(rules, lo, hi, busy, 2000), nil
+	}
+	hosts, err := s.hostAvailability(ctx, q, l, rules, lo.Add(-pad-time.Duration(duration)*time.Minute), hi.Add(pad+time.Duration(duration)*time.Minute), excludeBooking)
+	if err != nil {
+		return nil, err
+	}
+	return teamSlots(generateSlots(rules, lo, hi, nil, 5000), hosts, l.Kind, rules.before, rules.after, 2000), nil
 }

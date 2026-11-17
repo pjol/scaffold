@@ -15,7 +15,7 @@
     "@scaffoldapp/ui-web": "workspace:*",
     "@tanstack/react-query": "^5.104.1",
     "lucide-react": "^1.55.0",
-    "next": "16.4.3",
+    "next": "16.4.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

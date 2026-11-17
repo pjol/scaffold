@@ -22,6 +22,27 @@ import { Composer } from "./Composer";
 import { MessageItem } from "./MessageItem";
 import { useMessageActions } from "./useMessageActions";
 
+const COLLAPSE_KEY = "scaffoldapp.channels.collapsed";
+
+/** /collapse is remembered per conversation on this device. */
+function readCollapsed(id: string): boolean {
+  try {
+    return (window.localStorage.getItem(COLLAPSE_KEY) ?? "").split(",").includes(id);
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsed(id: string, on: boolean): void {
+  try {
+    const list = (window.localStorage.getItem(COLLAPSE_KEY) ?? "").split(",").filter((x) => x && x !== id);
+    if (on) list.push(id);
+    window.localStorage.setItem(COLLAPSE_KEY, list.slice(-200).join(","));
+  } catch {
+    // Storage blocked: collapsing lasts until the page reloads.
+  }
+}
+
 export function messageNames(messages: readonly ChannelsCachedMessage[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const m of messages) {
@@ -76,6 +97,7 @@ export function ChatView({ channel, config, meId, around, onOpenThread, composer
   const [editing, setEditing] = useState<ChannelsCachedMessage | null>(null);
   const { actions, dialogs } = useMessageActions({ channel, onOpenThread, onEdit: setEditing });
   const [highlight, setHighlight] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(channel.id));
   // The read pointer when the channel opened: the "New" divider stays put while you read.
   const readAtOpen = useRef(channel.last_read_at);
 
@@ -182,7 +204,7 @@ export function ChatView({ channel, config, meId, around, onOpenThread, composer
   }, [messages, meId]);
 
   const lastOwn = useMemo(() => [...messages].reverse().find((m) => m.sender?.id === meId && m.kind === "text" && !m.deleted && !m.status), [messages, meId]);
-  const canInteract = channel.permissions.post;
+  const canInteract = channel.member && !channel.archived;
   const editWindowMs = config.edit_window_seconds * 1000;
 
   const goLatest = () => {
@@ -243,6 +265,7 @@ export function ChatView({ channel, config, meId, around, onOpenThread, composer
                       canInteract={canInteract}
                       canModerate={channel.permissions.edit}
                       editWindowMs={editWindowMs}
+                      collapsed={collapsed}
                     />
                   </div>
                 );
@@ -273,6 +296,10 @@ export function ChatView({ channel, config, meId, around, onOpenThread, composer
           config={config}
           editing={editing}
           onCancelEdit={() => setEditing(null)}
+          onCollapse={(c) => {
+            setCollapsed(c);
+            writeCollapsed(channel.id, c);
+          }}
           onEditLast={lastOwn && (config.edit_window_seconds === 0 || Date.now() - Date.parse(lastOwn.created_at) < config.edit_window_seconds * 1000) ? () => setEditing(lastOwn) : undefined}
           onSent={() => {
             atBottomRef.current = true;

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 
 // maxMarkReadIDs bounds an explicit mark-read batch.
 const maxMarkReadIDs = 500
+
+var kindFilterRE = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
 
 type Service struct {
 	d         *app.Deps
@@ -58,8 +61,18 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RateLimit(30, time.Hour)).Post("/devices", httpx.Handler(s.registerDevice))
 	r.Delete("/devices/{token}", httpx.Handler(s.deleteDevice))
 	r.Get("/notifications", httpx.Handler(s.listInbox))
+	r.Get("/notifications/groups", httpx.Handler(s.listGroups))
+	r.Get("/notifications/kinds", httpx.Handler(s.listKinds))
 	r.Get("/notifications/unread-count", httpx.Handler(s.getUnreadCount))
 	r.With(auth.RateLimit(120, time.Minute)).Post("/notifications/read", httpx.Handler(s.markRead))
+	r.With(auth.RateLimit(120, time.Minute)).Post("/notifications/unread", httpx.Handler(s.markUnread))
+	r.With(auth.RateLimit(60, time.Minute)).Post("/notifications/snooze", httpx.Handler(s.snooze))
+	r.With(auth.RateLimit(60, time.Minute)).Post("/notifications/unsnooze", httpx.Handler(s.unsnooze))
+	r.Get("/notifications/mutes", httpx.Handler(s.listMutes))
+	r.With(auth.RateLimit(60, time.Minute)).Post("/notifications/mutes", httpx.Handler(s.mute))
+	r.With(auth.RateLimit(60, time.Minute)).Delete("/notifications/mutes", httpx.Handler(s.unmute))
+	r.Get("/notifications/digest", httpx.Handler(s.getDigest))
+	r.With(auth.RateLimit(30, time.Minute)).Put("/notifications/digest", httpx.Handler(s.putDigest))
 	r.Get("/notifications/preferences", httpx.Handler(s.getPreferences))
 	r.With(auth.RateLimit(60, time.Minute)).Put("/notifications/preferences", httpx.Handler(s.putPreferences))
 }
@@ -72,6 +85,8 @@ func (s *Service) MountAdmin(r chi.Router) {
 func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "notifications.receipts", 5*time.Minute, s.checkReceipts)
 	go jobs.Every(ctx, s.d.Pool, "notifications.prune", time.Hour, s.prune)
+	go jobs.Every(ctx, s.d.Pool, "notifications.wake", 30*time.Second, s.wakeSnoozed)
+	go jobs.Every(ctx, s.d.Pool, "notifications.digest", 5*time.Minute, s.sendDigests)
 }
 
 // ---- DTOs ------------------------------------------------------------------
@@ -86,6 +101,14 @@ type Item struct {
 	Data      map[string]any `json:"data"`
 	ReadAt    *time.Time     `json:"read_at"`
 	CreatedAt time.Time      `json:"created_at"`
+	// SortAt orders the inbox: created_at, or when a snooze ended.
+	SortAt       time.Time  `json:"sort_at"`
+	SnoozedUntil *time.Time `json:"snoozed_until"`
+	// Resource is what it is about ("channels.channel:<id>", with
+	// "/thread:<id>" for a thread), for grouping and muting; "" for none.
+	Resource string `json:"resource"`
+	// Mutable: the person can mute Resource from the inbox (AllowMute).
+	Mutable bool `json:"mutable"`
 }
 
 // Event is the realtime "notification" payload: the item plus the fields of
@@ -189,18 +212,37 @@ type cursor struct {
 	ID uuid.UUID `json:"id"`
 }
 
-const itemCols = `id, kind, title, body, link, data, read_at, created_at`
+const itemCols = `id, kind, title, body, link, data, read_at, created_at, sort_at, snoozed_until, resource`
 
 func scanItem(row pgx.CollectableRow) (Item, error) {
 	var it Item
-	err := row.Scan(&it.ID, &it.Kind, &it.Title, &it.Body, &it.Link, &it.Data, &it.ReadAt, &it.CreatedAt)
+	err := row.Scan(&it.ID, &it.Kind, &it.Title, &it.Body, &it.Link, &it.Data, &it.ReadAt, &it.CreatedAt, &it.SortAt, &it.SnoozedUntil, &it.Resource)
 	if it.Data == nil {
 		it.Data = map[string]any{}
 	}
+	it.Mutable = muteAllowed(it.Resource)
 	return it, err
 }
 
-// listInbox is the caller's inbox, newest first; ?unread=true for unread only.
+// inboxFilter narrows an inbox list. Snoozed notifications show only in the
+// snoozed view.
+type inboxFilter struct {
+	UnreadOnly bool
+	Snoozed    bool   // only snoozed ones, soonest to wake first is not kept: newest first like the rest
+	Kind       string // a kind ("channels.mention") or a feature ("channels"); "" = all
+}
+
+func parseInboxFilter(r *http.Request) (inboxFilter, error) {
+	q := r.URL.Query()
+	f := inboxFilter{UnreadOnly: q.Get("unread") == "true", Snoozed: q.Get("snoozed") == "true", Kind: strings.TrimSpace(q.Get("kind"))}
+	if f.Kind != "" && !kindFilterRE.MatchString(f.Kind) {
+		return f, httpx.BadRequest("kind is a kind like channels.mention or a feature like channels.")
+	}
+	return f, nil
+}
+
+// listInbox is the caller's inbox, newest first: ?unread=true for unread
+// only, ?snoozed=true for the snoozed ones, ?kind= for one kind or feature.
 func (s *Service) listInbox(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	userID := auth.MustFromContext(ctx).UserID
@@ -209,12 +251,15 @@ func (s *Service) listInbox(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeCursor(p.Cursor, &c); err != nil {
 		return err
 	}
-	unreadOnly := r.URL.Query().Get("unread") == "true"
-	items, err := s.inbox(ctx, userID, unreadOnly, c, p.Limit+1)
+	f, err := parseInboxFilter(r)
 	if err != nil {
 		return err
 	}
-	out := InboxPage{Page: httpx.NewPage(items, p.Limit, func(it Item) any { return cursor{it.CreatedAt, it.ID} })}
+	items, err := s.inbox(ctx, userID, f, c, p.Limit+1)
+	if err != nil {
+		return err
+	}
+	out := InboxPage{Page: httpx.NewPage(items, p.Limit, func(it Item) any { return cursor{it.SortAt, it.ID} })}
 	if out.UnreadCount, err = unreadCount(ctx, s.d.Pool, userID); err != nil {
 		return err
 	}
@@ -222,13 +267,19 @@ func (s *Service) listInbox(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Service) inbox(ctx context.Context, userID uuid.UUID, unreadOnly bool, c cursor, limit int) ([]Item, error) {
+// inboxWhere is the filter part shared by the inbox, groups and kinds
+// queries: $1 user, $2 unread only, $3 snoozed view, $4 kind or feature.
+const inboxWhere = `user_id = $1 AND (NOT $2 OR read_at IS NULL)
+	AND (CASE WHEN $3 THEN snoozed_until > now() ELSE (snoozed_until IS NULL OR snoozed_until <= now()) END)
+	AND ($4 = '' OR kind = $4 OR kind LIKE $4 || '.%')`
+
+func (s *Service) inbox(ctx context.Context, userID uuid.UUID, f inboxFilter, c cursor, limit int) ([]Item, error) {
 	rows, err := s.d.Pool.Query(ctx, `
 		SELECT `+itemCols+` FROM notifications
-		WHERE user_id = $1 AND (NOT $2 OR read_at IS NULL)
-		  AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
-		ORDER BY created_at DESC, id DESC LIMIT $5`,
-		userID, unreadOnly, nullTime(c.T), c.ID, limit)
+		WHERE `+inboxWhere+`
+		  AND ($5::timestamptz IS NULL OR (sort_at, id) < ($5, $6))
+		ORDER BY sort_at DESC, id DESC LIMIT $7`,
+		userID, f.UnreadOnly, f.Snoozed, f.Kind, nullTime(c.T), c.ID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +298,8 @@ func (s *Service) getUnreadCount(w http.ResponseWriter, r *http.Request) error {
 type markReadReq struct {
 	IDs []uuid.UUID `json:"ids"`
 	All bool        `json:"all"`
+	// Resources marks every notification about these resources (a group).
+	Resources []string `json:"resources,omitempty"`
 }
 
 // markRead marks ids (or every unread row with all=true) read and returns
@@ -267,6 +320,19 @@ func (s *Service) markRead(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Service) markReadFor(ctx context.Context, userID uuid.UUID, req markReadReq) (int, error) {
+	if len(req.Resources) > 0 {
+		if req.All || len(req.IDs) > 0 {
+			return 0, httpx.BadRequest("Send ids, resources or all, one of them.")
+		}
+		ids, err := s.idsForResources(ctx, userID, req.Resources, true)
+		if err != nil {
+			return 0, err
+		}
+		req.IDs = ids
+		if len(ids) == 0 {
+			return unreadCount(ctx, s.d.Pool, userID)
+		}
+	}
 	switch {
 	case req.All && len(req.IDs) > 0:
 		return 0, httpx.BadRequest("Send ids or all, not both.")
@@ -277,7 +343,9 @@ func (s *Service) markReadFor(ctx context.Context, userID uuid.UUID, req markRea
 	}
 	var err error
 	if req.All {
-		_, err = s.d.Pool.Exec(ctx, `UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL`, userID)
+		// "Mark all read" covers the inbox as shown: not snoozed ones.
+		_, err = s.d.Pool.Exec(ctx, `UPDATE notifications SET read_at = now()
+			WHERE user_id = $1 AND read_at IS NULL AND (snoozed_until IS NULL OR snoozed_until <= now())`, userID)
 	} else {
 		_, err = s.d.Pool.Exec(ctx, `UPDATE notifications SET read_at = now()
 			WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL`, userID, req.IDs)

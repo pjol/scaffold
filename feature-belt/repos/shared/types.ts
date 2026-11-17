@@ -50,7 +50,12 @@ export interface ReposRepo {
   allow_merge_commit: boolean;
   allow_squash: boolean;
   delete_branch_on_merge: boolean;
+  /** The app's own: auto-merge may be turned on for pull requests. */
+  allow_auto_merge?: boolean;
   open_pulls: number;
+  /** The app's own repositories (connected ones leave these out). */
+  open_issues?: number;
+  releases?: number;
   size_bytes: number;
   pushed_at: string | null;
   created_at: string;
@@ -114,6 +119,8 @@ export interface ReposUpdateRequest {
   allow_merge_commit?: boolean;
   allow_squash?: boolean;
   delete_branch_on_merge?: boolean;
+  allow_rebase?: boolean;
+  allow_auto_merge?: boolean;
 }
 
 export interface ReposProtection {
@@ -125,6 +132,10 @@ export interface ReposProtection {
   allow_force_push: boolean;
   allow_deletion: boolean;
   created_at: string;
+  /** Approval from a code owner (CODEOWNERS on the base) of every changed file. */
+  require_code_owner_review: boolean;
+  /** Status contexts that must succeed before merging. */
+  required_checks: string[];
 }
 
 export type ReposProtectionRequest = Partial<Omit<ReposProtection, "id" | "created_at">>;
@@ -357,7 +368,7 @@ export interface ReposPull {
   head_sha: string;
   base_sha: string;
   author: ReposUser | null;
-  merge_method: "merge" | "squash" | null;
+  merge_method: "merge" | "squash" | "rebase" | null;
   merge_commit_sha: string | null;
   merged_by: ReposUser | null;
   merged_at: string | null;
@@ -376,9 +387,40 @@ export interface ReposPull {
   draft?: boolean;
   web_url?: string;
   source?: SourceRef | null;
+  /** The app's own repositories: */
+  labels?: ReposLabel[];
+  assignees?: ReposUser[];
+  milestone?: ReposMilestoneRef | null;
+  auto_merge?: ReposAutoMerge | null;
+  /** The head's combined status ("" without statuses). */
+  checks_state?: ReposChecksState;
+  can_triage?: boolean;
+  /** Detail: issues a closing keyword in the description closes on merge. */
+  closing_issues?: ReposIssueLink[];
+  reactions?: ReposReaction[];
+  mentions?: ReposMention[];
 }
 
-export type ReposPullPage = Page<ReposPull>;
+export type ReposChecksState = "success" | "failure" | "pending" | "";
+
+export interface ReposAutoMerge {
+  method: ReposMergeMethod;
+  enabled_by: ReposUser | null;
+  enabled_at: string;
+}
+
+export interface ReposIssueLink {
+  number: number;
+  title: string;
+  state: ReposIssueState;
+}
+
+export interface ReposPullPage extends Page<ReposPull> {
+  /** Totals for the query without its state (the app's own). */
+  counts?: ReposIssueCounts;
+  /** Qualifiers the search didn't understand. */
+  ignored?: string[];
+}
 
 export interface ReposOpenPullRequest {
   title: string;
@@ -386,12 +428,18 @@ export interface ReposOpenPullRequest {
   head: string;
   base?: string;
   reviewers?: string[];
+  draft?: boolean;
+  labels?: string[];
+  assignees?: string[];
+  milestone_id?: string | null;
 }
 
 export interface ReposUpdatePullRequest {
   title?: string;
   body?: string;
   base?: string;
+  /** "" clears. */
+  milestone_id?: string;
 }
 
 export interface ReposComment {
@@ -410,6 +458,13 @@ export interface ReposComment {
   deleted: boolean;
   created_at: string;
   can_edit: boolean;
+  /** Multi-line comments cover start_line..line. */
+  start_line?: number | null;
+  /** In your review that isn't submitted yet (only you see it). */
+  pending?: boolean;
+  /** The commit that applied this comment's suggestion. */
+  suggestion_applied_sha?: string | null;
+  reactions?: ReposReaction[];
 }
 
 export interface ReposReview {
@@ -434,7 +489,20 @@ export type ReposEventKind =
   | "retitled"
   | "base_changed"
   | "branch_deleted"
-  | "approvals_dismissed";
+  | "approvals_dismissed"
+  | "ready_for_review"
+  | "converted_to_draft"
+  | "labeled"
+  | "unlabeled"
+  | "assigned"
+  | "unassigned"
+  | "milestoned"
+  | "demilestoned"
+  | "referenced"
+  | "auto_merge_enabled"
+  | "auto_merge_disabled"
+  | "branch_updated"
+  | "suggestions_applied";
 
 export interface ReposEvent {
   id: string;
@@ -471,8 +539,12 @@ export interface ReposCommentRequest {
   body: string;
   path?: string;
   line?: number;
+  /** Multi-line: the first line (same side). */
+  start_line?: number;
   side?: "old" | "new";
   reply_to?: string;
+  /** Add to your pending review instead of posting now. */
+  pending?: boolean;
 }
 
 export interface ReposReviewRequest {
@@ -481,7 +553,7 @@ export interface ReposReviewRequest {
   comments?: ReposCommentRequest[];
 }
 
-export type ReposMergeState = "clean" | "conflicts" | "blocked" | "up_to_date" | "missing_branch" | "merged" | "closed";
+export type ReposMergeState = "clean" | "conflicts" | "blocked" | "up_to_date" | "missing_branch" | "merged" | "closed" | "draft";
 
 export interface ReposMergeability {
   state: ReposMergeState;
@@ -496,6 +568,16 @@ export interface ReposMergeability {
   base_sha: string;
   delete_branch: boolean;
   can_delete_branch: boolean;
+  /** The app's own repositories: */
+  behind?: number;
+  can_update_branch?: boolean;
+  checks?: ReposChecks;
+  required_checks?: string[];
+  /** Code owners still to approve, when the base's rule requires them. */
+  code_owners?: string[];
+  can_auto_merge?: boolean;
+  /** Why rebasing isn't possible ("" when it is). */
+  rebase_blocked?: string;
 }
 
 /** "rebase" on GitHub repositories that allow it. */
@@ -516,6 +598,8 @@ export interface ReposCheck {
   description: string;
   url: string;
   allow_failure: boolean;
+  /** Required by branch protection (the app's own). */
+  required?: boolean;
 }
 
 /** Every check on a commit (`GET /v1/repos/{id}/commits/{sha}/checks`); "none" for the app's own. */
@@ -625,5 +709,338 @@ declare module "../types" {
     "repos.refs_changed": { repo_id: string; via: string };
     "repos.pull_changed": { repo_id: string; number: number };
     "repos.repo_changed": { repo_id: string };
+    "repos.issue_changed": { repo_id: string; number: number };
+    "repos.status_changed": { repo_id: string; sha: string };
   }
+}
+
+// ---- issues, labels, milestones -----------------------------------------------------------
+
+/** A label tone from the design tokens (rendered like Badge tones). */
+export type ReposLabelColor = "neutral" | "primary" | "accent" | "success" | "warning" | "danger" | "info";
+
+export interface ReposLabel {
+  id: string;
+  name: string;
+  color: ReposLabelColor;
+  description: string;
+}
+
+/** `GET /v1/repos/{id}/labels` rows. */
+export interface ReposLabelRow extends ReposLabel {
+  open_issues: number;
+  open_pulls: number;
+}
+
+export interface ReposLabelRequest {
+  name?: string;
+  color?: ReposLabelColor;
+  description?: string;
+}
+
+export interface ReposMilestoneRef {
+  id: string;
+  title: string;
+  due_on: string | null;
+  state: "open" | "closed";
+}
+
+export interface ReposMilestone extends ReposMilestoneRef {
+  description: string;
+  closed_at: string | null;
+  open_items: number;
+  closed_items: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReposMilestoneRequest {
+  title?: string;
+  description?: string;
+  /** YYYY-MM-DD, "" clears. */
+  due_on?: string;
+  state?: "open" | "closed";
+}
+
+export type ReposReactionEmoji = "+1" | "-1" | "laugh" | "hooray" | "confused" | "heart" | "rocket" | "eyes";
+
+export interface ReposReaction {
+  emoji: ReposReactionEmoji;
+  count: number;
+  me: boolean;
+}
+
+export type ReposReactionSubject = "issue" | "issue_comment" | "pull" | "pull_comment";
+
+/** A <@uuid> mention resolved for display. */
+export interface ReposMention {
+  id: string;
+  display_name: string;
+}
+
+export type ReposIssueState = "open" | "closed";
+export type ReposIssueReason = "completed" | "not_planned";
+
+export interface ReposLinkedPull {
+  number: number;
+  title: string;
+  state: ReposPullState;
+  draft: boolean;
+  closes: boolean;
+}
+
+export interface ReposIssue {
+  id: string;
+  repo_id: string;
+  number: number;
+  title: string;
+  /** Detail only ("" in lists). */
+  body: string;
+  state: ReposIssueState;
+  state_reason: ReposIssueReason | null;
+  author: ReposUser | null;
+  closed_by: ReposUser | null;
+  closed_at: string | null;
+  milestone: ReposMilestoneRef | null;
+  labels: ReposLabel[];
+  assignees: ReposUser[];
+  locked: boolean;
+  pinned: boolean;
+  comment_count: number;
+  linked_pulls: number;
+  created_at: string;
+  updated_at: string;
+  reactions?: ReposReaction[];
+  pulls?: ReposLinkedPull[];
+  mentions?: ReposMention[];
+  can_edit: boolean;
+  can_triage: boolean;
+  can_comment: boolean;
+  can_delete: boolean;
+}
+
+export interface ReposIssueCounts {
+  open: number;
+  closed: number;
+}
+
+export interface ReposIssuePage extends Page<ReposIssue> {
+  counts: ReposIssueCounts;
+  ignored: string[];
+}
+
+export interface ReposCreateIssueRequest {
+  title: string;
+  body?: string;
+  labels?: string[];
+  assignees?: string[];
+  milestone_id?: string | null;
+  /** A template file name from `GET /templates?kind=issue`. */
+  template?: string;
+}
+
+export interface ReposUpdateIssueRequest {
+  title?: string;
+  body?: string;
+  state?: ReposIssueState;
+  state_reason?: ReposIssueReason;
+  /** "" clears. */
+  milestone_id?: string;
+  locked?: boolean;
+  pinned?: boolean;
+}
+
+export interface ReposIssueComment {
+  id: string;
+  author: ReposUser | null;
+  body: string;
+  edited_at: string | null;
+  deleted: boolean;
+  created_at: string;
+  reactions: ReposReaction[];
+  can_edit: boolean;
+  can_delete: boolean;
+}
+
+export type ReposIssueEventKind =
+  | "closed"
+  | "reopened"
+  | "renamed"
+  | "labeled"
+  | "unlabeled"
+  | "assigned"
+  | "unassigned"
+  | "milestoned"
+  | "demilestoned"
+  | "locked"
+  | "unlocked"
+  | "pinned"
+  | "unpinned"
+  | "referenced";
+
+export interface ReposIssueEvent {
+  id: string;
+  kind: ReposIssueEventKind;
+  actor: ReposUser | null;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
+export type ReposIssueTimelineItem =
+  | { type: "comment"; at: string; comment: ReposIssueComment }
+  | { type: "event"; at: string; event: ReposIssueEvent };
+
+export interface ReposIssueTimeline {
+  items: ReposIssueTimelineItem[];
+  mentions: ReposMention[];
+}
+
+/** An issue or pull request template from the default branch. */
+export interface ReposTemplate {
+  file: string;
+  name: string;
+  about: string;
+  title: string;
+  body: string;
+  labels: string[];
+  assignees: string[];
+}
+
+// ---- pull request depth -------------------------------------------------------------------
+
+export interface ReposPendingReview {
+  id: string | null;
+  comments: number;
+  commit_sha: string;
+}
+
+export interface ReposApplySuggestionsRequest {
+  comment_ids: string[];
+  message?: string;
+  expected_head?: string;
+}
+
+// ---- statuses, CI tokens ------------------------------------------------------------------
+
+export interface ReposCIToken {
+  id: string;
+  name: string;
+  prefix: string;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface ReposCITokens {
+  items: ReposCIToken[];
+  /** Where CI posts: POST <status_url> with Authorization: Bearer <token>. */
+  status_url: string;
+}
+
+export interface ReposCreatedCIToken {
+  token: ReposCIToken;
+  secret: string;
+}
+
+// ---- releases -----------------------------------------------------------------------------
+
+export interface ReposReleaseAsset {
+  id: string;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  download_count: number;
+  created_at: string;
+}
+
+export interface ReposRelease {
+  id: string;
+  tag: string;
+  name: string;
+  body: string;
+  draft: boolean;
+  prerelease: boolean;
+  target_sha: string;
+  author: ReposUser | null;
+  published_at: string | null;
+  created_at: string;
+  latest: boolean;
+  assets: ReposReleaseAsset[];
+  mentions: ReposMention[];
+}
+
+export interface ReposReleaseRequest {
+  tag?: string;
+  /** Branch or commit for a new tag (default: the default branch). */
+  target?: string;
+  name?: string;
+  body?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
+// ---- archives, insights, webhooks ---------------------------------------------------------
+
+export type ReposArchiveFormat = "zip" | "tar.gz";
+
+export interface ReposArchiveLink {
+  url: string;
+  name: string;
+  sha: string;
+}
+
+export interface ReposContributor {
+  name: string;
+  user: ReposUser | null;
+  commits: number;
+  additions: number;
+  deletions: number;
+  first: string;
+  last: string;
+}
+
+export interface ReposInsights {
+  branch: string;
+  sha: string;
+  total_commits: number;
+  truncated: boolean;
+  contributors: ReposContributor[];
+  weeks: { week: string; commits: number }[];
+  open_issues: number;
+  closed_issues: number;
+  open_pulls: number;
+  merged_pulls: number;
+}
+
+export type ReposWebhookEvent = "push" | "pull_request" | "pull_request_review" | "issues" | "issue_comment" | "release" | "status";
+
+export interface ReposWebhook {
+  id: string;
+  url: string;
+  events: ReposWebhookEvent[];
+  active: boolean;
+  last_status: number | null;
+  last_delivery_at: string | null;
+  created_at: string;
+  /** Only in the response that created it. */
+  secret?: string;
+}
+
+export interface ReposWebhookRequest {
+  url?: string;
+  events?: ReposWebhookEvent[];
+  active?: boolean;
+}
+
+export interface ReposWebhookDelivery {
+  id: string;
+  event: string;
+  action: string;
+  status_code: number | null;
+  error: string;
+  duration_ms: number;
+  redelivery_of: string | null;
+  created_at: string;
+  /** Detail only. */
+  payload?: string;
+  response?: string;
 }

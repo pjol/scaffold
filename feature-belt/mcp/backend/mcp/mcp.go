@@ -1,10 +1,12 @@
-// Package mcp serves the app as an MCP server for agents. Two ways in, both
+// Package mcp serves the app as an MCP server for agents. Three ways in, all
 // acting as one person with that person's permissions: personal API keys
-// (read or read+write) and OAuth 2.1, so remote connectors (Claude, ChatGPT,
-// Cursor, Claude Code) are added by URL and the person signs in. The
-// stateless streamable-HTTP endpoint exposes every module's app.ToolProvider
-// tools, run as the caller. Distilled from MOX (internal/mcpserver,
-// internal/access) on the official Go SDK; OAuth from OLEARY/crm.
+// (read or read+write); OAuth 2.1, so remote connectors (Claude, ChatGPT,
+// Cursor, Claude Code) are added by URL and the person signs in; and AAuth,
+// where an agent signs every request and its person server vouches for whom
+// it acts for (aauth.go). The stateless streamable-HTTP endpoint exposes
+// every module's app.ToolProvider tools, run as the caller. Distilled from
+// MOX (internal/mcpserver, internal/access) on the official Go SDK; OAuth
+// from OLEARY/crm; the AAuth library from Sayso.
 package mcp
 
 import (
@@ -29,6 +31,7 @@ import (
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"scaffoldapp/backend/internal/aauth"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/config"
@@ -38,7 +41,7 @@ import (
 )
 
 // Version is reported to MCP clients and in the server card.
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // toolTimeout bounds one tool call (the root group has no request timeout).
 const toolTimeout = 15 * time.Second
@@ -49,6 +52,7 @@ type Service struct {
 	ratePerMin   int
 	oauth        oauthConfig
 	metadataHTTP *http.Client
+	aauth        *aauthResource // nil when AAuth is off
 
 	once        sync.Once
 	readServer  *sdk.Server
@@ -56,6 +60,7 @@ type Service struct {
 	tools       []exposedTool
 	writeTools  map[string]bool
 	handler     http.Handler
+	inner       http.Handler // what runs once a caller is identified: rate limit, SDK
 }
 
 type exposedTool struct {
@@ -83,19 +88,21 @@ func New(d *app.Deps) *Service {
 	if s.oauth.refreshTTL < s.oauth.accessTTL || s.oauth.refreshTTL > 365*24*time.Hour {
 		config.Problem("MCP_OAUTH_REFRESH_TTL must be at least MCP_OAUTH_ACCESS_TTL and at most 8760h (got %s)", s.oauth.refreshTTL)
 	}
-	// Denying a connection must work before the Terms are accepted; allowing
-	// checks consent in the handler.
-	legal.Exempt("/v1/mcp/oauth/decision")
+	// Denying a connection (or a link) must work before the Terms are
+	// accepted; allowing checks consent in the handler.
+	legal.Exempt("/v1/mcp/oauth/decision", "/v1/mcp/aauth/interactions")
 	slog.Info("mcp: oauth", "enabled", s.oauthEnabled(), "client_metadata_documents", s.oauth.metadataDocuments)
+	s.aauth = newAAuth(s)
 	return s
 }
 
 func (s *Service) Name() string { return "mcp" }
 
 // MountRoot serves, at the server root where clients look for them: the MCP
-// endpoint, its server card, the OAuth discovery documents and the
-// authorization server's endpoints. The root group applies the per-IP rate
-// limit only; each handler authenticates what it needs.
+// endpoint, its server card, the OAuth discovery documents, the
+// authorization server's endpoints and the AAuth resource's. The root group
+// applies the per-IP rate limit only; each handler authenticates what it
+// needs.
 func (s *Service) MountRoot(r chi.Router) {
 	r.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.mcpHandler().ServeHTTP(w, r) }))
 	r.Get("/.well-known/mcp.json", s.serverCard)
@@ -119,6 +126,9 @@ func (s *Service) MountRoot(r chi.Router) {
 		return httpx.KeyByClientIP(r)
 	}, httprate.WithLimitHandler(oauthRateLimited))).Post("/oauth/token", s.token)
 	r.Post("/oauth/revoke", s.revoke)
+	if s.aauth != nil {
+		s.aauth.mountRoot(r)
+	}
 }
 
 func oauthRateLimited(w http.ResponseWriter, _ *http.Request) {
@@ -134,6 +144,11 @@ func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RateLimit(30, time.Minute)).Post("/mcp/oauth/decision", httpx.Handler(s.decide))
 	r.Get("/mcp/connections", httpx.Handler(s.listConnections))
 	r.Delete("/mcp/connections/{id}", httpx.Handler(s.revokeConnection))
+	r.With(auth.RateLimit(20, time.Minute)).Post("/mcp/aauth/interactions", httpx.Handler(s.claimInteraction))
+	r.Get("/mcp/aauth/interactions/{id}", httpx.Handler(s.describeInteraction))
+	r.With(auth.RateLimit(30, time.Minute)).Post("/mcp/aauth/interactions/{id}/decision", httpx.Handler(s.decideInteraction))
+	r.Get("/mcp/aauth/links", httpx.Handler(s.listLinks))
+	r.Delete("/mcp/aauth/links/{id}", httpx.Handler(s.unlink))
 }
 
 func (s *Service) MountAdmin(r chi.Router) {
@@ -141,6 +156,8 @@ func (s *Service) MountAdmin(r chi.Router) {
 	r.Delete("/mcp/keys/{id}", httpx.Handler(s.adminRevokeKey))
 	r.Get("/mcp/connections", httpx.Handler(s.adminListConnections))
 	r.Delete("/mcp/connections/{id}", httpx.Handler(s.adminRevokeConnection))
+	r.Get("/mcp/aauth/links", httpx.Handler(s.adminListLinks))
+	r.Delete("/mcp/aauth/links/{id}", httpx.Handler(s.adminUnlink))
 }
 
 // Start prunes OAuth rows nothing can use again, hourly.
@@ -223,16 +240,24 @@ func (s *Service) build() {
 		}, &sdkauth.RequireBearerTokenOptions{AllowMissingExpiration: true})
 		limit := httprate.LimitBy(s.ratePerMin, time.Minute, func(r *http.Request) (string, error) {
 			if p, _ := r.Context().Value(principalKey{}).(*principal); p != nil {
+				if p.signed != nil { // per agent: one link serves every agent of that account
+					return "mcp:" + p.via + ":" + p.id.String() + ":" + p.signed.Thumbprint, nil
+				}
 				return "mcp:" + p.via + ":" + p.id.String(), nil
 			}
 			return httpx.KeyByClientIP(r)
 		}, httprate.WithLimitHandler(httpx.RateLimitedHandler))
-		s.handler = s.authenticate(limit(bearer(h)))
+		s.inner = limit(bearer(h))
+		s.handler = s.authenticate(s.inner)
 		slog.Info("mcp: tools exposed", "count", len(s.tools), "write", len(s.writeTools))
 	})
 }
 
-const instructions = `Tools for Scaffold App. Every call acts as the person who connected (by signing in over OAuth, or with their API key) and sees only what that person can see in the app. Read access lists read-only tools; read and write access also lists tools that change data. The person can narrow this per feature in their agent settings: tools they turned off are not listed, and a change may come back as a suggestion they review instead of running (the result says so; it is not an error). A failed call returns a tool result marked as an error whose text is "code: message". Calls are limited per connection per minute.`
+const instructions = `Tools for Scaffold App. Every call acts as the person who connected (by signing in over OAuth, with their API key, or through their AAuth person server) and sees only what that person can see in the app. Read access lists read-only tools; read and write access also lists tools that change data. The person can narrow this per feature in their agent settings: tools they turned off are not listed, and a change may come back as a suggestion they review instead of running (the result says so; it is not an error). A failed call returns a tool result marked as an error whose text is "code: message". Calls are limited per connection per minute.`
+
+// aauthDescription is the resource metadata's description, for consent
+// screens at person servers.
+const aauthDescription = "**Scaffold App**: agents use its MCP tools at `/mcp`, as the person they act for and with that person's permissions."
 
 // newServer builds an MCP server with the tools a scope allows: read-only
 // ones, plus write ones when write is true, minus hidden.
@@ -294,14 +319,21 @@ func (s *Service) challenge(extra string) string {
 	return fmt.Sprintf(`Bearer resource_metadata=%q, scope="read write"%s`, s.resourceMetadataURL(), extra)
 }
 
-// authenticate resolves the bearer (API key or OAuth access token) before the
-// SDK sees the request and answers failures in the API's JSON error envelope,
-// with the headers OAuth clients act on.
+// authenticate identifies the caller before the SDK sees the request: a
+// signed request takes the AAuth path, anything else must carry a bearer (API
+// key or OAuth access token). Failures are answered in the API's JSON error
+// envelope, with the headers OAuth and AAuth clients act on.
 func (s *Service) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.aauth.advertise(w)
+		if s.aauth != nil && signed(r) {
+			s.aauth.serveMCP(w, r, next)
+			return
+		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || strings.TrimSpace(token) == "" {
 			w.Header().Set("WWW-Authenticate", s.challenge(""))
+			s.aauth.askPersonToken(w)
 			httpx.Fail(w, r, errBadKey)
 			return
 		}
@@ -314,45 +346,65 @@ func (s *Service) authenticate(next http.Handler) http.Handler {
 			httpx.Fail(w, r, err)
 			return
 		}
-		// Stateless with JSON responses: no stream to open (GET) and no session
-		// to end (DELETE). Every request is a POST the endpoint can inspect.
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", "POST")
-			httpx.Fail(w, r, httpx.NewError(http.StatusMethodNotAllowed, "method_not_allowed", "Send JSON-RPC requests with POST."))
+		s.serveAuthenticated(w, r, p, next)
+	})
+}
+
+var errPostOnly = httpx.NewError(http.StatusMethodNotAllowed, "method_not_allowed", "Send JSON-RPC requests with POST.")
+
+// serveAuthenticated runs the checks every identified caller passes, then
+// next: POST only, a body within 1 MiB, tools-only methods, and the scope a
+// write tool needs.
+func (s *Service) serveAuthenticated(w http.ResponseWriter, r *http.Request, p *principal, next http.Handler) {
+	// Stateless with JSON responses: no stream to open (GET) and no session
+	// to end (DELETE). Every request is a POST the endpoint can inspect.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		httpx.Fail(w, r, errPostOnly)
+		return
+	}
+	calls, body, ok := peekRPC(r)
+	if !ok {
+		httpx.Fail(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, "payload_too_large", "Requests are limited to 1 MiB."))
+		return
+	}
+	r.Body = body
+	// Tools only: every other method (resources, prompts, completion,
+	// logging…) is refused here, so nothing but a gated tool call runs.
+	for _, m := range calls {
+		if !allowedMethod(m.Method) {
+			methodNotFound(w, calls, m.Method)
 			return
 		}
-		calls, body, ok := peekRPC(r)
-		if !ok {
-			httpx.Fail(w, r, httpx.NewError(http.StatusRequestEntityTooLarge, "payload_too_large", "Requests are limited to 1 MiB."))
-			return
-		}
-		r.Body = body
-		// Tools only: every other method (resources, prompts, completion,
-		// logging…) is refused here, so nothing but a gated tool call runs.
-		for _, m := range calls {
-			if !allowedMethod(m.Method) {
-				methodNotFound(w, calls, m.Method)
-				return
-			}
-		}
-		ctx := context.WithValue(r.Context(), rpcKey{}, calls)
-		if tool := s.writeToolIn(calls); tool != "" && !p.canWrite() {
-			if p.via == "oauth" {
-				// Step-up (MCP spec, scope challenge): a 403 the client can
-				// answer by asking the person for write access.
-				w.Header().Set("WWW-Authenticate", s.challenge(
-					`, error="insufficient_scope", error_description="`+tool+` changes data and needs the write scope"`))
-				httpx.Fail(w, r, httpx.NewError(http.StatusForbidden, "insufficient_scope",
-					"This tool changes data. Reconnect the app with read and write access."))
-				return
-			}
+	}
+	ctx := context.WithValue(r.Context(), rpcKey{}, calls)
+	if tool := s.writeToolIn(calls); tool != "" && !p.canWrite() {
+		switch p.via {
+		case "aauth":
+			// Step-up: a resource token for read and write, which the person
+			// server puts to the person.
+			s.aauth.challenge(w, r, p.signed, ScopeRead+" "+ScopeWrite)
+		case "oauth":
+			// Step-up (MCP spec, scope challenge): a 403 the client can
+			// answer by asking the person for write access.
+			w.Header().Set("WWW-Authenticate", s.challenge(
+				`, error="insufficient_scope", error_description="`+tool+` changes data and needs the write scope"`))
+			httpx.Fail(w, r, httpx.NewError(http.StatusForbidden, "insufficient_scope",
+				"This tool changes data. Reconnect the app with read and write access."))
+		default:
 			httpx.Fail(w, r, httpx.NewError(http.StatusForbidden, "scope_required",
 				"This key is read only. Create a key with read and write access to use "+tool+"."))
-			return
 		}
-		ctx = auth.WithAgent(context.WithValue(ctx, principalKey{}, p), p.agent())
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		return
+	}
+	if p.signed != nil {
+		// The SDK's bearer middleware hands the principal to tool handlers and
+		// wants a bearer to do it; the caller was identified by signature.
+		r.Header = r.Header.Clone()
+		r.Header.Set("Authorization", "Bearer aauth-signed")
+	}
+	ctx = auth.WithAgent(context.WithValue(ctx, principalKey{}, p), p.agent())
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 type rpcKey struct{}
@@ -367,15 +419,19 @@ type rpcCall struct {
 }
 
 // peekRPC reads the JSON-RPC message(s) in a POST body and returns a reader
-// that replays it; ok is false for bodies over 1 MiB. A body that isn't JSON
-// yields no calls (the SDK answers with a parse error and runs nothing).
+// that replays it; ok is false for bodies over 1 MiB.
 func peekRPC(r *http.Request) ([]rpcCall, io.ReadCloser, bool) {
 	const peek = 1 << 20
 	buf, err := io.ReadAll(io.LimitReader(r.Body, peek+1))
 	if err != nil || len(buf) > peek {
 		return nil, nil, false
 	}
-	body := io.NopCloser(bytes.NewReader(buf))
+	return parseRPC(buf), io.NopCloser(bytes.NewReader(buf)), true
+}
+
+// parseRPC reads the JSON-RPC message(s) in a body. A body that isn't JSON
+// yields no calls (the SDK answers with a parse error and runs nothing).
+func parseRPC(buf []byte) []rpcCall {
 	var msgs []rpcCall
 	if t := bytes.TrimSpace(buf); len(t) > 0 && t[0] == '[' {
 		_ = json.Unmarshal(t, &msgs)
@@ -385,7 +441,7 @@ func peekRPC(r *http.Request) ([]rpcCall, io.ReadCloser, bool) {
 			msgs = []rpcCall{one}
 		}
 	}
-	return msgs, body, true
+	return msgs
 }
 
 // allowedMethod: the lifecycle, ping and tools. Messages without a method
@@ -568,6 +624,7 @@ type cardTool struct {
 // serverCard is GET /.well-known/mcp.json: what an agent needs to connect.
 func (s *Service) serverCard(w http.ResponseWriter, r *http.Request) {
 	s.build()
+	s.aauth.advertise(w)
 	tools := make([]cardTool, 0, len(s.tools))
 	for _, et := range s.tools {
 		tools = append(tools, cardTool{Name: et.tool.Name, Description: firstSentence(et.tool.Description), ReadOnly: et.tool.ReadOnly})
@@ -578,6 +635,15 @@ func (s *Service) serverCard(w http.ResponseWriter, r *http.Request) {
 		"format": "Personal API key from Settings, starting with " + keyPrefix,
 		"scopes": scopes,
 	}}
+	if s.aauth != nil {
+		auths = append([]map[string]any{{
+			"type":              "aauth",
+			"resource":          s.aauth.id,
+			"resource_metadata": s.aauth.metadataURL(),
+			"access_mode":       aauth.AccessModeAuthToken,
+			"scopes":            scopes,
+		}}, auths...)
+	}
 	if s.oauthEnabled() {
 		auths = append([]map[string]any{{
 			"type":                 "oauth2",
@@ -590,7 +656,7 @@ func (s *Service) serverCard(w http.ResponseWriter, r *http.Request) {
 	}
 	publicJSON(w, map[string]any{
 		"name":        "Scaffold App",
-		"description": "Tools for Scaffold App, acting as the person who connected: sign in over OAuth, or use a personal API key.",
+		"description": "Tools for Scaffold App, acting as the person who connected: sign in over OAuth, sign requests with AAuth through your person server, or use a personal API key.",
 		"version":     Version,
 		"transport":   "streamable-http",
 		"endpoints": []map[string]any{{
@@ -612,13 +678,15 @@ func firstSentence(s string) string {
 
 // ---- account deletion, export, seed, tools ----------------------------------
 
-// DeleteAccount deletes the user's keys, OAuth grants (with their tokens)
-// and unexchanged codes.
+// DeleteAccount deletes the user's keys, OAuth grants (with their tokens),
+// unexchanged codes, AAuth links and the link requests they answered.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	for _, q := range []string{
 		`DELETE FROM mcp_api_keys WHERE user_id = $1`,
 		`DELETE FROM mcp_oauth_codes WHERE user_id = $1`,
 		`DELETE FROM mcp_oauth_grants WHERE user_id = $1`,
+		`DELETE FROM mcp_aauth_links WHERE user_id = $1`,
+		`DELETE FROM mcp_aauth_pending WHERE viewer_id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -638,8 +706,8 @@ type exportedGrant struct {
 	RevokeReason *string    `json:"revoke_reason"`
 }
 
-// ExportAccount returns key and connected-app metadata (never secrets,
-// tokens or hashes).
+// ExportAccount returns key, connected-app and linked person server metadata
+// (never secrets, tokens or hashes).
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
 	rows, err := s.d.Pool.Query(ctx, `SELECT `+keyCols+` FROM mcp_api_keys WHERE user_id = $1 ORDER BY created_at, id`, userID)
 	if err != nil {
@@ -666,10 +734,23 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	if grants == nil {
 		grants = []exportedGrant{}
 	}
-	return map[string]any{"api_keys": keys, "connected_apps": grants}, nil
+	rows, err = s.d.Pool.Query(ctx, `
+		SELECT ps_iss, ps_name, email, tenant, created_at, last_used_at, revoked_at, revoke_reason
+		FROM mcp_aauth_links WHERE user_id = $1 ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	links, err := pgx.CollectRows(rows, pgx.RowToStructByPos[exportedLink])
+	if err != nil {
+		return nil, err
+	}
+	if links == nil {
+		links = []exportedLink{}
+	}
+	return map[string]any{"api_keys": keys, "connected_apps": grants, "person_servers": links}, nil
 }
 
-// prune deletes OAuth rows nothing can use again: lapsed requests, codes a
+// prune deletes OAuth and AAuth rows nothing can use again: lapsed requests, codes a
 // day after expiry (kept that long so a replay still revokes its grant),
 // tokens whose refresh expired (spent ones stay until then so a replay is
 // detected), grants revoked or lapsed 90 days ago, and clients never used
@@ -687,11 +768,14 @@ func (s *Service) prune(ctx context.Context) error {
 			return err
 		}
 	}
+	if s.aauth != nil {
+		return s.aauth.prune(ctx)
+	}
 	return nil
 }
 
-// SeedDev gives the second dev identity a read-only API key and a connected
-// app, so both settings lists have a row. Secrets are random and never
+// SeedDev gives the second dev identity a read-only API key, a connected app
+// and a linked person server, so each settings list has a row. Secrets are random and never
 // printed; the seeded grant has no usable token.
 func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 	if len(users) < 2 {
@@ -718,6 +802,22 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 		INSERT INTO mcp_oauth_grants (id, user_id, client_ref, scopes, resource, expires_at, first_used_at, last_used_at, created_at)
 		VALUES ($1, $2, $3, '{read}', $4, now() + interval '30 days', now() - interval '6 days', now() - interval '2 hours', now() - interval '6 days')
 		ON CONFLICT (id) DO UPDATE SET expires_at = EXCLUDED.expires_at`, grantID, users[1], clientRef, s.resourceURL())
+	if err != nil {
+		return err
+	}
+	// A linked person server, so the list has a row; no person server answers
+	// for it, so no agent can use it.
+	linkID := uuid.NewSHA1(ns, []byte("mcp:aauth:"+users[1].String()))
+	if _, err := s.d.Pool.Exec(ctx, `
+		INSERT INTO mcp_aauth_links (id, user_id, ps_iss, sub, ps_name, created_at, last_used_at)
+		VALUES ($1, $2, 'https://ps.example', $3, 'Example person server', now() - interval '4 days', now() - interval '1 hour')
+		ON CONFLICT (id) DO NOTHING`, linkID, users[1], "devseed-"+users[1].String()); err != nil {
+		return err
+	}
+	_, err = s.d.Pool.Exec(ctx, `
+		INSERT INTO mcp_aauth_agents (link_id, jkt, first_seen_at, last_seen_at)
+		VALUES ($1, 'devseed-agent-key', now() - interval '4 days', now() - interval '1 hour')
+		ON CONFLICT DO NOTHING`, linkID)
 	return err
 }
 

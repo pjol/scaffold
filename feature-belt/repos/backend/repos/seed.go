@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"scaffoldapp/backend/internal/access"
 	"scaffoldapp/backend/internal/app"
 	"scaffoldapp/backend/internal/auth"
 	"scaffoldapp/backend/internal/db"
@@ -101,12 +102,16 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 		contents map[string]string
 	}{
 		{sam, day(9), "main", "", "Start the route board", map[string]string{
-			"README.md":     seedReadme,
-			"package.json":  seedPackage,
-			".gitignore":    "node_modules/\ndist/\n",
-			"src/routes.ts": seedRoutes,
-			"src/index.ts":  seedIndex,
-			"src/grades.ts": seedGrades,
+			"README.md":                            seedReadme,
+			"package.json":                         seedPackage,
+			".gitignore":                           "node_modules/\ndist/\n",
+			"src/routes.ts":                        seedRoutes,
+			"src/index.ts":                         seedIndex,
+			"src/grades.ts":                        seedGrades,
+			".github/ISSUE_TEMPLATE/bug_report.md": seedBugTemplate,
+			".github/ISSUE_TEMPLATE/route_request.md": seedRouteTemplate,
+			".github/pull_request_template.md":        seedPullTemplate,
+			".github/CODEOWNERS":                      "# Route board owners\n*            " + sam.Email + "\nsrc/grades.ts " + jordan.Email + "\n",
 		}},
 		{sam, day(6), "main", "", "Filter routes by wall", map[string]string{"src/index.ts": seedIndex2}},
 		{jordan, day(3), "main", "feature/grade-colours", "Colour routes by grade band", map[string]string{"src/grades.ts": seedGrades2}},
@@ -139,7 +144,114 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 	if _, err := s.createComment(ctx, sam, repo, pull, CommentInput{Body: "Should V8 and up share the black band? The comp wall uses black for everything over V7.", Path: "src/grades.ts", Line: 12, Side: "new"}, nil); err != nil {
 		return err
 	}
-	_, err = s.createComment(ctx, jordan, repo, pull, CommentInput{Body: "Ready for a look. The colours come from the tape we already stock."}, nil)
+	if _, err = s.createComment(ctx, jordan, repo, pull, CommentInput{Body: "Ready for a look. The colours come from the tape we already stock."}, nil); err != nil {
+		return err
+	}
+	return s.seedTracker(ctx, repo, sam, jordan, users[3], pull)
+}
+
+// seedTracker adds issues, a milestone, a suggestion, statuses and a release.
+func (s *Service) seedTracker(ctx context.Context, repo *Repo, sam, jordan *auth.Identity, priyaID uuid.UUID, pull *Pull) error {
+	priya, err := s.seedIdentity(ctx, priyaID)
+	if err != nil {
+		return err
+	}
+	labels := map[string]uuid.UUID{}
+	rows, err := s.d.Pool.Query(ctx, `SELECT name, id FROM repos_labels WHERE repo_id = $1`, repo.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var n string
+		var id uuid.UUID
+		if err := rows.Scan(&n, &id); err != nil {
+			rows.Close()
+			return err
+		}
+		labels[n] = id
+	}
+	rows.Close()
+	var milestone uuid.UUID
+	if err := s.d.Pool.QueryRow(ctx, `INSERT INTO repos_milestones (repo_id, title, description, due_on, created_by)
+		VALUES ($1, 'Spring reset', 'Everything the board needs before the spring reset.', (now() + interval '14 days')::date, $2) RETURNING id`,
+		repo.ID, sam.UserID).Scan(&milestone); err != nil {
+		return err
+	}
+	bug, err := s.createIssue(ctx, priya, repo, access.Comment, IssueInput{
+		Title: "Board shows retired routes after a reset",
+		Body:  "After Sunday's reset the board still lists Long reach on the overhang.\n\n**Steps**\n1. Open the board\n2. Filter by overhang\n\nExpected: only routes on the wall now.",
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.applyLabels(ctx, sam, repo, "issue", bug.ID, bug.Number, []uuid.UUID{labels["bug"]}); err != nil {
+		return err
+	}
+	if err := s.applyAssignees(ctx, sam, repo, "issue", bug.ID, bug.Number, bug.Title, []uuid.UUID{jordan.UserID}); err != nil {
+		return err
+	}
+	mid := milestone.String()
+	if _, err := s.updateIssue(ctx, sam, repo, bug, access.Manage, updateIssueReq{MilestoneID: &mid}); err != nil {
+		return err
+	}
+	if bug, err = s.loadIssue(ctx, s.d.Pool, repo.ID, bug.Number); err != nil {
+		return err
+	}
+	if _, err := s.addIssueComment(ctx, sam, repo, bug, access.Manage, "<@"+jordan.UserID.String()+"> can the reset crew mark routes retired in src/routes.ts? A setOn date alone doesn't tell us."); err != nil {
+		return err
+	}
+	print, err := s.createIssue(ctx, sam, repo, access.Manage, IssueInput{
+		Title: "Print view for the front desk", Body: "A one-page list by wall, big enough to read from the desk.", Labels: []uuid.UUID{labels["enhancement"]}, MilestoneID: &milestone,
+	})
+	if err != nil {
+		return err
+	}
+	_ = print
+	typo, err := s.createIssue(ctx, jordan, repo, access.Edit, IssueInput{Title: "README run steps miss npm install", Labels: []uuid.UUID{labels["documentation"]}})
+	if err != nil {
+		return err
+	}
+	closed, reason := "closed", "completed"
+	if _, err := s.updateIssue(ctx, jordan, repo, typo, access.Edit, updateIssueReq{State: &closed, StateReason: &reason}); err != nil {
+		return err
+	}
+	// The pull request closes the bug when it merges.
+	body := pull.Body + fmt.Sprintf("\n\nCloses #%d", bug.Number)
+	if _, err := s.d.Pool.Exec(ctx, `UPDATE repos_pulls SET body = $2 WHERE id = $1`, pull.ID, body); err != nil {
+		return err
+	}
+	s.recordRefs(ctx, repo, jordan, "pull", pull.Number, pull.Title, body, true)
+	if _, err := s.createComment(ctx, priya, repo, pull, CommentInput{Path: "src/grades.ts", Line: 12, StartLine: 11, Side: "new",
+		Body: "The comp wall tapes everything over V7 black, so this matches. A note helps the next setter:\n```suggestion\n  if (grade <= 7) return \"red\";\n  return \"black\"; // V8 and up: the comp wall's black tape\n```"}, nil); err != nil {
+		return err
+	}
+	// CI: a token, two statuses on the head, and main requires "build".
+	_, hash, prefix := newSecret(ciPrefix)
+	var tokenID uuid.UUID
+	if err := s.d.Pool.QueryRow(ctx, `INSERT INTO repos_ci_tokens (repo_id, name, prefix, secret_hash, created_by) VALUES ($1, 'Wall CI', $2, $3, $4) RETURNING id`,
+		repo.ID, prefix, hash, sam.UserID).Scan(&tokenID); err != nil {
+		return err
+	}
+	for _, st := range []struct{ ctx, state, desc string }{{"build", "success", "Built in 41s"}, {"test", "pending", "Running 12 tests"}} {
+		if _, err := s.d.Pool.Exec(ctx, `INSERT INTO repos_statuses (repo_id, sha, context, state, description, token_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+			repo.ID, pull.HeadSHA, st.ctx, st.state, st.desc, tokenID); err != nil {
+			return err
+		}
+	}
+	if _, err := s.d.Pool.Exec(ctx, `UPDATE repos_protections SET required_checks = '{build}' WHERE repo_id = $1 AND pattern = 'main'`, repo.ID); err != nil {
+		return err
+	}
+	// A release of main.
+	main, err := s.git.RefValue(ctx, repo.ID, "refs/heads/main")
+	if err != nil || main == "" {
+		return err
+	}
+	if err := s.ensureTag(ctx, repo, "v0.1.0", main); err != nil {
+		return err
+	}
+	_, err = s.d.Pool.Exec(ctx, `INSERT INTO repos_releases (repo_id, tag, name, body, target_sha, author_id, published_at)
+		VALUES ($1, 'v0.1.0', 'First board', $2, $3, $4, now() - interval '5 days')`, repo.ID,
+		"The board by the front desk, filtered by wall.\n\n* Lists every route with grade and wall\n* `npm run dev <wall>` filters by wall", main, sam.UserID)
 	return err
 }
 
@@ -241,4 +353,37 @@ const shown = wall ? routes.filter((r) => r.wall === wall) : routes;
 for (const r of shown) {
   console.log(` + "`${r.name.padEnd(16)} ${gradeLabel(r.grade).padEnd(4)} ${bandOf(r.grade).padEnd(7)} ${r.wall}`" + `);
 }
+`
+
+const seedBugTemplate = `---
+name: Bug report
+about: Something on the board is wrong
+title: ""
+labels: bug
+---
+**What's wrong**
+
+**Steps**
+1.
+
+**Expected**
+`
+
+const seedRouteTemplate = `---
+name: Route request
+about: Ask the setters for a route
+labels: enhancement
+---
+**Wall**
+
+**Grade range**
+
+**Why**
+`
+
+const seedPullTemplate = `## What changed
+
+## How to check it
+
+- [ ] Ran it against the current reset sheet
 `

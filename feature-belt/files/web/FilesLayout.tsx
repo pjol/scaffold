@@ -23,6 +23,7 @@ import { FilesActionsProvider } from "./actions";
 import { connectedDriveIcon } from "./ConnectedScreens";
 import { FilesConnectedProvider } from "./connected";
 import { FilesConnectedDetailsSheet, FilesDetailsSheet } from "./DetailsPanel";
+import { FilesStorageDialog } from "./depth";
 import { FilesUploadsProvider } from "./uploads";
 
 /** App paths of the drive's sections. */
@@ -184,6 +185,7 @@ function ConnectedDrivesNav({ connId, orgId, pathname }: { connId: string; orgId
 /** Storage used against the org's quota. */
 export function StorageMeter({ orgId, className }: { orgId: string | null; className?: string }) {
   const drive = useFilesDrive(orgId);
+  const [open, setOpen] = useState(false);
   const d = drive.data;
   if (!d) return null;
   const pct = d.quota_bytes > 0 ? Math.min(100, (d.used_bytes / d.quota_bytes) * 100) : 0;
@@ -194,9 +196,10 @@ export function StorageMeter({ orgId, className }: { orgId: string | null; class
           <div className={cn("h-full rounded-pill", pct > 90 ? "bg-danger" : pct > 75 ? "bg-warning" : "bg-primary")} style={{ width: `${Math.max(pct, 1)}%` }} />
         </div>
       ) : null}
-      <p className="type-caption text-fg-muted">
+      <button type="button" className="self-start rounded-xs text-left type-caption text-fg-muted underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setOpen(true)}>
         {d.quota_bytes > 0 ? `${filesFormatSize(d.used_bytes)} of ${filesFormatSize(d.quota_bytes)} used` : `${filesFormatSize(d.used_bytes)} used`}
-      </p>
+      </button>
+      <FilesStorageDialog orgId={orgId} open={open} onOpenChange={setOpen} />
     </div>
   );
 }

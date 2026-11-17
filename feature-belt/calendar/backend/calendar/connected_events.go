@@ -196,6 +196,14 @@ func (s *Service) viewCalendars(ctx context.Context, userID, org uuid.UUID, conn
 // the per-person cache, as the caller (agents: filtered by each
 // connection's scope). Booking copies the app already shows are left out.
 func (s *Service) connectedRange(ctx context.Context, caller *auth.Identity, org uuid.UUID, from, to time.Time, only string) (ConnectedRange, error) {
+	return s.connectedRangeWith(ctx, caller, org, from, to, only, nil)
+}
+
+// connectedRangeWith is connectedRange that also hands each listed event's
+// platform form to seen (ref is its ConnectedEvent.EventID), called from
+// several goroutines, before the agent scope filters the list.
+func (s *Service) connectedRangeWith(ctx context.Context, caller *auth.Identity, org uuid.UUID, from, to time.Time, only string,
+	seen func(ref string, e extEvent)) (ConnectedRange, error) {
 	out := ConnectedRange{Items: []ConnectedEvent{}, Errors: []SourceError{}}
 	if s.connections() == nil {
 		return out, nil
@@ -275,6 +283,9 @@ func (s *Service) connectedRange(ctx context.Context, caller *auth.Identity, org
 					continue
 				}
 				list = append(list, toConnected(j.c, j.cal, e))
+				if seen != nil {
+					seen(eventRef(j.c.ID, j.cal.ID, e.ID), e)
+				}
 			}
 			results[i] = list
 		}()
@@ -1048,7 +1059,6 @@ func trimProvider(p string) string {
 
 var calendarService atomic.Pointer[Service]
 
-
 // PlatformMeeting is an event with a platform meeting link (Google Meet,
 // Teams, Zoom) on a person's calendar or one of their connected calendars,
 // for a meetings feature's lists (through stitching).
@@ -1061,8 +1071,8 @@ type PlatformMeeting struct {
 	Provider   string // google_meet | teams | zoom
 	JoinURL    string
 	Organizer  string
-	MyResponse string // needs_action | accepted | tentative | declined | "" (organizer)
-	Link       string // app path that opens it in the calendar
+	MyResponse string         // needs_action | accepted | tentative | declined | "" (organizer)
+	Link       string         // app path that opens it in the calendar
 	Source     *app.SourceRef // nil for the app's own events
 }
 

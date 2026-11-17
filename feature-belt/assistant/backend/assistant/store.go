@@ -78,8 +78,9 @@ func (s *Service) conversationDTO(ctx context.Context, userID, convID uuid.UUID)
 
 // DisplayPart is a renderable piece of a message.
 type DisplayPart struct {
-	Type string `json:"type"` // text
-	Text string `json:"text"`
+	Type    string      `json:"type"` // text | context
+	Text    string      `json:"text"`
+	Context *ContextRef `json:"context,omitempty"` // type context: what the person attached
 }
 
 // MessageError is a failed turn's error as clients see it.

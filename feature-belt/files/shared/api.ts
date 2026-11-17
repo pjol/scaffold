@@ -4,6 +4,15 @@ import type { Page } from "../types";
 import type {
   FilesActivity,
   FilesAdminPublicItem,
+  FilesComment,
+  FilesCreateRequest,
+  FilesNewComment,
+  FilesPublicLinkInfo,
+  FilesPublicRequest,
+  FilesRequest,
+  FilesRequestUpload,
+  FilesSearchFilters,
+  FilesStorage,
   FilesArchive,
   FilesBatchAction,
   FilesBatchResult,
@@ -53,8 +62,24 @@ export function filesEndpoints(http: HttpClient) {
     drive: (orgId: string, o?: CallOptions) => http.get<FilesDriveInfo>(`${org(orgId)}/drive`, o),
     section: (orgId: string, section: FilesSection, p: FilesListParams & { cursor?: string | undefined } = {}, o?: CallOptions) =>
       http.get<Page<FilesItem>>(`${org(orgId)}/items`, { ...o, query: { section, ...listQuery(p) } }),
-    search: (orgId: string, q: string, cursor?: string, o?: CallOptions) =>
-      http.get<Page<FilesSearchHit>>(`${org(orgId)}/search`, { ...o, query: { q, cursor } }),
+    search: (orgId: string, q: string, cursor?: string, o?: CallOptions, filters: FilesSearchFilters = {}) =>
+      http.get<Page<FilesSearchHit>>(`${org(orgId)}/search`, {
+        ...o,
+        query: {
+          q,
+          cursor,
+          kind: filters.kind,
+          owner: filters.owner,
+          modified_after: filters.modified_after,
+          modified_before: filters.modified_before,
+          location: filters.location,
+          starred: filters.starred ? "1" : undefined,
+          shared_with_me: filters.shared_with_me ? "1" : undefined,
+        },
+      }),
+    /** Your storage, and everyone's for org owners and admins. */
+    storage: (orgId: string, o?: CallOptions) => http.get<FilesStorage>(`${org(orgId)}/storage`, o),
+    myRequests: (orgId: string, cursor?: string, o?: CallOptions) => http.get<Page<FilesRequest>>(`${org(orgId)}/requests`, { ...o, query: { cursor } }),
     createFolder: (orgId: string, body: FilesCreateFolderRequest, o?: CallOptions) => http.post<FilesItem>(`${org(orgId)}/folders`, body, o),
     /** A text file written by the server (also how empty files are made). */
     createFile: (orgId: string, body: FilesCreateFileRequest, o?: CallOptions) => http.post<FilesItem>(`${org(orgId)}/files`, body, o),
@@ -88,6 +113,29 @@ export function filesEndpoints(http: HttpClient) {
     /** Trashed items only (manage). */
     remove: (id: string, o?: CallOptions) => http.delete<void>(item(id), o),
     restoreVersion: (id: string, versionId: string, o?: CallOptions) => http.post<FilesItem>(`${item(id)}/versions/${seg(versionId)}/restore`, {}, o),
+    patchVersion: (id: string, versionId: string, body: { name?: string; keep_forever?: boolean }, o?: CallOptions) =>
+      http.patch<{ items: FilesVersion[] }>(`${item(id)}/versions/${seg(versionId)}`, body, o),
+    /** A video's poster frame (or a PDF's first page) drawn in the browser: a JPEG/PNG data URL, ≤ 700 KB. */
+    putThumbnail: (id: string, dataUrl: string, o?: CallOptions) => http.put<void>(`${item(id)}/thumbnail`, { image: dataUrl }, o),
+    /** Check out (lock) a file; check in or break the lock with checkIn. */
+    lock: (id: string, note = "", o?: CallOptions) => http.post<FilesItem>(`${item(id)}/lock`, { note }, o),
+    checkIn: (id: string, o?: CallOptions) => http.delete<FilesItem>(`${item(id)}/lock`, o),
+    setColor: (id: string, color: string, o?: CallOptions) => http.put<FilesItem>(`${item(id)}/color`, { color }, o),
+    /** Hand a top-level My drive item to another member (you keep edit access). */
+    transferOwner: (id: string, userId: string, o?: CallOptions) => http.post<FilesItem>(`${item(id)}/owner`, { user_id: userId }, o),
+    comments: (id: string, status?: "open" | "resolved", cursor?: string, o?: CallOptions) =>
+      http.get<Page<FilesComment>>(`${item(id)}/comments`, { ...o, query: { status, cursor } }),
+    addComment: (id: string, body: FilesNewComment, o?: CallOptions) => http.post<{ comment: FilesComment; not_notified: string[] }>(`${item(id)}/comments`, body, o),
+    patchComment: (commentId: string, body: { body?: string; resolved?: boolean }, o?: CallOptions) => http.patch<FilesComment>(`${F}/comments/${seg(commentId)}`, body, o),
+    deleteComment: (commentId: string, o?: CallOptions) => http.delete<void>(`${F}/comments/${seg(commentId)}`, o),
+    publicLinks: (id: string, o?: CallOptions) => http.get<{ items: FilesPublicLinkInfo[] }>(`${item(id)}/public-links`, o),
+    /** password: new one; "" removes it; leave out to keep it. */
+    setLinkOptions: (id: string, linkId: string, body: { password?: string; allow_download?: boolean }, o?: CallOptions) =>
+      http.put<{ items: FilesPublicLinkInfo[] }>(`${item(id)}/public-links/${seg(linkId)}`, body, o),
+    folderRequests: (id: string, cursor?: string, o?: CallOptions) => http.get<Page<FilesRequest>>(`${item(id)}/requests`, { ...o, query: { cursor } }),
+    createRequest: (folderId: string, body: FilesCreateRequest, o?: CallOptions) => http.post<FilesRequest>(`${item(folderId)}/requests`, body, o),
+    closeRequest: (requestId: string, o?: CallOptions) => http.post<FilesRequest>(`${F}/requests/${seg(requestId)}/close`, {}, o),
+    requestUploads: (requestId: string, o?: CallOptions) => http.get<{ items: FilesRequestUpload[] }>(`${F}/requests/${seg(requestId)}/uploads`, o),
 
     // ---- connected drives (Google Drive, OneDrive, SharePoint), live with your own connection
     /** The app's drive and your connected accounts, with capabilities still on offer. */
@@ -132,13 +180,25 @@ export function filesEndpoints(http: HttpClient) {
       http.post<FilesConnectedItem>(`${item(id)}/save-to`, body, { ...o, timeoutMs: 120_000 }),
 
     // ---- public links (no account)
-    publicView: (token: string, itemId?: string, o?: CallOptions) =>
-      http.get<FilesPublicView>(itemId ? `${pub(token)}/items/${seg(itemId)}` : pub(token), { ...o, auth: false }),
-    publicChildren: (token: string, folderId: string, p: FilesListParams & { cursor?: string | undefined } = {}, o?: CallOptions) =>
-      http.get<Page<FilesPublicItem>>(`${pub(token)}/items/${seg(folderId)}/children`, { ...o, auth: false, query: listQuery(p) }),
-    publicUrl: (token: string, itemId: string, disposition: "inline" | "attachment" = "attachment", o?: CallOptions) =>
-      http.get<FilesUrl>(`${pub(token)}/items/${seg(itemId)}/url`, { ...o, auth: false, query: { disposition } }),
-    publicText: (token: string, itemId: string, o?: CallOptions) => http.get<FilesTextContent>(`${pub(token)}/items/${seg(itemId)}/text`, { ...o, auth: false }),
+    // `proof` shows the visitor typed the link's password (publicPassword).
+    publicView: (token: string, itemId?: string, o?: CallOptions, proof?: string) =>
+      http.get<FilesPublicView>(itemId ? `${pub(token)}/items/${seg(itemId)}` : pub(token), { ...o, auth: false, query: { proof } }),
+    publicChildren: (token: string, folderId: string, p: FilesListParams & { cursor?: string | undefined } = {}, o?: CallOptions, proof?: string) =>
+      http.get<Page<FilesPublicItem>>(`${pub(token)}/items/${seg(folderId)}/children`, { ...o, auth: false, query: { ...listQuery(p), proof } }),
+    publicUrl: (token: string, itemId: string, disposition: "inline" | "attachment" = "attachment", o?: CallOptions, proof?: string) =>
+      http.get<FilesUrl>(`${pub(token)}/items/${seg(itemId)}/url`, { ...o, auth: false, query: { disposition, proof } }),
+    publicText: (token: string, itemId: string, o?: CallOptions, proof?: string) =>
+      http.get<FilesTextContent>(`${pub(token)}/items/${seg(itemId)}/text`, { ...o, auth: false, query: { proof } }),
+    publicPassword: (token: string, password: string, o?: CallOptions) =>
+      http.post<{ proof: string; expires_at: string | null }>(`${pub(token)}/password`, { password }, { ...o, auth: false }),
+    publicRequest: (token: string, o?: CallOptions) => http.get<FilesPublicRequest>(`${F}/requests/public/${seg(token)}`, { ...o, auth: false }),
+    publicRequestUpload: (
+      token: string,
+      body: { name: string; content_type: string; size: number; uploader_name: string; uploader_email: string },
+      o?: CallOptions,
+    ) => http.post<FilesUploadTicket>(`${F}/requests/public/${seg(token)}/uploads`, body, { ...o, auth: false }),
+    publicRequestComplete: (token: string, uploadId: string, o?: CallOptions) =>
+      http.post<{ name: string; size: number }>(`${F}/requests/public/${seg(token)}/uploads/${seg(uploadId)}/complete`, {}, { ...o, auth: false }),
 
     // ---- staff
     adminPublic: (status: "active" | "disabled", cursor?: string, o?: CallOptions) =>

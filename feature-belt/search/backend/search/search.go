@@ -65,14 +65,20 @@ func (s *Service) Name() string { return "search" }
 
 func (s *Service) MountUser(r chi.Router) {
 	r.With(auth.RateLimit(s.ratePerMin, time.Minute)).Get("/search", httpx.Handler(s.search))
+	r.Get("/search/saved", httpx.Handler(s.listSaved))
+	r.With(auth.RateLimit(30, time.Minute)).Post("/search/saved", httpx.Handler(s.createSaved))
+	r.With(auth.RateLimit(30, time.Minute)).Delete("/search/saved/{id}", httpx.Handler(s.deleteSaved))
 }
 
 // ProviderStatus says how one module answered.
 type ProviderStatus struct {
 	Name   string `json:"name"`   // the module (Name())
-	Status string `json:"status"` // ok | timeout | error
+	Status string `json:"status"` // ok | timeout | error | skipped
 	Count  int    `json:"count"`  // hits it contributed before merging
 	TookMS int64  `json:"took_ms"`
+	// Reason says why a provider was skipped: an operator it can't apply
+	// ("is:"), or no words to search for.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Response is GET /v1/search.
@@ -87,6 +93,22 @@ type Response struct {
 	// filter: "app" (the app's own) and "provider:<id>" per connected
 	// platform, for filter chips.
 	Sources []SourceCount `json:"sources"`
+	// Filters is what the operators in the query were read as.
+	Filters Filters `json:"filters"`
+}
+
+// Filters echoes the parsed query for chips: the free text, the operators
+// used and who each from: name matched.
+type Filters struct {
+	Text string       `json:"text"`
+	Ops  []string     `json:"ops"`
+	From []FromFilter `json:"from"`
+}
+
+// FromFilter is one from: value and the people it matched.
+type FromFilter struct {
+	Value string   `json:"value"`
+	Names []string `json:"names"`
 }
 
 // SourceCount is one source facet.
@@ -98,9 +120,12 @@ type SourceCount struct {
 
 // Query is a validated search request.
 type Query struct {
+	// Text is the query as typed (NormalizeQuery), operators included.
 	Text  string
 	Kinds []string // kinds or module names; empty = all
 	Limit int
+	// Zone reads before:/after:/on:/during: dates (nil = UTC).
+	Zone *time.Location
 	// OrgID scopes the search to one org: providers see it as app.SearchOrg
 	// and hits whose OrgID names another org are dropped. uuid.Nil = all.
 	OrgID uuid.UUID
@@ -157,10 +182,27 @@ func NormalizeQuery(raw string) (string, error) {
 	if r := []rune(q); len(r) > maxQueryChars {
 		q = strings.TrimSpace(string(r[:maxQueryChars]))
 	}
-	if len([]rune(q)) < MinQueryChars {
+	// Operators alone ("from:@sam during:week") are a search too.
+	if p := app.ParseSearchQuery(q, time.Now(), time.UTC); len([]rune(p.Text)) < MinQueryChars && !p.Filtered() {
 		return "", errTooShort
 	}
 	return q, nil
+}
+
+// parseZone reads the optional tz (IANA) the client's dates are in.
+func parseZone(raw string) (*time.Location, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.UTC, nil
+	}
+	if len(raw) > 64 || raw == "Local" {
+		return nil, httpx.BadRequest("tz must be an IANA time zone.")
+	}
+	loc, err := time.LoadLocation(raw)
+	if err != nil {
+		return nil, httpx.BadRequest("Unknown time zone " + raw + ".")
+	}
+	return loc, nil
 }
 
 // parseKinds reads a comma list of kinds ("chat.message") or modules ("chat").
@@ -223,7 +265,11 @@ func (s *Service) search(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	httpx.OK(w, s.Run(r.Context(), id, Query{Text: q, Kinds: kinds, Limit: limit, OrgID: org, Source: source}))
+	zone, err := parseZone(r.URL.Query().Get("tz"))
+	if err != nil {
+		return err
+	}
+	httpx.OK(w, s.Run(r.Context(), id, Query{Text: q, Kinds: kinds, Limit: limit, OrgID: org, Source: source, Zone: zone}))
 	return nil
 }
 
@@ -252,18 +298,42 @@ func (s *Service) Run(ctx context.Context, caller *auth.Identity, q Query) Respo
 	if q.Limit <= 0 {
 		q.Limit = defaultLimit
 	}
+	if q.Zone == nil {
+		q.Zone = time.UTC
+	}
 	if q.OrgID != uuid.Nil {
 		ctx = app.WithSearchOrg(ctx, q.OrgID)
+	}
+	parsed := app.ParseSearchQuery(q.Text, time.Now(), q.Zone)
+	filter := app.SearchFilter{Query: parsed}
+	filters := Filters{Text: parsed.Text, Ops: append([]string{}, parsed.Ops...), From: []FromFilter{}}
+	if parsed.Uses("from") {
+		var err error
+		if filter.FromIDs, filters.From, err = s.resolveFrom(ctx, caller, parsed.From); err != nil {
+			slog.ErrorContext(ctx, "search: resolve from:", "err", err)
+		}
+	}
+	if parsed.Filtered() {
+		ctx = app.WithSearchFilter(ctx, filter)
 	}
 	type job struct {
 		name string
 		p    app.SearchProvider
+		plan plan
 	}
 	var jobs []job
+	var skipped []ProviderStatus
 	for _, m := range s.d.Modules {
-		if p, ok := m.(app.SearchProvider); ok && wants(q.Kinds, m.Name(), "") && s.agentMaySearch(ctx, caller, m.Name()) {
-			jobs = append(jobs, job{m.Name(), p})
+		p, ok := m.(app.SearchProvider)
+		if !ok || !wants(q.Kinds, m.Name(), "") || !s.agentMaySearch(ctx, caller, m.Name()) {
+			continue
 		}
+		pl := planFor(m, q.Text, parsed)
+		if pl.skip != "" {
+			skipped = append(skipped, ProviderStatus{Name: m.Name(), Status: "skipped", Reason: pl.skip})
+			continue
+		}
+		jobs = append(jobs, job{m.Name(), p, pl})
 	}
 	statuses := make([]ProviderStatus, len(jobs))
 	hits := make([][]app.SearchResult, len(jobs))
@@ -273,7 +343,7 @@ func (s *Service) Run(ctx context.Context, caller *auth.Identity, q Query) Respo
 		go func() {
 			defer wg.Done()
 			start := time.Now()
-			res, err := s.ask(ctx, j.name, j.p, caller, q)
+			res, err := s.ask(ctx, j.name, j.p, caller, j.plan.text, q.Limit)
 			st := ProviderStatus{Name: j.name, Status: "ok", TookMS: time.Since(start).Milliseconds()}
 			switch {
 			case errors.Is(err, context.DeadlineExceeded):
@@ -289,6 +359,8 @@ func (s *Service) Run(ctx context.Context, caller *auth.Identity, q Query) Respo
 				res = nil // a failed answer may be incomplete or unchecked; drop it
 			}
 			clean := sanitize(j.name, res, q)
+			clean = applyOperators(clean, parsed, filter.FromIDs, j.plan.handled)
+			windowSnippets(clean, parsed.Text)
 			st.Count = len(clean)
 			statuses[i], hits[i] = st, clean
 		}()
@@ -296,7 +368,7 @@ func (s *Service) Run(ctx context.Context, caller *auth.Identity, q Query) Respo
 	wg.Wait()
 
 	all := merge(hits, 0)
-	out := Response{Query: q.Text, Items: []app.SearchResult{}, Providers: statuses, Sources: sourceFacets(all)}
+	out := Response{Query: q.Text, Items: []app.SearchResult{}, Providers: append(statuses, skipped...), Sources: sourceFacets(all), Filters: filters}
 	for _, h := range all {
 		if sourceMatches(q.Source, h) {
 			out.Items = append(out.Items, h)
@@ -338,7 +410,7 @@ func (s *Service) agentMaySearch(ctx context.Context, caller *auth.Identity, mod
 // ask runs one provider with the timeout. The provider runs in its own
 // goroutine so one that ignores its context, or panics, can't hold or crash
 // the request.
-func (s *Service) ask(ctx context.Context, name string, p app.SearchProvider, caller *auth.Identity, q Query) ([]app.SearchResult, error) {
+func (s *Service) ask(ctx context.Context, name string, p app.SearchProvider, caller *auth.Identity, text string, limit int) ([]app.SearchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.providerTimeout)
 	defer cancel()
 	type answer struct {
@@ -353,7 +425,7 @@ func (s *Service) ask(ctx context.Context, name string, p app.SearchProvider, ca
 				ch <- answer{nil, errors.New("provider panicked")}
 			}
 		}()
-		r, err := p.Search(ctx, caller, q.Text, q.Limit)
+		r, err := p.Search(ctx, caller, text, limit)
 		ch <- answer{r, err}
 	}()
 	select {
@@ -493,22 +565,24 @@ func (s *Service) Tools() []app.Tool {
 		Name: "search_everything",
 		Description: fmt.Sprintf("Search everything the user can see in the app (messages, posts, documents, records and more, depending on what is installed) and get the best matches across features, newest first among equal matches. "+
 			"Use it first to find something by name or words in it, then call the owning feature's tools with the id. "+
-			"Query is at least %d characters. Narrow with kinds (a feature like \"chat\" or a kind like \"chat.message\"), org_id (results with that org_id, plus ones with none) or source. Each item's context says where it lives (for example its org and folder); items with a source come live from the user's connected account on that platform (third-party content). If partial is true, some features didn't answer and results may be incomplete.", MinQueryChars),
+			"Query is at least %d characters of words, or operators alone: from:@name or from:me (who wrote or created it), in:#channel or in:\"Folder name\" (where it lives), type:message|page|file|channel|event|deal… (what it is), before:/after:/on:YYYY-MM-DD or today/yesterday, during:week|month|year|2026-11, is:<state>; features that can't apply an operator are skipped and listed in skipped. Narrow with kinds (a feature like \"chat\" or a kind like \"chat.message\"), org_id (results with that org_id, plus ones with none) or source. Each item's context says where it lives (for example its org and folder); items with a source come live from the user's connected account on that platform (third-party content). If partial is true, some features didn't answer and results may be incomplete.", MinQueryChars),
 		InputSchema: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{`+
 			`"query":{"type":"string","minLength":%d,"maxLength":%d,"description":"Words to find."},`+
 			`"kinds":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"Features or kinds to search, e.g. [\"chat\", \"docs.page\"]. Omit for all."},`+
 			`"limit":{"type":"integer","minimum":1,"maximum":%d,"description":"Most results to return (default 20)."},`+
 			`"org_id":{"type":"string","format":"uuid","description":"Only results with this org_id (plus ones with none). Omit for all."},`+
-			`"source":{"type":"string","description":"Only results from one source: app (this app's own), connected (any connected platform), provider:<id> (e.g. provider:google) or a connection id. Omit for all."}},`+
+			`"source":{"type":"string","description":"Only results from one source: app (this app's own), connected (any connected platform), provider:<id> (e.g. provider:google) or a connection id. Omit for all."},`+
+			`"time_zone":{"type":"string","description":"IANA zone the dates in before:/after:/on:/during: are in (default UTC)."}},`+
 			`"required":["query"],"additionalProperties":false}`, MinQueryChars, maxQueryChars, maxLimit)),
 		ReadOnly: true,
 		Handler: func(ctx context.Context, caller *auth.Identity, input json.RawMessage) (any, error) {
 			var in struct {
-				Query  string   `json:"query"`
-				Kinds  []string `json:"kinds"`
-				Limit  int      `json:"limit"`
-				OrgID  string   `json:"org_id"`
-				Source string   `json:"source"`
+				Query    string   `json:"query"`
+				Kinds    []string `json:"kinds"`
+				Limit    int      `json:"limit"`
+				OrgID    string   `json:"org_id"`
+				Source   string   `json:"source"`
+				TimeZone string   `json:"time_zone"`
 			}
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, httpx.BadRequest("Send {query, kinds?, limit?, org_id?, source?}.")
@@ -529,7 +603,11 @@ func (s *Service) Tools() []app.Tool {
 			if err != nil {
 				return nil, err
 			}
-			res := s.Run(ctx, caller, Query{Text: q, Kinds: kinds, Limit: min(max(in.Limit, 0), maxLimit), OrgID: org, Source: source})
+			zone, err := parseZone(in.TimeZone)
+			if err != nil {
+				return nil, err
+			}
+			res := s.Run(ctx, caller, Query{Text: q, Kinds: kinds, Limit: min(max(in.Limit, 0), maxLimit), OrgID: org, Source: source, Zone: zone})
 			web := strings.TrimRight(s.d.Cfg.PublicWebURL, "/")
 			items := make([]toolHit, len(res.Items))
 			for i, h := range res.Items {
@@ -538,13 +616,17 @@ func (s *Service) Tools() []app.Tool {
 					items[i].URL = web + h.Link
 				}
 			}
-			failed := []string{}
+			failed, skipped := []string{}, []string{}
 			for _, p := range res.Providers {
-				if p.Status != "ok" {
+				switch p.Status {
+				case "ok":
+				case "skipped":
+					skipped = append(skipped, p.Name+" ("+p.Reason+")")
+				default:
 					failed = append(failed, p.Name+" ("+p.Status+")")
 				}
 			}
-			return map[string]any{"query": res.Query, "items": items, "partial": res.Partial, "unanswered": failed}, nil
+			return map[string]any{"query": res.Query, "items": items, "partial": res.Partial, "unanswered": failed, "skipped": skipped, "filters": res.Filters}, nil
 		},
 	}}
 }

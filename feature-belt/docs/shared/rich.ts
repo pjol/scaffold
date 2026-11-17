@@ -4,7 +4,7 @@
  * the plain text; a mention span is one unit of `text.length` characters that edits never
  * split.
  */
-import type { DocsMark, DocsSpan } from "./types";
+import type { DocsColor, DocsMark, DocsSpan } from "./types";
 
 const MARKS: DocsMark[] = ["bold", "italic", "underline", "strike", "code"];
 
@@ -15,32 +15,41 @@ export function docsPlain(spans: readonly DocsSpan[] | null | undefined): string
   return s;
 }
 
-/** Same formatting (mentions never merge). */
+/** A span edits never split: a mention chip or an inline equation. */
+export function docsIsAtom(sp: DocsSpan): boolean {
+  return !!sp.mention || !!sp.equation;
+}
+
+/** Same formatting (mentions and equations never merge). */
 export function docsSameFormat(a: DocsSpan, b: DocsSpan): boolean {
-  if (a.mention || b.mention) return false;
+  if (docsIsAtom(a) || docsIsAtom(b)) return false;
   return (
     !!a.bold === !!b.bold &&
     !!a.italic === !!b.italic &&
     !!a.underline === !!b.underline &&
     !!a.strike === !!b.strike &&
     !!a.code === !!b.code &&
-    (a.link ?? "") === (b.link ?? "")
+    (a.link ?? "") === (b.link ?? "") &&
+    (a.color ?? "") === (b.color ?? "")
   );
 }
 
 /** A span with only the fields that are set (stable JSON, compact payloads). */
 function clean(sp: DocsSpan): DocsSpan {
   const out: DocsSpan = { text: sp.text };
-  if (sp.mention) {
-    out.mention = sp.mention;
+  if (sp.mention || sp.equation) {
+    if (sp.mention) out.mention = sp.mention;
+    else out.equation = true;
     if (sp.bold) out.bold = true;
     if (sp.italic) out.italic = true;
     if (sp.underline) out.underline = true;
     if (sp.strike) out.strike = true;
+    if (sp.color) out.color = sp.color;
     return out;
   }
   for (const m of MARKS) if (sp[m]) out[m] = true;
   if (sp.link) out.link = sp.link;
+  if (sp.color) out.color = sp.color;
   return out;
 }
 
@@ -64,10 +73,10 @@ export function docsSpansEqual(a: readonly DocsSpan[] | undefined, b: readonly D
   for (let i = 0; i < x.length; i++) {
     const p = x[i]!;
     const q = y[i]!;
-    if (p.text !== q.text || !docsSameFormat(p, q) && !(p.mention && q.mention)) return false;
-    if (p.mention || q.mention) {
-      if (!p.mention || !q.mention || JSON.stringify(p.mention) !== JSON.stringify(q.mention)) return false;
-      if (!!p.bold !== !!q.bold || !!p.italic !== !!q.italic) return false;
+    if (p.text !== q.text || (!docsSameFormat(p, q) && !(docsIsAtom(p) && docsIsAtom(q)))) return false;
+    if (docsIsAtom(p) || docsIsAtom(q)) {
+      if (!!p.equation !== !!q.equation || JSON.stringify(p.mention ?? null) !== JSON.stringify(q.mention ?? null)) return false;
+      if (!!p.bold !== !!q.bold || !!p.italic !== !!q.italic || (p.color ?? "") !== (q.color ?? "")) return false;
     }
   }
   return true;
@@ -82,7 +91,7 @@ export function docsSlice(spans: readonly DocsSpan[], start: number, end: number
     const e = at + sp.text.length;
     at = e;
     if (e <= start || s >= end) continue;
-    if (sp.mention) {
+    if (docsIsAtom(sp)) {
       if (s >= start && e <= end) out.push(sp);
       continue;
     }
@@ -113,14 +122,15 @@ export function docsFormatAt(spans: readonly DocsSpan[], at: number): Omit<DocsS
     pos = e;
   }
   if (!found && at === 0) found = spans[0];
-  if (!found || found.mention) return {};
-  const { text: _t, mention: _m, ...fmt } = found;
+  if (!found || docsIsAtom(found)) return {};
+  const { text: _t, mention: _m, equation: _e, ...fmt } = found;
   void _t;
   void _m;
+  void _e;
   return fmt;
 }
 
-export function docsInsertText(spans: readonly DocsSpan[], at: number, text: string, format?: Omit<DocsSpan, "text" | "mention">): DocsSpan[] {
+export function docsInsertText(spans: readonly DocsSpan[], at: number, text: string, format?: Omit<DocsSpan, "text" | "mention" | "equation">): DocsSpan[] {
   if (!text) return docsNormalize(spans);
   const fmt = format ?? docsFormatAt(spans, at);
   const [a, b] = docsSplit(spans, at);
@@ -138,7 +148,7 @@ export function docsDeleteRange(spans: readonly DocsSpan[], start: number, end: 
 }
 
 /** Whether every character in [start, end) has `mark` (false for an empty range). */
-export function docsHasMark(spans: readonly DocsSpan[], start: number, end: number, mark: DocsMark | "link"): boolean {
+export function docsHasMark(spans: readonly DocsSpan[], start: number, end: number, mark: DocsMark | "link" | "equation"): boolean {
   if (end <= start) return false;
   let at = 0;
   let any = false;
@@ -148,7 +158,7 @@ export function docsHasMark(spans: readonly DocsSpan[], start: number, end: numb
     at = e;
     if (e <= start || s >= end) continue;
     any = true;
-    if (mark === "link" ? !sp.link : !sp[mark]) return false;
+    if (mark === "link" ? !sp.link : mark === "equation" ? !sp.equation : !sp[mark]) return false;
   }
   return any;
 }
@@ -160,8 +170,8 @@ function mapRange(spans: readonly DocsSpan[], start: number, end: number, fn: (s
     const s = at;
     const e = at + sp.text.length;
     at = e;
-    if (e <= start || s >= end || sp.mention) {
-      out.push(sp.mention && s >= start && e <= end ? fn(sp) : sp);
+    if (e <= start || s >= end || docsIsAtom(sp)) {
+      out.push(docsIsAtom(sp) && s >= start && e <= end ? fn(sp) : sp);
       continue;
     }
     const a = Math.max(start, s) - s;
@@ -177,7 +187,7 @@ function mapRange(spans: readonly DocsSpan[], start: number, end: number, fn: (s
 export function docsToggleMark(spans: readonly DocsSpan[], start: number, end: number, mark: DocsMark): DocsSpan[] {
   const on = !docsHasMark(spans, start, end, mark);
   return mapRange(spans, start, end, (sp) => {
-    if (sp.mention && mark === "code") return sp;
+    if (docsIsAtom(sp) && mark === "code") return sp;
     const next = { ...sp };
     if (on) next[mark] = true;
     else delete next[mark];
@@ -185,10 +195,45 @@ export function docsToggleMark(spans: readonly DocsSpan[], start: number, end: n
   });
 }
 
+/** The colour every character in [start, end) has, or null when they differ or have none. */
+export function docsColorAt(spans: readonly DocsSpan[], start: number, end: number): DocsColor | null {
+  let at = 0;
+  let found: DocsColor | null | undefined;
+  for (const sp of spans) {
+    const s = at;
+    const e = at + sp.text.length;
+    at = e;
+    if (e <= start || s >= end) continue;
+    const c = sp.color ?? null;
+    if (found === undefined) found = c;
+    else if (found !== c) return null;
+  }
+  return found ?? null;
+}
+
+/** Sets (or with null, removes) a text colour or highlight on [start, end). */
+export function docsSetColor(spans: readonly DocsSpan[], start: number, end: number, color: DocsColor | null): DocsSpan[] {
+  return mapRange(spans, start, end, (sp) => {
+    const next = { ...sp };
+    if (color) next.color = color;
+    else delete next.color;
+    return next;
+  });
+}
+
+/** Turns [start, end) into one inline equation (its text as TeX), or back into text. */
+export function docsToggleEquation(spans: readonly DocsSpan[], start: number, end: number): DocsSpan[] {
+  const sel = docsSlice(spans, start, end);
+  if (sel.length === 1 && sel[0]!.equation) return docsConcat(docsSlice(spans, 0, start), [{ text: sel[0]!.text }], docsSlice(spans, end));
+  const tex = docsPlain(sel).replace(/\n/g, " ").trim();
+  if (!tex) return docsNormalize(spans);
+  return docsConcat(docsSlice(spans, 0, start), [{ text: tex, equation: true }], docsSlice(spans, end));
+}
+
 /** Sets (or with null, removes) a link on [start, end). */
 export function docsSetLink(spans: readonly DocsSpan[], start: number, end: number, href: string | null): DocsSpan[] {
   return mapRange(spans, start, end, (sp) => {
-    if (sp.mention) return sp;
+    if (docsIsAtom(sp)) return sp;
     const next = { ...sp };
     if (href) next.link = href;
     else delete next.link;

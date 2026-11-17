@@ -41,6 +41,10 @@ mobile/
 
 Same kit as web (ui-native, structural props): `ProviderIcon {provider, product?, size?, color?, title?}` · `SourceBadge {source, label?, showAccount?, iconOnly?}` (nothing for app rows) · `SourceFilter {options, value, onChange, label?}` + `sourceFilterOptions(…)` (a horizontal ScrollView of chips) · `ConnectPrompt {offers, onConnect(offer), title?, info?, onDismiss?}` (navigate to the offer's `connect_url` without its leading slash) · `ConnectedSection {items, onSelect(id), onFix?(item), onAdd?, activeId?, loading?}` + `connectedSectionItems(sources)`. Platform sign-in happens in Settings → Connections through `expo-web-browser`'s auth session (`settings/connections?capability=<key>&return_to=<path>`); personal tokens are added on the web.
 
+## File previews
+
+ui-native `FilePreview {url, name, mime?, size?, downloadUrl?, onDownload?, compact?, thumbnailUrl?, style?}` and `FileIcon {name, mime?, kind?, size?, tone?}`, same kinds as web (`filePreviewKind`): images in `PhotoLightbox` (pinch, pan, double tap), text, code (highlighted, lazy), Markdown (parsed tree), CSV/TSV (virtualised `FlatList`), JSON and SVG (an `expo-image` data URI); video, audio, PDF and office files open in the in-app browser (`expo-web-browser`), which plays or draws them; anything else is an icon, size and Download (`onDownload` for the share sheet). Text is read with a 2 MB Range request. `compact` = a thumbnail or a card that opens the full preview in a page sheet.
+
 ## Data and session
 
 - Data only through `@scaffoldapp/shared` hooks; every async view has skeleton, empty and error states.
@@ -69,7 +73,7 @@ Same kit as web (ui-native, structural props): `ProviderIcon {provider, product?
 
 ## Clerk
 
-- `@clerk/expo` 4 (never the deprecated `@clerk/clerk-expo`), `tokenCache` from `@clerk/expo/token-cache`, custom screens, no web views: email code (an unknown email becomes a sign-up verified by the same code) and passkeys (`signIn.passkey` → `finalize`; Settings → Account → Add a passkey).
+- `@clerk/expo` 4 (never the deprecated `@clerk/clerk-expo`), `tokenCache` from `@clerk/expo/token-cache`, custom screens, no web views: email code (an unknown email becomes a sign-up verified by the same code) and passkeys (`signIn.passkey` → `finalize`; Settings → Account → Add a passkey). The screen follows web's sign-in: "Sign in to <name>", Email address + Continue, "or", then Sign in with a passkey (development: the seeded accounts as a `ListGroup`), legal links; no card, no badges, no staggered entrance.
 - Clerk instance: email code on, passkeys on, sign-up asks for nothing beyond email.
 - Production: Native applications → add `<scheme>:///` and `<scheme>://` to the mobile redirect allowlist; register the iOS Team ID + bundle id and the Android package + SHA-256 (EAS credentials) for passkeys. `app.config.ts` adds `webcredentials:<frontend-api>`, decoded from the publishable key.
 - Any social login → Sign in with Apple too (compliance.md): add the `@clerk/expo` plugin and `expo-apple-authentication`.

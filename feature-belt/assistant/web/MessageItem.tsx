@@ -1,8 +1,9 @@
 "use client";
 
-import { assistantMessageText, assistantStopNote, type AssistantMessage } from "@scaffoldapp/shared";
+import { assistantContextChipText, assistantMessageContext, assistantMessageText, assistantStopNote, type AssistantMessage } from "@scaffoldapp/shared";
 import { Badge, Banner, Button, IconButton, InfoTip, Spinner, toast } from "@scaffoldapp/ui-web";
-import { Copy, Flag, RotateCcw } from "lucide-react";
+import { Copy, Flag, Paperclip, RotateCcw } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { ReportDialog } from "@/features/moderation";
 import { Markdown } from "./Markdown";
@@ -15,9 +16,26 @@ import { ToolActivity } from "./ToolActivity";
  */
 export function MessageItem({ message, onRetry }: { message: AssistantMessage; onRetry?: (() => void) | undefined }) {
   if (message.role === "user") {
+    const ctx = assistantMessageContext(message);
+    const chip = ctx ? (
+      <>
+        <Paperclip aria-hidden className="size-3.5 shrink-0" />
+        <span className="truncate">{assistantContextChipText(ctx)}</span>
+      </>
+    ) : null;
     return (
-      <div className="flex justify-end pl-10 sm:pl-16">
+      <div className="flex flex-col items-end gap-1 pl-10 sm:pl-16">
         <p className="max-w-prose rounded-xl bg-primary-soft px-4 py-2.5 type-body whitespace-pre-wrap text-fg [overflow-wrap:anywhere]">{assistantMessageText(message)}</p>
+        {ctx ? (
+          ctx.link ? (
+            <Link href={ctx.link} className="flex max-w-full items-center gap-1 rounded-sm type-caption text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-ring">
+              {chip}
+            </Link>
+          ) : (
+            <span className="flex max-w-full items-center gap-1 type-caption text-fg-muted">{chip}</span>
+          )
+        ) : null}
+        {ctx?.missing ? <p className="type-caption text-fg-muted">{ctx.missing}</p> : null}
       </div>
     );
   }

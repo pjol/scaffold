@@ -358,6 +358,7 @@ type Check struct {
 	Description  string `json:"description"`
 	URL          string `json:"url"`
 	AllowFailure bool   `json:"allow_failure"`
+	Required     bool   `json:"required"` // required by branch protection (the app's own)
 }
 
 // Checks is every check on one commit and their overall state.

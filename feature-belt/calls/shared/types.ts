@@ -47,7 +47,23 @@ export interface CallsMeeting {
   /** Set while the room is live. */
   live_since: string | null;
   created_at: string;
+  /** What people who aren't hosts may do in the room (hosts always may). */
+  allow_screen_share: boolean;
+  allow_chat: boolean;
+  allow_reactions: boolean;
+  /** false: people unmute only when a host asks them to. */
+  allow_unmute: boolean;
+  mute_on_entry: boolean;
+  /** Chat messages are kept with the meeting. */
+  save_chat: boolean;
+  /** New questions wait for a host's approval. */
+  moderate_questions: boolean;
+  /** Who opens recordings, transcripts and saved chat besides hosts. */
+  records_access: CallsRecordsAccess;
 }
+
+/** participants: people who were in that call · invited: also invitees · org: also the workspace's members. */
+export type CallsRecordsAccess = "participants" | "invited" | "org";
 
 export interface CallsInvitee {
   user: CallsUser;
@@ -72,6 +88,8 @@ export interface CallsJoinInfo {
   title: string | null;
   host_name: string | null;
   live: boolean;
+  /** The room is being recorded right now (say so before joining). */
+  recording: boolean;
   /** Only for people who may join without asking. */
   meeting: CallsMeetingDetail | null;
   /** The caller's latest request to join (12 hours). */
@@ -88,6 +106,7 @@ export interface CallsPublicMeeting {
   live: boolean;
   canceled: boolean;
   locked: boolean;
+  recording: boolean;
 }
 
 /** A short-lived SFU credential for one room: connect to `url` with `token`. */
@@ -187,6 +206,18 @@ export interface CallsCallDetail {
   live: boolean;
   participants: CallsAttendance[];
   can_join: boolean;
+  /** Host or co-host: may download attendance. */
+  is_host: boolean;
+  /** What the call kept; null when the meeting's records rule leaves you out. */
+  records: CallsCallRecords | null;
+}
+
+export interface CallsCallRecords {
+  recordings: CallsRecording[];
+  transcript_lines: number;
+  chat_messages: number;
+  polls: number;
+  questions: number;
 }
 
 export interface CallsCreateMeetingRequest {
@@ -211,6 +242,14 @@ export interface CallsUpdateMeetingRequest {
   ends_at?: string;
   /** Make it an unscheduled link. */
   clear_times?: boolean;
+  allow_screen_share?: boolean;
+  allow_chat?: boolean;
+  allow_reactions?: boolean;
+  allow_unmute?: boolean;
+  mute_on_entry?: boolean;
+  save_chat?: boolean;
+  moderate_questions?: boolean;
+  records_access?: CallsRecordsAccess;
 }
 
 export interface CallsStartCallRequest {
@@ -292,5 +331,245 @@ declare module "../types" {
     "calls.ring_ended": CallsRingEnded;
     "calls.lobby": CallsLobbyEvent;
     "calls.lobby_decided": CallsLobbyEntry;
+    "calls.recording_updated": { meeting_id: string };
   }
+}
+
+// ───────────────────────────────────────────────────────────── room state ──
+
+/** The host's rules as the room sees them (room metadata). */
+export interface CallsRoomRules {
+  screen_share: boolean;
+  chat: boolean;
+  reactions: boolean;
+  unmute: boolean;
+  mute_on_entry: boolean;
+  save_chat: boolean;
+}
+
+export interface CallsBreakoutRef {
+  id: string;
+  name: string;
+}
+
+/** Server-owned room metadata every participant reads (guests too). */
+export interface CallsRoomMeta {
+  v: number;
+  meeting_id: string;
+  recording: { id: string; status: "starting" | "recording"; started_at: string } | null;
+  /** The transcript is being saved. */
+  transcribing: boolean;
+  /** The workspace allows browser captions. */
+  captions: boolean;
+  /** Hosts may save the transcript. */
+  transcripts: boolean;
+  /** The server and workspace allow recording. */
+  can_record: boolean;
+  /** Identity everyone sees large ("" = none). */
+  spotlight: string;
+  rules: CallsRoomRules;
+  breakout: {
+    id: string;
+    status: "open" | "closing";
+    ends_at: string | null;
+    closing_at: string | null;
+    allow_choose: boolean;
+    rooms: CallsBreakoutRef[];
+    /** Set in a breakout room's own metadata. */
+    room?: CallsBreakoutRef;
+  } | null;
+}
+
+/** Server-sent data messages on `CALLS_SIGNAL_TOPIC`. */
+export interface CallsSignal {
+  type: "polls" | "questions" | "broadcast" | "ask_unmute" | "help" | "breakout";
+  text?: string;
+  from?: string;
+  room_id?: string;
+}
+
+export interface CallsPoll {
+  id: string;
+  meeting_id: string;
+  question: string;
+  options: string[];
+  multiple: boolean;
+  /** Hosts see totals, not who voted for what. */
+  anonymous: boolean;
+  status: "draft" | "open" | "closed";
+  results_shared: boolean;
+  /** Per option: hosts always, others once results are shared. */
+  counts: number[] | null;
+  voters: number;
+  my_choices: number[];
+  /** Hosts, polls that aren't anonymous. */
+  votes?: { name: string; choices: number[] }[];
+  opened_at: string | null;
+  closed_at: string | null;
+  created_at: string;
+}
+
+export interface CallsPollInput {
+  question: string;
+  options: string[];
+  multiple?: boolean;
+  anonymous?: boolean;
+  /** Launch now (the call must be live). */
+  open?: boolean;
+}
+
+export interface CallsPollUpdate {
+  question?: string;
+  options?: string[];
+  multiple?: boolean;
+  anonymous?: boolean;
+  status?: "open" | "closed";
+  results_shared?: boolean;
+}
+
+export interface CallsQuestion {
+  id: string;
+  meeting_id: string;
+  body: string;
+  /** "Anonymous" for anonymous questions. */
+  name: string;
+  anonymous: boolean;
+  status: "pending" | "open" | "answered" | "hidden";
+  votes: number;
+  voted: boolean;
+  mine: boolean;
+  created_at: string;
+}
+
+export interface CallsMyBreakout {
+  id: string;
+  status: "open" | "closing";
+  allow_choose: boolean;
+  ends_at: string | null;
+  closing_at: string | null;
+  /** Your room (null: not assigned). */
+  room: CallsBreakoutRef | null;
+  rooms: CallsBreakoutRef[];
+}
+
+/** `GET /v1/calls/meetings/{id}/room` (guests: `POST …/public/lobby/{id}/room`). */
+export interface CallsRoomState {
+  identity: string;
+  host: boolean;
+  polls: CallsPoll[];
+  questions: CallsQuestion[];
+  breakout: CallsMyBreakout | null;
+}
+
+export interface CallsBreakoutPerson {
+  identity: string;
+  name: string;
+  user_id: string | null;
+  present: boolean;
+}
+
+export interface CallsBreakoutRoom extends CallsBreakoutRef {
+  assigned: CallsBreakoutPerson[];
+  present: CallsBreakoutPerson[];
+}
+
+/** The open breakout rooms, for hosts. */
+export interface CallsBreakout {
+  id: string;
+  status: "open" | "closing";
+  allow_choose: boolean;
+  ends_at: string | null;
+  closing_at: string | null;
+  rooms: CallsBreakoutRoom[];
+  main_room: CallsBreakoutPerson[];
+}
+
+export interface CallsCreateBreakoutsRequest {
+  /** Room names; or `count` rooms named Room 1…N. */
+  rooms?: string[];
+  count?: number;
+  assign: "auto" | "manual" | "choose";
+  /** manual: identity → room index. */
+  assignments?: Record<string, number>;
+  /** 0 = no timer. */
+  minutes?: number;
+}
+
+export interface CallsUpdateBreakoutsRequest {
+  /** identity → room id (null: unassign). */
+  assignments?: Record<string, string | null>;
+  /** Restart the timer from now (0 removes it). */
+  minutes?: number;
+  allow_choose?: boolean;
+}
+
+export type CallsRecordingStatus = "starting" | "recording" | "processing" | "ready" | "failed";
+
+export interface CallsRecording {
+  id: string;
+  meeting_id: string;
+  meeting_title: string;
+  session_id: string | null;
+  status: CallsRecordingStatus;
+  started_by: CallsUser | null;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number;
+  size_bytes: number | null;
+  expires_at: string | null;
+  error: string | null;
+  can_delete: boolean;
+  /** Playback, for one hour (ready recordings fetched one at a time). */
+  url: string | null;
+  download_url: string | null;
+}
+
+export interface CallsTranscriptLine {
+  name: string;
+  user_id: string | null;
+  text: string;
+  spoken_at: string;
+}
+
+export interface CallsTranscript {
+  session_id: string;
+  meeting_id: string;
+  title: string;
+  started_at: string;
+  ended_at: string | null;
+  lines: CallsTranscriptLine[];
+}
+
+export interface CallsChatMessage {
+  id: string;
+  name: string;
+  user_id: string | null;
+  text: string;
+  sent_at: string;
+}
+
+/** One call of a meeting, for the meeting page. */
+export interface CallsSessionSummary {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number;
+  live: boolean;
+  participant_count: number;
+  recordings: number;
+  transcript_lines: number;
+  chat_messages: number;
+}
+
+/** What a workspace allows in its calls. */
+export interface CallsOrgSettings {
+  org_id: string;
+  /** Browser speech recognition: each speaker's audio goes to their browser's vendor. */
+  captions: boolean;
+  transcripts: boolean;
+  recording: boolean;
+  /** You are a workspace owner or admin. */
+  can_manage: boolean;
+  /** This server can record at all. */
+  recording_available: boolean;
 }

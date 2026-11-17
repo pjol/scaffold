@@ -1,8 +1,8 @@
 "use client";
 
-import { reposHighlightLines, reposLanguageOf, type ReposDiffFile, type ReposDiffLine, type ReposThread, type ReposToken } from "@scaffoldapp/shared";
-import { Badge, Button, Card, IconButton, SegmentedControl, Skeleton, SkeletonGroup, TextArea, cn, toast } from "@scaffoldapp/ui-web";
-import { ChevronDown, ChevronRight, FileCode, MessageSquarePlus } from "lucide-react";
+import { reposHighlightLines, reposLanguageOf, useReposBlob, type ReposDiffFile, type ReposDiffLine, type ReposThread, type ReposToken } from "@scaffoldapp/shared";
+import { Badge, Button, Card, Checkbox, IconButton, SegmentedControl, Skeleton, SkeletonGroup, TextArea, Tooltip, cn, toast } from "@scaffoldapp/ui-web";
+import { ChevronDown, ChevronRight, FileCode, FilePen, MessageSquarePlus } from "lucide-react";
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { TokenLine } from "./code";
@@ -59,9 +59,22 @@ export function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (
 export interface DiffComments {
   threads: ReposThread[];
   canComment: boolean;
-  onComment: (c: { path: string; line: number; side: "old" | "new"; body: string }) => Promise<unknown>;
+  /** `pending`: held in the person's review until they submit it. */
+  onComment: (c: { path: string; line: number; side: "old" | "new"; body: string; pending?: boolean }) => Promise<unknown>;
   renderThread: (t: ReposThread) => ReactNode;
+  /** Offer "Add to review" (a pending review) beside "Comment now". */
+  reviews?: boolean;
+  /** Offer "Suggest a change" on new-side lines (people who can push to the head). */
+  suggestions?: boolean;
 }
+
+/** Per-person "Viewed" marks on files. */
+export interface DiffViewed {
+  paths: string[];
+  onToggle: (path: string, viewed: boolean) => void;
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico)$/i;
 
 export interface DiffViewProps {
   files: ReposDiffFile[];
@@ -75,6 +88,10 @@ export interface DiffViewProps {
   filesTruncated?: boolean;
   /** Show the file list beside the diff (≥ 1024 px). */
   tree?: boolean;
+  /** "Viewed" checkboxes (pull requests). */
+  viewed?: DiffViewed;
+  /** Show changed images side by side, read at these commits. */
+  images?: { base: string; head: string };
 }
 
 const STATUS_TONE = { added: "success", deleted: "danger", renamed: "info", copied: "info", modified: "neutral", type_changed: "warning" } as const;
@@ -85,7 +102,7 @@ function fileAnchor(path: string): string {
 }
 
 /** Changed files with unified or split diffs, an optional file list, and line comments. */
-export function DiffView({ files, mode, repoId, headRef, comments, loadFile, filesTruncated, tree = true }: DiffViewProps) {
+export function DiffView({ files, mode, repoId, headRef, comments, loadFile, filesTruncated, tree = true, viewed, images }: DiffViewProps) {
   const totalLines = useMemo(() => files.reduce((n, f) => n + f.hunks.reduce((m, h) => m + h.lines.length, 0), 0), [files]);
   const highlight = totalLines <= HIGHLIGHT_LIMIT;
   if (files.length === 0) {
@@ -104,6 +121,8 @@ export function DiffView({ files, mode, repoId, headRef, comments, loadFile, fil
           highlight={highlight}
           comments={comments}
           loadFile={loadFile}
+          viewed={viewed}
+          images={images}
         />
       ))}
     </div>
@@ -143,6 +162,8 @@ function DiffFileCard({
   highlight,
   comments,
   loadFile,
+  viewed,
+  images,
 }: {
   file: ReposDiffFile;
   mode: DiffMode;
@@ -151,12 +172,16 @@ function DiffFileCard({
   highlight: boolean;
   comments?: DiffComments | undefined;
   loadFile?: ((path: string) => Promise<ReposDiffFile | null>) | undefined;
+  viewed?: DiffViewed | undefined;
+  images?: { base: string; head: string } | undefined;
 }) {
   const [full, setFull] = useState<ReposDiffFile | null>(null);
   const [loading, setLoading] = useState(false);
   const f = full ?? file;
   const big = f.additions + f.deletions > COLLAPSE_LINES;
-  const [open, setOpen] = useState(!big && f.status !== "deleted");
+  const isViewed = !!viewed?.paths.includes(f.path);
+  const [open, setOpen] = useState(!big && f.status !== "deleted" && !isViewed);
+  const isImage = f.binary && images && (IMAGE_EXT.test(f.path) || IMAGE_EXT.test(f.old_path));
   const threads = useMemo(() => (comments ? comments.threads.filter((t) => t.root.path === f.path) : []), [comments, f.path]);
   const viewHref = f.status !== "deleted" ? `/repos/${repoId}/blob?${new URLSearchParams({ path: f.path, ...(headRef ? { ref: headRef } : {}) }).toString()}` : null;
 
@@ -204,8 +229,22 @@ function DiffFileCard({
             </Link>
           </Button>
         ) : null}
+        {viewed ? (
+          <span className="flex items-center rounded-sm border border-border px-2">
+            <Checkbox
+              checked={isViewed}
+              onCheckedChange={(on) => {
+                viewed.onToggle(f.path, on);
+                setOpen(!on);
+              }}
+              label={<span className="type-caption">Viewed</span>}
+            />
+          </span>
+        ) : null}
       </div>
-      {!open ? null : f.binary ? (
+      {!open ? null : isImage ? (
+        <ImageDiff repoId={repoId} file={f} refs={images!} />
+      ) : f.binary ? (
         <p className="px-4 py-3 type-label text-fg-muted">Binary file not shown.</p>
       ) : f.truncated ? (
         <div className="flex items-center gap-3 px-4 py-3 type-label text-fg-muted">
@@ -296,6 +335,7 @@ function FileDiff({
   }, [file, mode]);
 
   const cols = mode === "unified" ? 3 : 4;
+  const lineText = (side: "old" | "new", n: number) => allLines.find((l) => (side === "new" ? l.new === n && l.type !== "del" : l.old === n && l.type === "del"))?.text ?? "";
   const extra = (side: "old" | "new", n: number) => {
     const ts = n ? at(side, n) : [];
     const open = composer && composer.side === side && composer.line === n;
@@ -309,9 +349,11 @@ function FileDiff({
             ))}
             {open && comments ? (
               <LineComposer
+                reviews={!!comments.reviews}
+                suggestion={comments.suggestions && side === "new" ? lineText(side, n) : undefined}
                 onCancel={() => setComposer(null)}
-                onSubmit={async (body) => {
-                  await comments.onComment({ path: file.path, line: n, side, body });
+                onSubmit={async (body, pending) => {
+                  await comments.onComment({ path: file.path, line: n, side, body, ...(pending ? { pending: true } : {}) });
                   setComposer(null);
                 }}
               />
@@ -404,37 +446,112 @@ function FileDiff({
   );
 }
 
-function LineComposer({ onSubmit, onCancel }: { onSubmit: (body: string) => Promise<void>; onCancel: () => void }) {
+function LineComposer({
+  onSubmit,
+  onCancel,
+  reviews,
+  suggestion,
+}: {
+  onSubmit: (body: string, pending: boolean) => Promise<void>;
+  onCancel: () => void;
+  reviews: boolean;
+  /** The line's current text, to start a suggestion from (undefined: no suggestions). */
+  suggestion?: string | undefined;
+}) {
   const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"now" | "pending" | null>(null);
+  const send = async (pending: boolean) => {
+    if (!body.trim()) return;
+    setBusy(pending ? "pending" : "now");
+    try {
+      await onSubmit(body, pending);
+      setBody("");
+    } catch {
+      /* the caller shows the error */
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <form
       className="flex flex-col gap-2"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
-        if (!body.trim()) return;
-        setBusy(true);
-        try {
-          await onSubmit(body);
-          setBody("");
-        } catch {
-          /* the caller shows the error */
-        } finally {
-          setBusy(false);
-        }
+        void send(reviews);
       }}
     >
       <TextArea aria-label="Comment" placeholder="Leave a comment" value={body} onChange={(e) => setBody(e.target.value)} autoFocus minRows={3} />
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {suggestion !== undefined ? (
+          <Tooltip content="Propose new text for this line; people who can push apply it with one click.">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              leftIcon={<FilePen />}
+              className="mr-auto"
+              onClick={() => setBody((b) => `${b}${b && !b.endsWith("\n") ? "\n" : ""}\`\`\`suggestion\n${suggestion}\n\`\`\`\n`)}
+            >
+              Suggest a change
+            </Button>
+          </Tooltip>
+        ) : null}
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" loading={busy} disabled={!body.trim()}>
-          Comment
-        </Button>
+        {reviews ? (
+          <>
+            <Button type="button" variant="outline" size="sm" loading={busy === "now"} disabled={!body.trim() || !!busy} onClick={() => void send(false)}>
+              Comment now
+            </Button>
+            <Button type="submit" size="sm" loading={busy === "pending"} disabled={!body.trim() || !!busy}>
+              Add to review
+            </Button>
+          </>
+        ) : (
+          <Button type="submit" size="sm" loading={!!busy} disabled={!body.trim()}>
+            Comment
+          </Button>
+        )}
       </div>
     </form>
   );
+}
+
+/** A changed image: before and after, read from git. */
+function ImageDiff({ repoId, file, refs }: { repoId: string; file: ReposDiffFile; refs: { base: string; head: string } }) {
+  const before = useReposBlob(repoId, { ref: refs.base, path: file.old_path || file.path }, file.status !== "added");
+  const after = useReposBlob(repoId, { ref: refs.head, path: file.path }, file.status !== "deleted");
+  const side = (label: string, q: typeof before, shown: boolean) => (
+    <figure className="flex min-w-0 flex-1 flex-col items-center gap-2">
+      <figcaption className={cn("type-caption font-semibold", label === "Before" ? "text-danger-strong" : "text-success-strong")}>{label}</figcaption>
+      {!shown ? (
+        <p className="type-label text-fg-muted">{label === "Before" ? "Added in this change." : "Deleted in this change."}</p>
+      ) : q.isPending ? (
+        <Skeleton className="h-40 w-full max-w-xs" />
+      ) : q.data?.image && q.data.encoding === "base64" ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a data URL from the repository
+        <img
+          src={`data:${mimeOf(file.path)};base64,${q.data.content}`}
+          alt={`${file.path}, ${label.toLowerCase()}`}
+          className={cn("max-h-80 max-w-full rounded-xs border-2 bg-sunken", label === "Before" ? "border-danger" : "border-success")}
+        />
+      ) : (
+        <p className="type-label text-fg-muted">{q.data?.too_large ? "Too large to show." : "Can't show this image."}</p>
+      )}
+    </figure>
+  );
+  return (
+    <div className="flex flex-col gap-4 p-4 sm:flex-row">
+      {side("Before", before, file.status !== "added")}
+      {side("After", after, file.status !== "deleted")}
+    </div>
+  );
+}
+
+function mimeOf(p: string): string {
+  const ext = (p.split(".").pop() ?? "").toLowerCase();
+  return ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : ext === "ico" ? "image/x-icon" : ext === "bmp" ? "image/bmp" : "image/png";
 }
 
 /** Placeholder shaped like a file diff while it loads. */

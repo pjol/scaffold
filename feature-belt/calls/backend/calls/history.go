@@ -207,8 +207,35 @@ func (s *Service) callDetail(ctx context.Context, sessionID, userID uuid.UUID) (
 	if err != nil {
 		return out, err
 	}
-	if !attended && !a.isHost() {
+	records, err := CanReadRecords(ctx, s.d.Pool, sessionID, userID)
+	if err != nil {
+		return out, err
+	}
+	if !attended && !a.isHost() && !records {
 		return out, errCallHistoryGone
+	}
+	out.IsHost = a.isHost() || m.HostID == userID
+	if records {
+		recs, err := visibleRecordings(ctx, s.d.Pool, userID, `r.session_id = $2`, sessionID)
+		if err != nil {
+			return out, err
+		}
+		cr := &CallRecords{Recordings: make([]Recording, 0, len(recs))}
+		for i := range recs {
+			if err := s.finishRecording(ctx, &recs[i], userID, false); err != nil {
+				return out, err
+			}
+			cr.Recordings = append(cr.Recordings, recs[i].Recording)
+		}
+		if err := s.d.Pool.QueryRow(ctx, `SELECT
+			(SELECT count(*) FROM calls_transcript_lines WHERE session_id = $1),
+			(SELECT count(*) FROM calls_chat_messages WHERE session_id = $1),
+			(SELECT count(*) FROM calls_polls WHERE session_id = $1),
+			(SELECT count(*) FROM calls_questions WHERE session_id = $1)`, sessionID).
+			Scan(&cr.TranscriptLines, &cr.ChatMessages, &cr.Polls, &cr.Questions); err != nil {
+			return out, err
+		}
+		out.Records = cr
 	}
 	out.Meeting = MeetingRef{ID: m.ID, Code: m.Code, Title: m.Title, Kind: m.Kind}
 	out.Host = userRef(m.HostID, m.HostName, m.HostAvatar, m.HostStatus)
@@ -316,4 +343,54 @@ func (s *Service) meetings(rows pgx.Rows) ([]Meeting, error) {
 		out[i] = s.toMeeting(&list[i])
 	}
 	return out, nil
+}
+
+// listMeetingSessions: GET /calls/meetings/{id}/sessions?cursor= → the
+// meeting's calls the caller was in or may read the records of, newest first.
+func (s *Service) listMeetingSessions(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	me := auth.MustFromContext(ctx)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		return errMeetingNotFound
+	}
+	p := httpx.ParsePage(r)
+	var c cursor
+	if err := httpx.DecodeCursor(p.Cursor, &c); err != nil {
+		return err
+	}
+	var after *time.Time
+	if !c.T.IsZero() {
+		after = &c.T
+	}
+	rows, err := s.d.Pool.Query(ctx, `
+		SELECT ss.id, ss.started_at, ss.ended_at,
+		       (SELECT count(DISTINCT p.identity) FROM calls_participants p WHERE p.session_id = ss.id)::int,
+		       (SELECT count(*) FROM calls_recordings rr WHERE rr.session_id = ss.id)::int,
+		       (SELECT count(*) FROM calls_transcript_lines tl WHERE tl.session_id = ss.id)::int,
+		       (SELECT count(*) FROM calls_chat_messages cm WHERE cm.session_id = ss.id)::int
+		FROM calls_sessions ss JOIN calls_meetings m ON m.id = ss.meeting_id
+		WHERE ss.meeting_id = $2
+		  AND (`+recordsVisibleSQL("$1", "ss.id")+` OR EXISTS (SELECT 1 FROM calls_participants ap WHERE ap.session_id = ss.id AND ap.user_id = $1))
+		  AND ($3::timestamptz IS NULL OR (ss.started_at, ss.id) < ($3, $4))
+		ORDER BY ss.started_at DESC, ss.id DESC LIMIT $5`, me.UserID, id, after, c.ID, p.Limit+1)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	list := []SessionSummary{}
+	for rows.Next() {
+		var x SessionSummary
+		if err := rows.Scan(&x.ID, &x.StartedAt, &x.EndedAt, &x.ParticipantCount, &x.Recordings, &x.TranscriptLines, &x.ChatMessages); err != nil {
+			return err
+		}
+		x.Live = x.EndedAt == nil
+		x.DurationSeconds = duration(x.StartedAt, x.EndedAt)
+		list = append(list, x)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	httpx.OK(w, httpx.NewPage(list, p.Limit, func(x SessionSummary) any { return cursor{T: x.StartedAt, ID: x.ID} }))
+	return nil
 }

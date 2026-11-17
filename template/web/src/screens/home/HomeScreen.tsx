@@ -26,17 +26,15 @@ export function HomeScreen() {
     <div className="mx-auto flex w-full max-w-content flex-col gap-6 px-gutter py-section">
       <h1 className="type-title text-fg lg:type-display">{name ? `Hi, ${name}` : "Hi"}</h1>
       {homeTiles.length === 0 ? (
-        <Card padding="compact">
-          <EmptyState
-            icon={<LayoutGrid />}
-            title="No sections yet"
-            action={
-              <Button asChild variant="secondary" size="auto">
-                <Link href="/settings/profile">Edit your profile</Link>
-              </Button>
-            }
-          />
-        </Card>
+        <EmptyState
+          icon={<LayoutGrid />}
+          title="No sections yet"
+          action={
+            <Button asChild variant="secondary" size="auto">
+              <Link href="/settings/profile">Edit your profile</Link>
+            </Button>
+          }
+        />
       ) : (
         <Stagger as="ul" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Sections">
           {homeTiles.map((item, i) => {

@@ -9,18 +9,17 @@ import { signInHref } from "@/lib/redirect";
 import { AppMark } from "./AppMark";
 import { LegalLinks } from "./LegalLinks";
 
-/** Frame for public pages (sign-in, legal, support, delete account): name, one action, footer with legal links and the support address. */
+/** Frame for public pages (legal, support, delete account, invites, published pages): name, one action, footer with legal links and the support address. Sign-in has its own `AuthFrame`. */
 export function PublicFrame({ children }: { children: ReactNode }) {
   const auth = useAuthSession();
   const pathname = usePathname() ?? "/";
   const config = useConfig();
-  const onSignIn = pathname.startsWith("/sign-in");
   return (
     <div className="flex min-h-dvh flex-col bg-canvas">
       <header className="border-b border-border pt-safe">
         <div className="mx-auto flex h-topbar w-full max-w-content items-center justify-between gap-3 px-gutter">
           <AppMark />
-          {!auth.isLoaded || onSignIn ? null : auth.isSignedIn ? (
+          {!auth.isLoaded ? null : auth.isSignedIn ? (
             <Button asChild variant="secondary">
               <Link href="/">Open app</Link>
             </Button>

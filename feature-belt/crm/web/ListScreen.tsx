@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  CRM_PLATFORM_TYPES,
   CRM_SOURCE_APP,
+  CRM_TICKET_PRIORITY_LABEL,
   CRM_TYPE_LABEL,
   crmConnectionOfId,
   crmFieldText,
@@ -78,19 +80,19 @@ import { useUrlState } from "@/lib/url-state";
 import { CrmFrame, useCrm } from "./CrmFrame";
 import { CreateRecordDialog } from "./CreateRecordDialog";
 import { ColumnDialog, DEFAULT_COLUMNS, FilterDialog, SaveViewDialog, filterText } from "./ListParts";
-import { MemberPicker, MoneyText, PersonChip, RecordLink, StageBadge, TYPE_ICON, TagList, dayLabel, recordHref } from "./parts";
+import { MemberPicker, MoneyText, PersonChip, PriorityBadge, RecordLink, StageBadge, TYPE_ICON, TagList, dayLabel, listHref, pipelinesFor, recordHref } from "./parts";
 import { CrmLoadError, CrmSourceBar, CrmSourceNotices, useCrmSource, type CrmSourceState } from "./Sources";
 
-/** /crm/contacts, /crm/companies, /crm/deals: views, search, filters, columns, sort, bulk actions, export. */
+/** /crm/contacts, /crm/companies, /crm/deals, /crm/tickets: views, search, filters, columns, sort, bulk actions, export. */
 export function CrmListScreen({ type }: { type: CrmObjectType }) {
   const [creating, setCreating] = useState(false);
   return (
     <CrmFrame
       actions={
         <>
-          {type === "deal" ? (
+          {type === "deal" || type === "ticket" ? (
             <Button asChild variant="secondary" size="auto" leftIcon={<KanbanSquare />}>
-              <Link href="/crm/deals/board">Board</Link>
+              <Link href={`${listHref(type)}/board`}>Board</Link>
             </Button>
           ) : null}
           <Button size="auto" leftIcon={<Plus />} onClick={() => setCreating(true)}>
@@ -107,8 +109,18 @@ export function CrmListScreen({ type }: { type: CrmObjectType }) {
 
 /** The New dialog for the list's source: the app, or the connected account the list shows. */
 function ListCreate({ type, open, onOpenChange }: { type: CrmObjectType; open: boolean; onOpenChange: (v: boolean) => void }) {
-  const src = useCrmSource("list");
+  const src = useTypeSource(type);
   return <CreateRecordDialog type={type} open={open} onOpenChange={onOpenChange} source={src.createIn} />;
+}
+
+/**
+ * The list's source. Connected CRMs serve companies, contacts and deals; tickets are always
+ * the app's own, so their list has no source chips and never asks a connection.
+ */
+export function useTypeSource(type: CrmObjectType): CrmSourceState {
+  const src = useCrmSource("list");
+  if (CRM_PLATFORM_TYPES.includes(type)) return src;
+  return { value: CRM_SOURCE_APP, setValue: () => undefined, connection: null, connected: false, sources: undefined, createIn: CRM_SOURCE_APP };
 }
 
 function parseFilters(raw: string): CrmFilter[] {
@@ -125,7 +137,7 @@ const MINE: CrmFilter[] = [{ key: "owner", op: "is_any", value: ["me"] }];
 
 function RecordList({ type }: { type: CrmObjectType }) {
   const { orgId, settings } = useCrm();
-  const src = useCrmSource("list");
+  const src = useTypeSource(type);
   // Columns and filters come from the chosen account's schema; the app's (built-ins) for All.
   const propSource = src.connection ? src.value : CRM_SOURCE_APP;
   const props = useCrmProperties(orgId, type, propSource);
@@ -294,7 +306,7 @@ function RecordList({ type }: { type: CrmObjectType }) {
       <div className="flex flex-col gap-3 md:flex-row md:items-center">
         <Input
           aria-label={`Search ${CRM_TYPE_LABEL[type].many}`}
-          placeholder={type === "contact" ? "Search name, email or phone" : type === "company" ? "Search name or domain" : "Search deals"}
+          placeholder={type === "contact" ? "Search name, email or phone" : type === "company" ? "Search name or domain" : type === "ticket" ? "Search subjects" : "Search deals"}
           leadingIcon={<Search aria-hidden />}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -472,6 +484,7 @@ function RecordList({ type }: { type: CrmObjectType }) {
             props={props.data}
             filters={filters}
             currency={settings.currency}
+            objectType={type}
             onApply={(f) => {
               setFRaw(f.length ? JSON.stringify(f) : "");
               setFiltering(false);
@@ -529,7 +542,9 @@ function mobileDetail(r: CrmRecord, currency: string): string {
       return [r.company?.name, r.emails[0]].filter(Boolean).join(" · ") || r.job_title;
     case "company":
       return [r.domain, r.industry].filter(Boolean).join(" · ");
-    default:
+    case "ticket":
+      return [r.stage.name, CRM_TICKET_PRIORITY_LABEL[r.priority], r.owner?.name ?? ""].filter(Boolean).join(" · ");
+    case "deal":
       return [r.stage.name, r.amount !== null ? crmMoney(r.amount, r.currency) : "", r.close_date ? dayLabel(r.close_date) : ""].filter(Boolean).join(" · ") || currency;
   }
 }
@@ -551,7 +566,13 @@ function Cell({ rec, prop, first, currency }: { rec: CrmRecord; prop: CrmPropert
     case "tags":
       return <TagList tags={rec.tags} />;
     case "stage":
-      return rec.type === "deal" ? <StageBadge name={rec.stage.name} outcome={rec.stage.outcome} /> : null;
+      return rec.type === "deal" || rec.type === "ticket" ? <StageBadge name={rec.stage.name} outcome={rec.stage.outcome} /> : null;
+    case "pipeline":
+      return rec.type === "deal" || rec.type === "ticket" ? <span className="block truncate">{rec.pipeline_name}</span> : null;
+    case "priority":
+      return rec.type === "ticket" ? <PriorityBadge priority={rec.priority} /> : null;
+    case "deal":
+      return rec.type === "ticket" && rec.deal ? <RecordLink type="deal" id={rec.deal.id} name={rec.deal.name} /> : <span className="text-fg-subtle">—</span>;
     case "amount":
       return rec.type === "deal" ? <MoneyText minor={rec.amount} currency={rec.currency} /> : null;
     case "weighted_amount":
@@ -586,6 +607,11 @@ function Cell({ rec, prop, first, currency }: { rec: CrmRecord; prop: CrmPropert
   if (!prop.builtin && prop.type === "currency") {
     const v = rec.props[prop.key];
     return <MoneyText minor={typeof v === "number" ? v : null} currency={currency} />;
+  }
+  if (prop.builtin && prop.type === "select") {
+    const v = (rec as unknown as Record<string, unknown>)[prop.key];
+    const label = typeof v === "string" ? (prop.options.find((o) => o.value === v)?.label ?? v) : "";
+    return label ? <span className="block truncate">{label}</span> : <span className="text-fg-subtle">—</span>;
   }
   const text = crmFieldText(rec, prop, { currency });
   return text ? <span className="block truncate">{text}</span> : <span className="text-fg-subtle">—</span>;
@@ -707,7 +733,8 @@ function BulkBar({ type, ids, onDone }: { type: CrmObjectType; ids: string[]; on
   const { orgId, settings } = useCrm();
   const bulk = useCrmBulk(orgId);
   const tags = useCrmTags(orgId);
-  const pipelines = useCrmPipelines(type === "deal" ? orgId : null);
+  const pipelines = useCrmPipelines(type === "deal" || type === "ticket" ? orgId : null);
+  const movable = type === "deal" || type === "ticket" ? pipelinesFor(pipelines.data, type) : [];
   const [assigning, setAssigning] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const label = `${ids.length} ${ids.length === 1 ? CRM_TYPE_LABEL[type].one : CRM_TYPE_LABEL[type].many}`;
@@ -744,7 +771,7 @@ function BulkBar({ type, ids, onDone }: { type: CrmObjectType; ids: string[]; on
           ))}
           {(tags.data ?? []).length === 0 ? <MenuLabel>No tags yet</MenuLabel> : null}
         </Menu>
-        {type === "deal" ? (
+        {movable.length > 0 ? (
           <Menu
             trigger={
               <Button variant="secondary" size="sm" leftIcon={<KanbanSquare />}>
@@ -752,9 +779,9 @@ function BulkBar({ type, ids, onDone }: { type: CrmObjectType; ids: string[]; on
               </Button>
             }
           >
-            {(pipelines.data ?? []).map((p) => (
+            {movable.map((p) => (
               <div key={p.id}>
-                {(pipelines.data?.length ?? 0) > 1 ? <MenuLabel>{p.name}</MenuLabel> : null}
+                {movable.length > 1 ? <MenuLabel>{p.name}</MenuLabel> : null}
                 {p.stages.map((s) => (
                   <MenuItem key={s.id} onSelect={() => void run({ action: "move_stage", stage_id: s.id }, `Moved to ${s.name}`).catch(() => undefined)}>
                     {s.name}

@@ -125,7 +125,7 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 	now := time.Now().UTC()
 	day := now.Truncate(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	return db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
+	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		// Custom properties and tags.
 		props := []struct {
 			o             objectType
@@ -485,4 +485,8 @@ func (s *Service) SeedDev(ctx context.Context, users []uuid.UUID) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return s.seedDepth(ctx, orgID, owners)
 }

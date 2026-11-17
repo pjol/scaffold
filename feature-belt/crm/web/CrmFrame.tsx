@@ -13,7 +13,24 @@ import {
   type CrmSources,
 } from "@scaffoldapp/shared";
 import { Button, Card, EmptyState, ErrorState, Skeleton, SkeletonGroup } from "@scaffoldapp/ui-web";
-import { Building2, Building, CheckSquare, Handshake, LayoutDashboard, Lock, Settings2, Upload, UserRound } from "lucide-react";
+import {
+  BarChart3,
+  Building2,
+  Building,
+  CheckSquare,
+  ClipboardList,
+  Handshake,
+  LayoutDashboard,
+  LifeBuoy,
+  Lock,
+  Mail,
+  Package,
+  Settings2,
+  Target,
+  Upload,
+  UserRound,
+  Workflow,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, type ReactNode } from "react";
@@ -48,8 +65,10 @@ const LINKS: SectionLink[] = [
   { href: "/crm", label: "Dashboard", icon: LayoutDashboard, active: (p) => p === "/crm" },
   { href: "/crm/contacts", label: "Contacts", icon: UserRound },
   { href: "/crm/companies", label: "Companies", icon: Building2 },
-  { href: "/crm/deals", label: "Deals", icon: Handshake },
+  { href: "/crm/deals", label: "Deals", icon: Handshake, active: (p) => p.startsWith("/crm/deals") || p.startsWith("/crm/quotes") },
+  { href: "/crm/tickets", label: "Tickets", icon: LifeBuoy },
   { href: "/crm/tasks", label: "Tasks", icon: CheckSquare, useBadge: useTaskBadge },
+  { href: "/crm/reports", label: "Reports", icon: BarChart3, active: (p) => p.startsWith("/crm/reports") || p.startsWith("/crm/forecast") },
 ];
 
 /**
@@ -98,9 +117,10 @@ export function CrmFrame({ children, actions }: { children: ReactNode; actions?:
     ) : (
       <ErrorState title="Couldn't load the CRM" info={settings.error.message} onRetry={() => void settings.refetch()} retrying={settings.isRefetching} />
     );
-  } else if (settings.data) {
-    body = <Ctx.Provider value={{ orgId: org.id, orgName: org.name, settings: settings.data, sources: connectedMode ? sources.data : undefined }}>{children}</Ctx.Provider>;
   }
+  // Header actions read the CRM context too (permissions decide what they offer).
+  const value = org && settings.data ? { orgId: org.id, orgName: org.name, settings: settings.data, sources: connectedMode ? sources.data : undefined } : null;
+  if (value && !body) body = <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 
   const can = settings.data?.can;
   return (
@@ -114,7 +134,7 @@ export function CrmFrame({ children, actions }: { children: ReactNode; actions?:
             </div>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
-            {settings.data ? actions : null}
+            {value && actions ? <Ctx.Provider value={value}>{actions}</Ctx.Provider> : null}
             {settings.data ? (
               <ResourceMenu
                 feature="crm"
@@ -122,6 +142,11 @@ export function CrmFrame({ children, actions }: { children: ReactNode; actions?:
                 title="CRM"
                 label="CRM actions"
                 actions={[
+                  { id: "crm-products", label: "Products", icon: Package, onSelect: () => router.push("/crm/products") },
+                  { id: "crm-forecast", label: "Forecast and goals", icon: Target, onSelect: () => router.push("/crm/forecast") },
+                  { id: "crm-workflows", label: "Workflows", icon: Workflow, onSelect: () => router.push("/crm/workflows") },
+                  { id: "crm-forms", label: "Forms", icon: ClipboardList, onSelect: () => router.push("/crm/forms") },
+                  { id: "crm-templates", label: "Email templates", icon: Mail, onSelect: () => router.push("/crm/templates") },
                   ...(can?.import ? [{ id: "crm-import", label: "Import CSV", icon: Upload, onSelect: () => router.push("/crm/import") }] : []),
                   { id: "crm-settings", label: can?.manage_settings ? "CRM settings" : "Pipelines and properties", icon: Settings2, onSelect: () => router.push("/crm/settings") },
                 ]}

@@ -10,17 +10,21 @@ import {
   useDocsCreateComment,
   useDocsDeleteComment,
   useDocsEditComment,
+  useDocsReact,
   useDocsResolveComment,
+  DOCS_QUICK_REACTIONS,
   useMe,
   type DocsComment,
   type DocsRefs,
   type DocsSpan,
 } from "@scaffoldapp/shared";
 import { Avatar, Button, EmptyState, ErrorState, IconButton, Menu, MenuItem, SegmentedControl, SkeletonRow, TextArea, cn, toast } from "@scaffoldapp/ui-web";
-import { CheckCircle2, MessageSquare, MoreHorizontal, Pencil, RotateCcw, Trash2, Flag, X } from "lucide-react";
+import { CheckCircle2, CornerDownRight, MessageSquare, MoreHorizontal, Pencil, RotateCcw, SmilePlus, Trash2, Flag, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { ReportDialog } from "@/features/moderation";
 import { mentionLabel } from "./editor/dom";
+import { EmojiPicker } from "./EmojiPicker";
+import { Floating } from "./Floating";
 
 export interface CommentTarget {
   blockId: string;
@@ -176,7 +180,52 @@ function Body({ spans, refs }: { spans: DocsSpan[]; refs: DocsRefs }) {
   );
 }
 
-function CommentItem({ c, pageId, orgId, canManage, refs }: { c: DocsComment; pageId: string; orgId: string; canManage: boolean; refs: DocsRefs }) {
+/** Reactions on a comment: counts (yours pressed), quick picks and the full emoji set. */
+function Reactions({ c, pageId, canReact }: { c: DocsComment; pageId: string; canReact: boolean }) {
+  const react = useDocsReact(pageId);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const list = c.reactions ?? [];
+  const toggle = (emoji: string, on: boolean) => react.mutate({ commentId: c.id, emoji, on }, { onError: (e) => toast.error(errorMessage(e, "Couldn't change the reaction.")) });
+  if (!list.length && !canReact) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {list.map((r) => (
+        <button
+          key={r.emoji}
+          type="button"
+          aria-pressed={r.mine}
+          aria-label={`${r.emoji} ${r.count}${r.mine ? ", you reacted" : ""}`}
+          disabled={!canReact}
+          onClick={() => toggle(r.emoji, !r.mine)}
+          className={cn(
+            "flex h-6 items-center gap-1 rounded-pill border px-2 type-caption focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default",
+            r.mine ? "border-primary bg-primary-soft text-primary-strong" : "border-border text-fg-muted hover:bg-sunken",
+          )}
+        >
+          <span aria-hidden>{r.emoji}</span>
+          {r.count}
+        </button>
+      ))}
+      {canReact ? (
+        <IconButton label="Add a reaction" icon={<SmilePlus />} size="sm" variant="ghost" onClick={(e) => setAnchor(e.currentTarget)} />
+      ) : null}
+      <Floating open={!!anchor} anchor={anchor} onClose={() => setAnchor(null)} autoFocus label="Reactions">
+        <div className="flex w-72 flex-col gap-2 p-2">
+          <div className="flex gap-1">
+            {DOCS_QUICK_REACTIONS.map((e) => (
+              <button key={e} type="button" aria-label={`React ${e}`} className="flex size-8 items-center justify-center rounded-sm type-title hover:bg-sunken focus-visible:outline-2 focus-visible:outline-ring" onClick={() => (setAnchor(null), toggle(e, !list.some((r) => r.emoji === e && r.mine)))}>
+                {e}
+              </button>
+            ))}
+          </div>
+          <EmojiPicker onPick={(e) => (setAnchor(null), toggle(e, true))} />
+        </div>
+      </Floating>
+    </div>
+  );
+}
+
+function CommentItem({ c, pageId, orgId, canManage, canComment = false, refs }: { c: DocsComment; pageId: string; orgId: string; canManage: boolean; canComment?: boolean; refs: DocsRefs }) {
   const me = useMe();
   const [editing, setEditing] = useState(false);
   const [report, setReport] = useState(false);
@@ -231,7 +280,10 @@ function CommentItem({ c, pageId, orgId, canManage, refs }: { c: DocsComment; pa
             }
           />
         ) : (
-          <Body spans={c.body} refs={refs} />
+          <>
+            <Body spans={c.body} refs={refs} />
+            <Reactions c={c} pageId={pageId} canReact={canComment} />
+          </>
         )}
       </div>
       <ReportDialog open={report} onOpenChange={setReport} targetKind="docs.comment" targetId={c.id} noun="comment" author={c.author ? { id: c.author.id, name: c.author.name } : null} />
@@ -239,7 +291,7 @@ function CommentItem({ c, pageId, orgId, canManage, refs }: { c: DocsComment; pa
   );
 }
 
-function Thread({ t, pageId, orgId, canComment, canManage, active, refs, onFocus }: { t: DocsComment; pageId: string; orgId: string; canComment: boolean; canManage: boolean; active: boolean; refs: DocsRefs; onFocus: () => void }) {
+function Thread({ t, pageId, orgId, canComment, canManage, active, refs, onFocus, onJump }: { t: DocsComment; pageId: string; orgId: string; canComment: boolean; canManage: boolean; active: boolean; refs: DocsRefs; onFocus: () => void; onJump?: () => void }) {
   const reply = useDocsCreateComment(pageId);
   const resolve = useDocsResolveComment(pageId);
   const [replying, setReplying] = useState(false);
@@ -249,10 +301,25 @@ function Thread({ t, pageId, orgId, canComment, canManage, active, refs, onFocus
       className={cn("flex flex-col gap-3 rounded-md border bg-surface p-3", active ? "border-warning" : "border-border")}
       onClick={onFocus}
     >
-      {t.quote ? <p className="line-clamp-2 rounded-sm bg-warning-soft px-2 py-1 type-label text-fg">{t.quote}</p> : null}
-      <CommentItem c={t} pageId={pageId} orgId={orgId} canManage={canManage} refs={refs} />
+      <div className="flex items-start gap-2">
+        {t.quote ? <p className="line-clamp-2 min-w-0 flex-1 rounded-sm bg-warning-soft px-2 py-1 type-label text-fg">{t.quote}</p> : <p className="min-w-0 flex-1 type-caption text-fg-muted">{t.block_id ? "On a block" : "On the page"}</p>}
+        {t.block_id && onJump ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            leftIcon={<CornerDownRight />}
+            onClick={(e) => {
+              e.stopPropagation();
+              onJump();
+            }}
+          >
+            Show
+          </Button>
+        ) : null}
+      </div>
+      <CommentItem c={t} pageId={pageId} orgId={orgId} canManage={canManage} canComment={canComment} refs={refs} />
       {t.replies.map((r) => (
-        <CommentItem key={r.id} c={r} pageId={pageId} orgId={orgId} canManage={canManage} refs={refs} />
+        <CommentItem key={r.id} c={r} pageId={pageId} orgId={orgId} canManage={canManage} canComment={canComment} refs={refs} />
       ))}
       <div className="flex flex-wrap items-center gap-2">
         {canComment && !t.resolved_at && !replying ? (
@@ -324,7 +391,7 @@ export function CommentsPanel({
   /** Off inside a sheet, which has its own title and close button. */
   header?: boolean;
 }) {
-  const [status, setStatus] = useState<"open" | "resolved">("open");
+  const [status, setStatus] = useState<"open" | "resolved" | "all">("open");
   const threads = useDocsComments(pageId, status);
   const create = useDocsCreateComment(pageId);
   const auth = useAuthSession();
@@ -338,13 +405,14 @@ export function CommentsPanel({
         </div>
       ) : null}
       <div className={cn("flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto", header ? "p-4" : "")}>
-        <SegmentedControl<"open" | "resolved">
+        <SegmentedControl<"open" | "resolved" | "all">
           value={status}
           onValueChange={setStatus}
           aria-label="Show"
           options={[
             { value: "open", label: "Open" },
             { value: "resolved", label: "Resolved" },
+            { value: "all", label: "All" },
           ]}
         />
         {blockFilter ? (
@@ -389,10 +457,21 @@ export function CommentsPanel({
         ) : threads.isError ? (
           <ErrorState title="Couldn't load comments." onRetry={() => void threads.refetch()} />
         ) : list.length === 0 ? (
-          <EmptyState icon={<MessageSquare />} title={status === "open" ? "No open comments" : "No resolved comments"} />
+          <EmptyState icon={<MessageSquare />} title={status === "open" ? "No open comments" : status === "resolved" ? "No resolved comments" : "No comments yet"} />
         ) : (
           list.map((t) => (
-            <Thread key={t.id} t={t} pageId={pageId} orgId={orgId} canComment={canComment} canManage={canManage} active={t.id === activeThread} refs={refs} onFocus={() => onActivate(t.id, t.block_id)} />
+            <Thread
+              key={t.id}
+              t={t}
+              pageId={pageId}
+              orgId={orgId}
+              canComment={canComment}
+              canManage={canManage}
+              active={t.id === activeThread}
+              refs={refs}
+              onFocus={() => onActivate(t.id, null)}
+              onJump={() => onActivate(t.id, t.block_id)}
+            />
           ))
         )}
       </div>

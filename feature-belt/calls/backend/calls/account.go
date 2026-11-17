@@ -57,6 +57,18 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		`UPDATE calls_participants SET left_at = now() WHERE user_id = $1 AND left_at IS NULL`,
 		`UPDATE calls_removals SET removed_by = NULL WHERE removed_by = $1`,
 		`UPDATE calls_sessions SET ended_by = NULL WHERE ended_by = $1`,
+		// What they said, wrote, asked and voted is theirs: it goes.
+		`DELETE FROM calls_transcript_lines WHERE user_id = $1`,
+		`DELETE FROM calls_chat_messages WHERE user_id = $1`,
+		`DELETE FROM calls_questions WHERE user_id = $1`,
+		`DELETE FROM calls_question_votes WHERE user_id = $1`,
+		`DELETE FROM calls_poll_votes WHERE user_id = $1`,
+		`DELETE FROM calls_breakout_assignments WHERE user_id = $1`,
+		`UPDATE calls_polls SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE calls_breakouts SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE calls_recordings SET started_by = NULL WHERE started_by = $1`,
+		`UPDATE calls_recordings SET stopped_by = NULL WHERE stopped_by = $1`,
+		`UPDATE calls_org_settings SET updated_by = NULL WHERE updated_by = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
 			return err
@@ -133,12 +145,35 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		}
 		return rows.Err()
 	}
+	type said struct {
+		Code string    `json:"code"`
+		Kind string    `json:"kind"` // transcript | chat | question
+		Text string    `json:"text"`
+		At   time.Time `json:"at"`
+	}
+	type vote struct {
+		Code     string    `json:"code"`
+		Question string    `json:"question"`
+		Choices  []string  `json:"choices"`
+		At       time.Time `json:"at"`
+	}
+	type recording struct {
+		Code      string     `json:"code"`
+		Title     string     `json:"title"`
+		Status    string     `json:"status"`
+		StartedAt time.Time  `json:"started_at"`
+		EndedAt   *time.Time `json:"ended_at"`
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
 	out := struct {
 		Hosted      []hosted     `json:"meetings_hosted"`
 		Invitations []invitation `json:"invitations"`
 		Attendance  []attendance `json:"attendance"`
 		Rings       []ring       `json:"rings"`
-	}{[]hosted{}, []invitation{}, []attendance{}, []ring{}}
+		Said        []said       `json:"transcripts_chat_and_questions"`
+		Votes       []vote       `json:"poll_votes"`
+		Recordings  []recording  `json:"recordings_of_meetings_hosted"`
+	}{[]hosted{}, []invitation{}, []attendance{}, []ring{}, []said{}, []vote{}, []recording{}}
 	if err := collect(`SELECT code, title, kind, access, starts_at, ends_at, canceled_at, created_at FROM calls_meetings
 		WHERE host_id = $1 ORDER BY created_at`, func(r pgx.Rows) error {
 		var h hosted
@@ -173,6 +208,41 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		var v ring
 		err := r.Scan(&v.Code, &v.Direction, &v.Status, &v.At)
 		out.Rings = append(out.Rings, v)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	if err := collect(`
+		SELECT m.code, 'transcript', l.body, l.spoken_at FROM calls_transcript_lines l
+		  JOIN calls_sessions ss ON ss.id = l.session_id JOIN calls_meetings m ON m.id = ss.meeting_id WHERE l.user_id = $1
+		UNION ALL
+		SELECT m.code, 'chat', c.body, c.sent_at FROM calls_chat_messages c
+		  JOIN calls_sessions ss ON ss.id = c.session_id JOIN calls_meetings m ON m.id = ss.meeting_id WHERE c.user_id = $1
+		UNION ALL
+		SELECT m.code, 'question', q.body, q.created_at FROM calls_questions q JOIN calls_meetings m ON m.id = q.meeting_id WHERE q.user_id = $1
+		ORDER BY 4`, func(r pgx.Rows) error {
+		var v said
+		err := r.Scan(&v.Code, &v.Kind, &v.Text, &v.At)
+		out.Said = append(out.Said, v)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT m.code, p.question, ARRAY(SELECT p.options[c + 1] FROM unnest(v.choices) c), v.updated_at
+		FROM calls_poll_votes v JOIN calls_polls p ON p.id = v.poll_id JOIN calls_meetings m ON m.id = p.meeting_id
+		WHERE v.user_id = $1 ORDER BY v.updated_at`, func(r pgx.Rows) error {
+		var v vote
+		err := r.Scan(&v.Code, &v.Question, &v.Choices, &v.At)
+		out.Votes = append(out.Votes, v)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT m.code, m.title, r.status, r.started_at, r.ended_at, r.expires_at
+		FROM calls_recordings r JOIN calls_meetings m ON m.id = r.meeting_id WHERE m.host_id = $1 OR r.started_by = $1 ORDER BY r.started_at`, func(r pgx.Rows) error {
+		var v recording
+		err := r.Scan(&v.Code, &v.Title, &v.Status, &v.StartedAt, &v.EndedAt, &v.ExpiresAt)
+		out.Recordings = append(out.Recordings, v)
 		return err
 	}); err != nil {
 		return nil, err

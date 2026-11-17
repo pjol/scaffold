@@ -124,9 +124,21 @@ func New(d *app.Deps) *Service {
 		DefaultRoles: []string{orgs.RoleOwner, orgs.RoleAdmin},
 	})
 	access.OnChange(s.accessChanged)
+	access.RegisterPermission(access.Permission{
+		Key: PermFileRequests, Title: "Request files",
+		Info:         "Make upload links that let people without an account send files into a folder. They also need permission to share with a public link.",
+		DefaultRoles: []string{orgs.RoleOwner, orgs.RoleAdmin, orgs.RoleMember},
+	})
 	moderation.RegisterTarget(Kind, itemTarget{s})
+	moderation.RegisterTarget(KindComment, commentTarget{s})
 	notifications.RegisterKind(notifications.Kind{ID: KindPublicDisabled, Label: "Public links turned off by staff", Push: true, Email: true})
-	httpx.RedactPathPrefix("/v1/files/public/", "/files-archive/", "/files-connected/")
+	notifications.RegisterKind(notifications.Kind{ID: KindCommentMention, Label: "Mentions in file comments", Push: true, Email: true,
+		AgentTarget: notifications.DataTarget(Kind, "id")})
+	notifications.RegisterKind(notifications.Kind{ID: KindCommentReply, Label: "Comments and replies on your files", Push: true, Email: false,
+		AgentTarget: notifications.DataTarget(Kind, "id")})
+	notifications.RegisterKind(notifications.Kind{ID: KindRequestUpload, Label: "Files sent to your file requests", Push: true, Email: true,
+		AgentTarget: notifications.DataTarget(Kind, "id")})
+	httpx.RedactPathPrefix("/v1/files/public/", "/v1/files/requests/public/", "/files-archive/", "/files-connected/")
 	RegisterItemType(ItemType{Type: TypeLink, Title: "Shortcut", Icon: "link", Link: itemLink,
 		OnDelete: func(context.Context, pgx.Tx, uuid.UUID) error { return nil }}) // files_links goes with the row
 	return s
@@ -175,6 +187,27 @@ func (s *Service) MountUser(r chi.Router) {
 	w.Post("/files/items/{id}/restore", h(s.restoreRoute))
 	w.Delete("/files/items/{id}", h(s.deleteRoute))
 	w.With(auth.RateLimit(300, time.Hour)).Post("/files/items/{id}/versions/{versionID}/restore", h(s.restoreVersion))
+	w.With(auth.RateLimit(300, time.Hour)).Patch("/files/items/{id}/versions/{versionID}", h(s.patchVersion))
+	w.With(auth.RateLimit(300, time.Hour)).Put("/files/items/{id}/thumbnail", h(s.putThumbnail))
+	w.With(auth.RateLimit(300, time.Hour)).Post("/files/items/{id}/lock", h(s.lockRoute))
+	w.With(auth.RateLimit(300, time.Hour)).Delete("/files/items/{id}/lock", h(s.unlockRoute))
+	w.With(auth.RateLimit(300, time.Hour)).Put("/files/items/{id}/color", h(s.colorRoute))
+	w.With(auth.RateLimit(60, time.Hour)).Post("/files/items/{id}/owner", h(s.transferOwner))
+	r.With(member).Get("/files/orgs/{orgID}/storage", h(s.storageRoute))
+
+	r.Get("/files/items/{id}/comments", h(s.commentsRoute))
+	w.With(auth.RateLimit(300, time.Hour)).Post("/files/items/{id}/comments", h(s.addCommentRoute))
+	w.With(auth.RateLimit(300, time.Hour)).Patch("/files/comments/{commentID}", h(s.patchComment))
+	w.Delete("/files/comments/{commentID}", h(s.deleteComment))
+
+	r.Get("/files/items/{id}/public-links", h(s.publicLinks))
+	w.With(auth.RateLimit(120, time.Hour)).Put("/files/items/{id}/public-links/{linkID}", h(s.putLinkOptions))
+
+	r.Get("/files/items/{id}/requests", h(s.folderRequests))
+	w.With(auth.RateLimit(60, time.Hour)).Post("/files/items/{id}/requests", h(s.createRequest))
+	r.With(member).Get("/files/orgs/{orgID}/requests", h(s.myRequests))
+	w.Post("/files/requests/{requestID}/close", h(s.closeRequest))
+	r.Get("/files/requests/{requestID}/uploads", h(s.requestUploads))
 	s.mountConnected(r)
 }
 
@@ -188,6 +221,12 @@ func (s *Service) MountPublic(r chi.Router) {
 	pub.With(browse).Get("/files/public/{token}/items/{id}/children", h(s.publicChildren))
 	pub.With(fetch).Get("/files/public/{token}/items/{id}/url", h(s.publicURL))
 	pub.With(fetch).Get("/files/public/{token}/items/{id}/text", h(s.publicText))
+	passwords := httprate.LimitBy(10, time.Minute, httpx.KeyByClientIP, httprate.WithLimitHandler(httpx.RateLimitedHandler))
+	pub.With(passwords).Post("/files/public/{token}/password", h(s.publicPassword))
+	sends := httprate.LimitBy(60, time.Hour, httpx.KeyByClientIP, httprate.WithLimitHandler(httpx.RateLimitedHandler))
+	pub.With(browse).Get("/files/requests/public/{token}", h(s.publicRequest))
+	pub.With(sends).Post("/files/requests/public/{token}/uploads", h(s.publicRequestUpload))
+	pub.With(browse).Post("/files/requests/public/{token}/uploads/{uploadID}/complete", h(s.publicRequestComplete))
 }
 
 // MountRoot serves zip downloads: long responses outside the request
@@ -210,6 +249,7 @@ func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "files.delete_objects", time.Minute, s.deleteQueuedObjects)
 	go jobs.Every(ctx, s.d.Pool, "files.purge_trash", 10*time.Minute, s.purgeExpired)
 	go jobs.Every(ctx, s.d.Pool, "files.cleanup", time.Hour, s.cleanup)
+	go jobs.Every(ctx, s.d.Pool, "files.process", 15*time.Second, s.processPending)
 }
 
 // AuthorizeTopic owns files:<uuid>: an org id admits its members (top-level
@@ -342,8 +382,9 @@ func (s *Service) purgeExpired(ctx context.Context) error {
 	return nil
 }
 
-// cleanup drops abandoned uploads (their objects are queued by trigger),
-// finished upload rows, expired zip tokens and old recents.
+// cleanup drops abandoned uploads, including file-request uploads (their
+// objects are queued by trigger), finished upload rows, expired zip tokens,
+// link unlocks and old recents.
 func (s *Service) cleanup(ctx context.Context) error {
 	for _, q := range []string{
 		`DELETE FROM files_uploads WHERE completed_at IS NULL AND expires_at < now()`,
@@ -351,6 +392,8 @@ func (s *Service) cleanup(ctx context.Context) error {
 		`DELETE FROM files_archives WHERE expires_at < now()`,
 		`DELETE FROM files_connected_downloads WHERE expires_at < now()`,
 		`DELETE FROM files_recents WHERE at < now() - interval '90 days'`,
+		`DELETE FROM files_request_uploads WHERE completed_at IS NULL AND expires_at < now()`,
+		`DELETE FROM files_link_unlocks WHERE expires_at < now()`,
 	} {
 		if _, err := s.d.Pool.Exec(ctx, q); err != nil {
 			return err

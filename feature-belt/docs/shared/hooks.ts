@@ -10,6 +10,7 @@ import { registerRealtimeHandler } from "../hooks/realtime-handlers";
 import { topic } from "../realtime/topics";
 import { generateId } from "../utils/id";
 import { docsEndpoints } from "./api";
+import { docsTimeZone, type DocsComputedValue, type DocsGroupInfo } from "./database";
 import { DocsPageSession, type DocsSessionSnapshot } from "./session";
 import type {
   DocsBlock,
@@ -18,6 +19,7 @@ import type {
   DocsCreatePageRequest,
   DocsCreateRowRequest,
   DocsFile,
+  DocsLinkPreview,
   DocsImportRequest,
   DocsMoveRequest,
   DocsPage,
@@ -62,6 +64,7 @@ export const docsKeys = {
   public: (token: string, pageId?: string | null) => ["docs", "public", token, pageId ?? "root"] as const,
   publicRows: (token: string, dbId: string, params: DocsRowsParams) => ["docs", "public-rows", token, dbId, params] as const,
   publicFile: (token: string, id: string) => ["docs", "public-file", token, id] as const,
+  linkPreview: (id: string) => ["docs", "link-preview", id] as const,
 };
 
 function retryUnlessClientError(count: number, error: ApiError): boolean {
@@ -328,9 +331,21 @@ export function useDocsUploadFile(pageId: string): UseMutationResult<DocsFile, A
   return useMutation<DocsFile, ApiError, { file: UploadSource; name: string; contentType?: string }>({
     mutationFn: async ({ file, name, contentType }) => {
       const up = await uploadFile(api.http, { file, purpose: "docs_file", ...(contentType ? { contentType } : {}) });
-      return d.registerFile(pageId, { key: up.key, name, size: up.size });
+      return d.registerFile(pageId, { key: up.key, name, size: up.size, content_type: up.content_type });
     },
   });
+}
+
+/** A bookmark's stored preview with fresh image links (refetched before they expire). With `token`: on a public page. */
+export function useDocsLinkPreview(previewId: string | null | undefined, token?: string | null): UseQueryResult<DocsLinkPreview, ApiError> {
+  const d = useEndpoints(docsEndpoints);
+  return useApiQuery(docsKeys.linkPreview(previewId ?? ""), ({ signal }) => d.getLinkPreview(previewId!, token, { signal }), { staleTime: 40 * 60_000, gcTime: 50 * 60_000, retry: retryUnlessClientError, refetchOnWindowFocus: false }, !!previewId);
+}
+
+/** Fetches a link's preview (for a new bookmark or the paste menu). */
+export function useDocsFetchLinkPreview(): UseMutationResult<DocsLinkPreview, ApiError, string> {
+  const d = useEndpoints(docsEndpoints);
+  return useMutation<DocsLinkPreview, ApiError, string>({ mutationFn: (url) => d.linkPreview(url) });
 }
 
 /** A file's short-lived download link (refreshed before it expires). With `token`, through a public link. */
@@ -468,6 +483,11 @@ export function useDocsRestoreSnapshot(pageId: string): UseMutationResult<{ vers
 export interface DocsRowsResult {
   rows: DocsRow[];
   refs: DocsRefs;
+  /** From the first page: rows matching, groups in display order, footer calculations. */
+  total?: number;
+  groups?: DocsGroupInfo[];
+  sub_groups?: DocsGroupInfo[];
+  calculations?: Record<string, DocsComputedValue>;
 }
 
 /** A view's rows, keyset-paged (`fetchNextPage`), with people's names merged across pages. */
@@ -488,7 +508,15 @@ export function useDocsRows(dbId: string | null | undefined, params: DocsRowsPar
         Object.assign(refs.users, p.refs.users);
         Object.assign(refs.pages, p.refs.pages);
       }
-      return { rows: data.pages.flatMap((p) => p.items), refs };
+      const first = data.pages[0];
+      return {
+        rows: data.pages.flatMap((p) => p.items),
+        refs,
+        ...(first?.total !== undefined ? { total: first.total } : {}),
+        ...(first?.groups ? { groups: first.groups } : {}),
+        ...(first?.sub_groups ? { sub_groups: first.sub_groups } : {}),
+        ...(first?.calculations ? { calculations: first.calculations } : {}),
+      };
     },
     enabled: !!dbId && enabled,
     staleTime: 15_000,
@@ -513,7 +541,7 @@ export function useDocsSetRowValues(dbId: string): UseMutationResult<DocsPage, A
   const d = useEndpoints(docsEndpoints);
   const qc = useQueryClient();
   return useMutation<DocsPage, ApiError, { rowId: string } & DocsRowValuesRequest>({
-    mutationFn: ({ rowId, ...body }) => d.setRowValues(rowId, body),
+    mutationFn: ({ rowId, ...body }) => d.setRowValues(rowId, { tz: docsTimeZone(), ...body }),
     onMutate: async ({ rowId, values, title, position }) => {
       await qc.cancelQueries({ queryKey: docsKeys.rowsAll(dbId) });
       patchRows(qc, dbId, (r) => {
@@ -547,7 +575,7 @@ export function useDocsCreateRow(dbId: string): UseMutationResult<DocsPage, ApiE
   const d = useEndpoints(docsEndpoints);
   const qc = useQueryClient();
   return useMutation<DocsPage, ApiError, DocsCreateRowRequest>({
-    mutationFn: (body) => d.createRow(dbId, body),
+    mutationFn: (body) => d.createRow(dbId, { tz: docsTimeZone(), ...body }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: docsKeys.rowsAll(dbId) }),
   });
 }
@@ -633,7 +661,23 @@ export function useDocsPublicPage(token: string | null | undefined, pageId?: str
 registerRealtimeHandler("docs.tree", (qc, e) => invalidateTree(qc, e.data.org_id));
 registerRealtimeHandler("docs.page", (qc, e) => {
   const page = e.data.page;
-  qc.setQueryData<DocsPageDetail>(docsKeys.page(page.id), (old) => (old ? { ...old, page: { ...page, my_level: old.page.my_level } } : old));
+  if (!page) {
+    // A row whose relation changed from the other side: refetch it.
+    if (e.data.row_id) void qc.invalidateQueries({ queryKey: docsKeys.page(e.data.row_id) });
+    return;
+  }
+  qc.setQueryData<DocsPageDetail>(docsKeys.page(page.id), (old) => {
+    if (!old) return old;
+    // Events carry stored values; a row's computed ones (formulas, rollups) are per viewer, so keep them until the refetch.
+    const computed = new Set((old.database?.schema ?? []).filter((p) => p.type === "formula" || p.type === "rollup").map((p) => p.id));
+    const props = { ...page.props };
+    for (const k of computed) {
+      const v = old.page.props[k];
+      if (v !== undefined) props[k] = v;
+    }
+    return { ...old, page: { ...page, props, my_level: old.page.my_level } };
+  });
+  if (page.is_row) void qc.invalidateQueries({ queryKey: docsKeys.page(page.id) });
 });
 registerRealtimeHandler("docs.comments", (qc, e) => refreshComments(qc, e.data.page_id));
 registerRealtimeHandler("docs.rows", (qc, e) => void qc.invalidateQueries({ queryKey: docsKeys.rowsAll(e.data.database_id) }));

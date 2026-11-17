@@ -4,6 +4,7 @@ import * as MenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Children, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { cn } from "../lib/cn";
 import { useMediaQuery } from "../lib/hooks";
+import { resolveChild } from "../lib/slot";
 
 export interface MenuProps {
   /** One focusable element that opens the menu (rendered with `asChild`). */
@@ -58,7 +59,7 @@ export interface MenuItemProps {
 export function MenuItem({ icon, children, onSelect, destructive, disabled, asChild }: MenuItemProps) {
   const className = cn(itemClasses, destructive ? "text-danger-strong" : "text-fg");
   if (asChild) {
-    const child = Children.only(children);
+    const child = Children.only(resolveChild(children));
     const content =
       icon && isValidElement(child)
         ? cloneElement(
@@ -67,7 +68,7 @@ export function MenuItem({ icon, children, onSelect, destructive, disabled, asCh
             icon,
             <span className="min-w-0 flex-1 truncate">{(child as ReactElement<{ children?: ReactNode }>).props.children}</span>,
           )
-        : children;
+        : child;
     return (
       <MenuPrimitive.Item asChild className={className} disabled={disabled} {...(onSelect ? { onSelect } : {})}>
         {content}

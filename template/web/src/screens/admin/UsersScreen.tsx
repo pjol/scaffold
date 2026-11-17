@@ -1,7 +1,7 @@
 "use client";
 
 import { useAdminUsers, type UserStatus } from "@scaffoldapp/shared";
-import { Card, EmptyState, ErrorState, Select } from "@scaffoldapp/ui-web";
+import { EmptyState, ErrorState, Select } from "@scaffoldapp/ui-web";
 import { SearchX, Users } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -37,16 +37,16 @@ export function UsersScreen() {
           <SearchInput value={q} onSearch={setQ} placeholder="Name, email or ID" label="Search users" className="sm:max-w-sm sm:flex-1" />
           <Select aria-label="Status" options={STATUS_OPTIONS} value={status} onValueChange={(v) => setStatus(v as StatusFilter)} className="sm:w-48" />
         </div>
-        <Card padding="none">
+        <div>
           {users.isPending ? (
-            <TableSkeleton rows={8} cols={4} />
+            <TableSkeleton rows={8} cols={4} flush />
           ) : users.isError ? (
             <ErrorState compact title="Couldn't load users" info={users.error.message} onRetry={() => void users.refetch()} retrying={users.isFetching} />
           ) : rows.length === 0 ? (
             <EmptyState compact icon={filtered ? <SearchX /> : <Users />} title={filtered ? "No matching users" : "No users yet"} />
           ) : (
             <>
-              <Table label="Users">
+              <Table label="Users" flush>
                 <THead>
                   <TH>User</TH>
                   <TH className="hidden sm:table-cell">Email</TH>
@@ -87,7 +87,7 @@ export function UsersScreen() {
               <LoadMore hasNextPage={users.hasNextPage} isFetchingNextPage={users.isFetchingNextPage} fetchNextPage={users.fetchNextPage} />
             </>
           )}
-        </Card>
+        </div>
       </div>
     </Screen>
   );

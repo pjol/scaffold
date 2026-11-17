@@ -1,4 +1,4 @@
-import type { Presence, PresenceClearAfter, PresenceCustomStatus, PresenceSetStatusRequest } from "./types";
+import type { Presence, PresenceClearAfter, PresenceCustomStatus, PresenceMine, PresenceQuietHours, PresenceSchedule, PresenceSetStatusRequest } from "./types";
 
 /** "Clear after" choices for a custom status, in menu order. */
 export const PRESENCE_CLEAR_AFTER_OPTIONS: readonly { value: PresenceClearAfter; label: string }[] = [
@@ -10,14 +10,12 @@ export const PRESENCE_CLEAR_AFTER_OPTIONS: readonly { value: PresenceClearAfter;
   { value: "never", label: "Don't clear" },
 ];
 
-/** Quick statuses offered above the custom one. */
+/** The app's default statuses, offered with the person's own saved ones (`usePresenceStatusPresets`). */
 export const PRESENCE_STATUS_PRESETS: readonly { emoji: string; text: string; clear_after: PresenceClearAfter }[] = [
   { emoji: "📅", text: "In a meeting", clear_after: "1h" },
   { emoji: "🚌", text: "Commuting", clear_after: "30m" },
-  { emoji: "🎧", text: "Focusing", clear_after: "1h" },
   { emoji: "🤒", text: "Out sick", clear_after: "today" },
-  { emoji: "🏡", text: "Working remotely", clear_after: "today" },
-  { emoji: "🌴", text: "On vacation", clear_after: "never" },
+  { emoji: "🌴", text: "On holiday", clear_after: "never" },
 ];
 
 /** Emoji offered in the status picker (any emoji can be typed). */
@@ -105,4 +103,52 @@ export function presenceUntilLabel(iso: string | null | undefined, now: Date = n
 /** Contains a pictograph and no letters: what the backend accepts as a status emoji. */
 export function isPresenceEmoji(value: string): boolean {
   return value.length > 0 && value.length <= 32 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(value) && !/\p{L}|\s/u.test(value);
+}
+
+// ───────────────────────────────────────────────────────────── schedule ──
+
+/** Weekday names, Sunday first (the schedule's `days` order). */
+export const PRESENCE_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
+/** This device's IANA time zone ("UTC" when the runtime doesn't say). */
+export function presenceDeviceZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/** A starting schedule: weeknights 22:00–08:00 (Sunday to Thursday nights) in this device's zone, off until saved. */
+export function presenceDefaultSchedule(zone: string = presenceDeviceZone()): PresenceSchedule {
+  const night: PresenceQuietHours = { start: "22:00", end: "08:00" };
+  return { enabled: true, time_zone: zone, days: [night, night, night, night, night, null, null] };
+}
+
+/** "22:00" → "10:00 PM" in the viewer's locale; "24:00" reads as midnight. */
+export function presenceClockLabel(hm: string): string {
+  const [h, m] = hm.split(":").map(Number);
+  if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m)) return hm;
+  return timeFmt.format(new Date(2026, 0, 1, h % 24, m));
+}
+
+/** "10:00 PM – 8:00 AM", "All day". */
+export function presenceQuietHoursLabel(w: PresenceQuietHours | null | undefined): string {
+  if (!w) return "Off";
+  if (w.start === "00:00" && w.end === "24:00") return "All day";
+  return `${presenceClockLabel(w.start)} – ${presenceClockLabel(w.end)}`;
+}
+
+/** Times offered for quiet hours, every 30 minutes, "24:00" last (only meaningful as an end). */
+export const PRESENCE_CLOCK_OPTIONS: readonly string[] = [
+  ...Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`),
+  "24:00",
+];
+
+/** Where the current Do Not Disturb comes from: your schedule, a time you set, or both. */
+export function presenceDndSource(m: Pick<PresenceMine, "manual_dnd_until" | "quiet_until"> | null | undefined, now = Date.now()): "schedule" | "manual" | null {
+  if (!m) return null;
+  if (m.manual_dnd_until && Date.parse(m.manual_dnd_until) > now) return "manual";
+  if (m.quiet_until && Date.parse(m.quiet_until) > now) return "schedule";
+  return null;
 }

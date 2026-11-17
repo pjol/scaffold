@@ -67,12 +67,64 @@ export interface ChannelsMessage {
   pinned: boolean;
   /** In your Later list. */
   saved: boolean;
+  /** Outside links (cached previews) and links to the app (resolve with `useChannelsCard`). */
+  links: ChannelsLinkPreview[];
+  /** The author removed the previews. */
+  links_hidden: boolean;
+  poll: ChannelsPoll | null;
+  /** A forwarded message: load the original with `useChannelsMessage(forward.message_id)` (404 = you can't see it). */
+  forward: { message_id: string | null } | null;
+  /** Posted by an incoming webhook (`bot_name` is its name). */
+  integration: boolean;
   client_id: string | null;
   edited_at: string | null;
   deleted: boolean;
   created_at: string;
   /** Staff view only. */
   deleted_by?: "sender" | "moderator" | "staff" | "account_deleted" | null;
+}
+
+export interface ChannelsLinkPreview {
+  url: string;
+  kind: "external" | "internal";
+  title: string;
+  description: string;
+  site_name: string;
+  /** Stored thumbnail (never the outside host). */
+  image_url: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  icon_url: string | null;
+}
+
+/** A card for a link to one of the app's resources, as you may see it. */
+export interface ChannelsCard {
+  kind: string;
+  title: string;
+  context: string;
+  snippet: string;
+  /** A lucide icon name. */
+  icon: string;
+  link: string;
+  at: string | null;
+}
+
+export interface ChannelsPollOption {
+  id: string;
+  text: string;
+  count: number;
+  /** Empty for anonymous polls. */
+  voter_ids: string[];
+}
+
+export interface ChannelsPoll {
+  multiple: boolean;
+  anonymous: boolean;
+  closed: boolean;
+  options: ChannelsPollOption[];
+  voters: number;
+  /** Your choices; null in live events (keep the cached ones). */
+  my_votes: string[] | null;
 }
 
 /** A message in the client cache: server messages plus optimistic sends. */
@@ -114,6 +166,8 @@ export interface ChannelsSidebarChannel {
   muted: boolean;
   notify: ChannelsNotify;
   starred: boolean;
+  /** Your custom sidebar section. */
+  section_id: string | null;
   last_read_at: string | null;
   last_message_at: string;
 }
@@ -136,10 +190,44 @@ export interface ChannelsWorkspace {
   org_id: string;
   role: string;
   channels: ChannelsSidebarChannel[];
-  permissions: { create_public: boolean; create_private: boolean; set_default: boolean };
+  permissions: { create_public: boolean; create_private: boolean; set_default: boolean; add_emoji: boolean; manage_workspace: boolean; manage_integrations: boolean };
   threads_unread: number;
   later_count: number;
+  /** Since you last opened Activity (capped at 100). */
+  activity_unread: number;
+  draft_count: number;
+  scheduled_count: number;
+  prefs: ChannelsUserPrefs;
+  sections: ChannelsSidebarSection[];
+  settings: ChannelsWorkspaceSettings;
   config: ChannelsConfig;
+}
+
+export type ChannelsBuiltinSection = "starred" | "channels" | "direct";
+
+export interface ChannelsUserPrefs {
+  sidebar_sort: "alpha" | "recent";
+  collapsed: ChannelsBuiltinSection[];
+  keywords: string[];
+  /** 0 = default, 1–5 = light → dark. */
+  skin_tone: number;
+  title: string;
+  /** IANA; clients report it. */
+  timezone: string;
+  activity_read_at: string | null;
+}
+
+export interface ChannelsSidebarSection {
+  id: string;
+  name: string;
+  position: number;
+  collapsed: boolean;
+}
+
+export interface ChannelsWorkspaceSettings {
+  unfurl_links: boolean;
+  /** Null = keep forever. */
+  retention_days: number | null;
 }
 
 /** `GET /v1/channels/unread`: badge totals across your orgs. */
@@ -163,7 +251,12 @@ export interface ChannelsBrowseChannel {
 }
 
 export interface ChannelsPermissions {
+  /** Top-level messages (posting may be limited to admins). */
   post: boolean;
+  /** Thread replies. */
+  reply: boolean;
+  manage_integrations: boolean;
+  manage_retention: boolean;
   edit: boolean;
   archive: boolean;
   remove_members: boolean;
@@ -181,6 +274,12 @@ export interface ChannelsDetail extends ChannelsSidebarChannel {
   member: boolean;
   role: ChannelsRole | "";
   pinned_count: number;
+  posting: "everyone" | "admins";
+  /** Posting = admins: members may still reply in threads. */
+  replies_open: boolean;
+  /** This channel's override; null = the workspace's. */
+  retention_days: number | null;
+  bookmark_count: number;
   permissions: ChannelsPermissions;
   /** A block either way with you: drop their live events. */
   hidden_user_ids: string[];
@@ -249,6 +348,122 @@ export interface ChannelsLaterItem {
   channel: ChannelsRef;
   saved_at: string;
   completed_at: string | null;
+  reminder: { id: string; remind_at: string; fired_at: string | null } | null;
+}
+
+export interface ChannelsDraft {
+  id: string;
+  channel: ChannelsRef;
+  thread_root_id: string | null;
+  /** Markdown with mention tokens. */
+  body: string;
+  mentions: ChannelsUser[];
+  updated_at: string;
+}
+
+export interface ChannelsScheduled {
+  id: string;
+  channel: ChannelsRef;
+  thread_root_id: string | null;
+  also_send_to_channel: boolean;
+  body: string;
+  mentions: ChannelsUser[];
+  attachments: ChannelsAttachmentInput[];
+  send_at: string;
+  status: "scheduled" | "failed";
+  error: string;
+  created_at: string;
+}
+
+export interface ChannelsReminder {
+  id: string;
+  text: string;
+  /** Null for text reminders, and messages you can't open any more. */
+  message: ChannelsMessage | null;
+  channel: ChannelsRef | null;
+  remind_at: string;
+  fired_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface ChannelsSentItem {
+  message: ChannelsMessage;
+  channel: ChannelsRef;
+}
+
+export type ChannelsActivityKind = "mention" | "reaction" | "thread_reply";
+
+export interface ChannelsActivityItem {
+  kind: ChannelsActivityKind;
+  at: string;
+  message: ChannelsMessage;
+  channel: ChannelsRef;
+  actor: ChannelsUser | null;
+  emoji: string;
+  unread: boolean;
+}
+
+export interface ChannelsUnreadChannel {
+  channel: ChannelsSidebarChannel;
+  /** Oldest first. */
+  messages: ChannelsMessage[];
+  has_more: boolean;
+}
+
+export interface ChannelsCustomEmoji {
+  id: string;
+  name: string;
+  url: string;
+  /** The original's name, for aliases. */
+  alias_of: string | null;
+  created_by: ChannelsUser | null;
+  can_delete: boolean;
+  created_at: string;
+}
+
+export interface ChannelsEmojiList {
+  items: ChannelsCustomEmoji[];
+  can_add: boolean;
+  /** Your most used: unicode or `:name:`. */
+  frequent: string[];
+  expires_at: string;
+}
+
+export interface ChannelsBookmark {
+  id: string;
+  title: string;
+  /** "" when you have no access. */
+  url: string;
+  kind: "link" | "internal";
+  card: ChannelsCard | null;
+  accessible: boolean;
+  position: number;
+  created_by: ChannelsUser | null;
+  can_edit: boolean;
+  created_at: string;
+}
+
+export interface ChannelsWebhook {
+  id: string;
+  channel_id: string;
+  name: string;
+  created_by: ChannelsUser | null;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+/** Create response: the URL is shown once. */
+export interface ChannelsNewWebhook extends ChannelsWebhook {
+  url: string;
+}
+
+export interface ChannelsProfileCard extends ChannelsUser {
+  org_role: string;
+  title: string;
+  /** IANA; "" when unknown. */
+  timezone: string;
+  teams: ChannelsGroup[];
 }
 
 export interface ChannelsSearchHit {
@@ -282,18 +497,73 @@ export interface ChannelsUpdateRequest {
   /** "private" converts a public channel (one way). */
   kind?: "private";
   is_default?: boolean;
+  posting?: "everyone" | "admins";
+  replies_open?: boolean;
+  /** 0 = follow the workspace. */
+  retention_days?: number;
 }
 
 export interface ChannelsPrefsRequest {
   notify?: ChannelsNotify;
   muted?: boolean;
   starred?: boolean;
+  /** Null moves it back to Channels / Direct messages. */
+  section_id?: string | null;
+}
+
+export interface ChannelsUserPrefsRequest {
+  sidebar_sort?: "alpha" | "recent";
+  collapsed?: ChannelsBuiltinSection[];
+  keywords?: string[];
+  skin_tone?: number;
+  title?: string;
+  timezone?: string;
+}
+
+export interface ChannelsScheduleRequest {
+  body: string;
+  thread_root_id?: string | null;
+  also_send_to_channel?: boolean;
+  attachments?: ChannelsAttachmentInput[];
+  /** RFC 3339, or */
+  send_at?: string;
+  /** "tomorrow at 9am", read in `tz`. */
+  when?: string;
+  tz?: string;
+}
+
+export interface ChannelsReminderRequest {
+  message_id?: string;
+  text?: string;
+  /** `/remind` text: "me to call Sam tomorrow at 3pm". */
+  command?: string;
+  at?: string;
+  when?: string;
+  tz?: string;
+}
+
+export interface ChannelsPollRequest {
+  client_id?: string;
+  question: string;
+  options: string[];
+  multiple?: boolean;
+  anonymous?: boolean;
+  thread_root_id?: string | null;
+}
+
+export interface ChannelsForwardRequest {
+  channel_id: string;
+  comment?: string;
+  thread_root_id?: string | null;
+  client_id?: string;
 }
 
 export interface ChannelsAttachmentInput {
   /** From `useUpload` with purpose `channel_attachment`. */
   key: string;
   file_name?: string;
+  /** What you uploaded; only trusted for display of unknown types. */
+  content_type?: string;
   size_bytes?: number;
   width?: number;
   height?: number;
@@ -340,7 +610,7 @@ export interface ChannelsWindowParams {
 
 export interface ChannelsChannelEvent {
   channel_id: string;
-  reason: "updated" | "members" | "pins";
+  reason: "updated" | "members" | "pins" | "bookmarks" | "retention";
   user_id?: string;
 }
 
@@ -355,7 +625,7 @@ export interface ChannelsSidebarMessage {
 export interface ChannelsSidebarEvent {
   org_id: string;
   channel_id: string;
-  reason: "message" | "added" | "removed" | "updated" | "read" | "later";
+  reason: "message" | "added" | "removed" | "updated" | "read" | "later" | "prefs" | "emoji" | "draft" | "scheduled" | "activity";
   message?: ChannelsSidebarMessage;
   mention: boolean;
 }

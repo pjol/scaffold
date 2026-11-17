@@ -1,8 +1,8 @@
 {
   "name": "repos",
   "title": "Repositories",
-  "version": "1.1.0",
-  "summary": "Git repositories in the drive: clone, pull and push over HTTPS with personal git credentials, browse and edit code in the app, branches with protection, and pull requests with line comments, reviews and merges; connected GitHub and GitLab repositories open in the same screens; agents work through branch \u2192 commit \u2192 pull request.",
+  "version": "1.2.1",
+  "summary": "Git repositories in the drive: clone, pull and push over HTTPS with personal git credentials, browse and edit code in the app, issues with labels, milestones and templates, pull requests with reviews, suggested changes, code owners, statuses from CI and merges (merge, squash, rebase, auto-merge), releases and outbound webhooks; connected GitHub and GitLab repositories open in the same screens; agents work through issues and branch → commit → pull request.",
   "requires": [
     "files",
     "access",
@@ -160,6 +160,8 @@
   },
   "stitch": [
     "Mount REPOS_DIR on a persistent volume and run one instance for /git and repository writes (repositories live on that disk); install git 2.38+ in the image.",
-    "Connected repositories need the connectors feature (app.Connections) with GitHub and/or GitLab OAuth apps registered for this deployment; repos declares repos.github.read/write and repos.gitlab.read/write. Without it the Connected section and tools don't appear."
+    "Connected repositories need the connectors feature (app.Connections) with GitHub and/or GitLab OAuth apps registered for this deployment; repos declares repos.github.read/write and repos.gitlab.read/write. Without it the Connected section and tools don't appear.",
+    "Point CI at POST /v1/repos/{id}/statuses/{sha} with a CI token from the repository settings, and let webhook deliveries reach the outside (safehttp: public https only outside development).",
+    "Link cards: repos.IssueRef(ctx, q, viewer, repoID, number) (a pull request or issue, same check as their routes, agent-capped, trashed repositories not found) and repos.IssueFromPath: register channels.RegisterUnfurler(\"/repos/\", …) in the app's stitching, returning nil on repos.ErrIssueNotFound."
   ]
 }

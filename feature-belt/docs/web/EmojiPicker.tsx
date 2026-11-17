@@ -3,8 +3,19 @@
 import { Input } from "@scaffoldapp/ui-web";
 import { useMemo, useState } from "react";
 
-/** A small, searchable set of icons for pages and callouts. */
-const EMOJI: [string, string][] = [
+/**
+ * A searchable set of emoji for page icons, callouts and ":" shortcodes. The first keyword is the shortcode
+ * (":smile"), the rest are search words.
+ */
+export const EMOJI: [string, string][] = [
+  ["😀", "grinning smile happy"], ["😃", "smiley happy"], ["😄", "smile happy joy"], ["😁", "grin beaming"], ["😂", "joy laugh tears"], ["🤣", "rofl laughing"],
+  ["😊", "blush smile"], ["🙂", "slight_smile"], ["😉", "wink"], ["😍", "heart_eyes love"], ["🥰", "smiling_hearts love"], ["😘", "kiss"],
+  ["😎", "sunglasses cool"], ["🤓", "nerd"], ["🤔", "thinking hmm"], ["🤨", "raised_eyebrow skeptical"], ["😐", "neutral"], ["😴", "sleeping tired"],
+  ["😅", "sweat_smile relief"], ["😬", "grimacing awkward"], ["🙄", "eye_roll"], ["😮", "open_mouth wow surprised"], ["😢", "cry sad"], ["😭", "sob crying"],
+  ["😡", "rage angry"], ["🤯", "exploding_head mind blown"], ["🥳", "partying celebrate"], ["🤩", "star_struck"], ["😇", "innocent halo"], ["🤗", "hugging hug"],
+  ["👍", "thumbsup +1 yes like"], ["👎", "thumbsdown -1 no"], ["👌", "ok_hand"], ["🙏", "pray please thanks"], ["💪", "muscle strong"], ["✌️", "v peace"],
+  ["🤞", "crossed_fingers luck"], ["👀", "eyes look"], ["💯", "100 hundred"], ["✔️", "heavy_check_mark"], ["❌", "x cross no"], ["⭕", "o circle"],
+
   ["📄", "page document"], ["📘", "book handbook manual"], ["📚", "books library reading"], ["📝", "note memo write"], ["🗂️", "folder index projects"],
   ["📁", "folder"], ["📌", "pin important"], ["📎", "attachment clip"], ["🔖", "bookmark"], ["🗒️", "notepad"], ["📋", "clipboard checklist"],
   ["✅", "done check task"], ["☑️", "check box"], ["🎯", "goal target"], ["🚀", "launch rocket ship"], ["💡", "idea tip light"], ["⚠️", "warning caution"],
@@ -25,6 +36,20 @@ const EMOJI: [string, string][] = [
 ];
 
 /** Emoji grid with a search box. */
+/** Emoji whose shortcode or words start with q (shortcode matches first). */
+export function searchEmoji(q: string, limit = 8): { emoji: string; name: string }[] {
+  const s = q.trim().toLowerCase();
+  if (!s) return [];
+  const head: { emoji: string; name: string }[] = [];
+  const rest: { emoji: string; name: string }[] = [];
+  for (const [emoji, words] of EMOJI) {
+    const list = words.split(" ");
+    if (list[0]!.startsWith(s)) head.push({ emoji, name: list[0]! });
+    else if (list.some((w) => w.startsWith(s))) rest.push({ emoji, name: list[0]! });
+  }
+  return [...head, ...rest].slice(0, limit);
+}
+
 export function EmojiPicker({ onPick, onRemove }: { onPick: (emoji: string) => void; onRemove?: () => void }) {
   const [q, setQ] = useState("");
   const list = useMemo(() => {

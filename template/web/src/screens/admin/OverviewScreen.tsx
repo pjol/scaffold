@@ -35,9 +35,7 @@ export function OverviewScreen() {
           <Skeleton className="h-24" />
         </SkeletonGroup>
       ) : overview.isError ? (
-        <Card padding="compact">
-          <ErrorState compact title="Couldn't load the counts" info={overview.error.message} onRetry={() => void overview.refetch()} retrying={overview.isFetching} />
-        </Card>
+        <ErrorState compact title="Couldn't load the counts" info={overview.error.message} onRetry={() => void overview.refetch()} retrying={overview.isFetching} />
       ) : (
         <Stagger as="ul" className="grid gap-4 sm:grid-cols-3" aria-label="Accounts">
           <StaggerItem as="li">
@@ -59,17 +57,15 @@ export function OverviewScreen() {
           </Button>
         }
       >
-        <Card padding="none">
-          {audit.isPending ? (
-            <TableSkeleton rows={3} cols={4} />
-          ) : audit.isError ? (
-            <ErrorState compact title="Couldn't load recent actions" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
-          ) : recent.length === 0 ? (
-            <EmptyState compact icon={<ScrollText />} title="No admin actions yet" />
-          ) : (
-            <AuditTable entries={recent} />
-          )}
-        </Card>
+        {audit.isPending ? (
+          <TableSkeleton rows={3} cols={4} flush />
+        ) : audit.isError ? (
+          <ErrorState compact title="Couldn't load recent actions" info={audit.error.message} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
+        ) : recent.length === 0 ? (
+          <EmptyState compact icon={<ScrollText />} title="No admin actions yet" />
+        ) : (
+          <AuditTable entries={recent} />
+        )}
       </Section>
     </Screen>
   );

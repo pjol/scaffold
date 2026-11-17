@@ -8,8 +8,15 @@ import {
   calendarOnDay,
   calendarTodayKey,
   errorMessage,
+  formatCalendarDay,
   formatCalendarDayLong,
+  formatCalendarMonth,
   formatCalendarTime,
+  calendarMonthGrid,
+  calendarSameMonth,
+  calendarStartOfMonth,
+  calendarWeekdayNames,
+  useCalendarCalendars,
   isCalendarConnected,
   useCalendarConnectedRange,
   useCalendarRange,
@@ -19,7 +26,7 @@ import {
 } from "@scaffoldapp/shared";
 import { Button, ConnectPrompt, EmptyState, ErrorState, IconButton, ProviderIcon, SegmentedControl, Skeleton, SourceBadge, Text, useTheme } from "@scaffoldapp/ui-native";
 import { router, Stack } from "expo-router";
-import { CalendarDays, ChevronLeft, ChevronRight, Link2, Plus, Repeat } from "lucide-react-native";
+import { CalendarDays, ChevronLeft, ChevronRight, Focus, Link2, Plane, Plus, Repeat } from "lucide-react-native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
@@ -41,23 +48,29 @@ function sourceText(o: CalendarOccurrence): string {
   return o.source?.type === "connected" ? `, from ${o.source.account ? `${o.source.provider} ${o.source.account}` : o.source.provider}` : "";
 }
 
-function newEvent(startsAt?: string, endsAt?: string) {
-  router.push({ pathname: "/calendar/form", params: startsAt && endsAt ? { starts_at: startsAt, ends_at: endsAt } : {} });
+function newEvent(startsAt?: string, endsAt?: string, eventType?: "out_of_office" | "focus") {
+  router.push({ pathname: "/calendar/form", params: { ...(startsAt && endsAt ? { starts_at: startsAt, ends_at: endsAt } : {}), ...(eventType ? { event_type: eventType } : {}) } });
 }
+
+type View3 = "agenda" | "day" | "3day" | "month";
 
 /** Calendar: agenda (the next two weeks) or one day as a timeline; tap empty time to add an event. */
 export function CalendarScreen() {
   const theme = useTheme();
   const s = theme.space;
   const c = theme.colors;
-  const { zone, ready } = useCalendarZone();
+  const { zone, weekStart, ready } = useCalendarZone();
   const today = calendarTodayKey(zone);
-  const [view, setView] = useState<"agenda" | "day">("agenda");
+  const [view, setView] = useState<View3>("agenda");
   const [date, setDate] = useState<string | null>(null);
   const day = date ?? today;
-  const span = view === "day" ? 1 : AGENDA_DAYS;
-  const from = ready ? calendarDayStart(day, zone) : null;
-  const to = ready ? calendarDayStart(calendarAddDays(day, span), zone) : null;
+  const span = view === "day" ? 1 : view === "3day" ? 3 : AGENDA_DAYS;
+  const grid = useMemo(() => calendarMonthGrid(day, weekStart), [day, weekStart]);
+  const first = view === "month" ? grid[0]! : day;
+  const last = view === "month" ? calendarAddDays(grid[grid.length - 1]!, 1) : calendarAddDays(day, span);
+  const from = ready ? calendarDayStart(first, zone) : null;
+  const to = ready ? calendarDayStart(last, zone) : null;
+  const calendars = useCalendarCalendars();
   const range = useCalendarRange(from, to);
   // Connected calendars' events (Google, Outlook) join the app's own; hidden calendars drop out.
   const connected = useCalendarConnectedRange(from, to);
@@ -65,8 +78,17 @@ export function CalendarScreen() {
   const items = useMemo(() => {
     const hidden = new Set<string>();
     for (const src of sources.data?.sources ?? []) for (const cal of src.calendars) if (cal.hidden) hidden.add(`${src.id}|${cal.id}`);
-    return [...(range.data?.items ?? []), ...(connected.data?.items ?? []).filter((o) => !hidden.has(`${o.connection_id}|${o.calendar_id}`))];
-  }, [range.data, connected.data, sources.data]);
+    // The app's calendars: hidden ones drop out; default-coloured events take their calendar's colour.
+    const cals = new Map((calendars.data?.items ?? []).map((x) => [x.id, x]));
+    const app = (range.data?.items ?? [])
+      .filter((o) => !(o.calendar_id && cals.get(o.calendar_id)?.hidden))
+      .map((o): CalendarOccurrence => {
+        const cal = o.calendar_id ? cals.get(o.calendar_id) : undefined;
+        if (o.redacted) return { ...o, color: "neutral" };
+        return cal && o.color === "primary" && cal.color !== "primary" ? { ...o, color: cal.color } : o;
+      });
+    return [...app, ...(connected.data?.items ?? []).filter((o) => !hidden.has(`${o.connection_id}|${o.calendar_id}`))];
+  }, [range.data, connected.data, sources.data, calendars.data]);
   const hasConnected = (sources.data?.sources ?? []).some((x) => x.type === "connected");
 
   return (
@@ -79,28 +101,42 @@ export function CalendarScreen() {
               <ResourceMenu
                 feature="calendar"
                 title="Calendar"
-                actions={[{ id: "links", label: "Booking links", icon: Link2, onSelect: () => router.push("/calendar/links") }]}
+                actions={[
+                  { id: "ooo", label: "Out of office", icon: Plane, onSelect: () => newEvent(calendarDayStart(day, zone), calendarDayStart(calendarAddDays(day, 1), zone), "out_of_office") },
+                  { id: "focus", label: "Focus time", icon: Focus, onSelect: () => newEvent(calendarFromWall(day, 9 * 60, zone), calendarFromWall(day, 11 * 60, zone), "focus") },
+                  { id: "links", label: "Booking links", icon: Link2, onSelect: () => router.push("/calendar/links") },
+                ]}
               />
             </View>
           ),
         }}
       />
       <View style={{ gap: s[3], paddingHorizontal: s[4], paddingTop: s[3], paddingBottom: s[2] }}>
-        <SegmentedControl<"agenda" | "day">
+        <SegmentedControl<View3>
           accessibilityLabel="View"
           options={[
             { value: "agenda", label: "Agenda" },
             { value: "day", label: "Day" },
+            { value: "3day", label: "3 days" },
+            { value: "month", label: "Month" },
           ]}
           value={view}
           onValueChange={setView}
         />
         <View style={{ flexDirection: "row", alignItems: "center", gap: s[1] }}>
-          <IconButton label="Previous" icon={ChevronLeft} variant="ghost" onPress={() => setDate(calendarAddDays(day, -span))} />
+          <IconButton label="Previous" icon={ChevronLeft} variant="ghost" onPress={() => setDate(view === "month" ? calendarStartOfMonth(day, -1) : calendarAddDays(day, -span))} />
           <Text role="titleSm" style={{ flex: 1 }} numberOfLines={1} accessibilityLiveRegion="polite">
-            {view === "day" ? formatCalendarDayLong(day) : day === today ? "Next 2 weeks" : `From ${formatCalendarDayLong(day)}`}
+            {view === "day"
+              ? formatCalendarDayLong(day)
+              : view === "month"
+                ? formatCalendarMonth(day)
+                : view === "3day"
+                  ? `${formatCalendarDay(day)} – ${formatCalendarDay(calendarAddDays(day, 2))}`
+                  : day === today
+                    ? "Next 2 weeks"
+                    : `From ${formatCalendarDayLong(day)}`}
           </Text>
-          <IconButton label="Next" icon={ChevronRight} variant="ghost" onPress={() => setDate(calendarAddDays(day, span))} />
+          <IconButton label="Next" icon={ChevronRight} variant="ghost" onPress={() => setDate(view === "month" ? calendarStartOfMonth(day, 1) : calendarAddDays(day, span))} />
           {day !== today ? (
             <Button variant="secondary" size="md" onPress={() => setDate(null)}>
               Today
@@ -118,8 +154,20 @@ export function CalendarScreen() {
         <View style={{ padding: s[4] }}>
           <ErrorState title="Couldn't load your calendar" info={errorMessage(range.error)} onRetry={() => void range.refetch()} retrying={range.isRefetching} />
         </View>
-      ) : view === "day" ? (
-        <DayTimeline day={day} zone={zone} items={items} refreshing={range.isRefetching} onRefresh={() => void range.refetch()} />
+      ) : view === "day" || view === "3day" ? (
+        <DayTimeline days={view === "day" ? [day] : [day, calendarAddDays(day, 1), calendarAddDays(day, 2)]} zone={zone} items={items} refreshing={range.isRefetching} onRefresh={() => void range.refetch()} />
+      ) : view === "month" ? (
+        <MonthGrid
+          month={day}
+          grid={grid}
+          zone={zone}
+          weekStart={weekStart}
+          items={items}
+          onDay={(d) => {
+            setDate(d);
+            setView("day");
+          }}
+        />
       ) : (
         <Agenda
           day={day}
@@ -217,24 +265,80 @@ function Agenda({ day, zone, items, refreshing, onRefresh, footer }: { day: stri
   );
 }
 
-function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string; zone: string; items: CalendarOccurrence[]; refreshing: boolean; onRefresh: () => void }) {
+/** Month: a dot per event on each day (up to three); a day opens its timeline. */
+function MonthGrid({ month, grid, zone, weekStart, items, onDay }: { month: string; grid: string[]; zone: string; weekStart: number; items: CalendarOccurrence[]; onDay: (d: string) => void }) {
+  const theme = useTheme();
+  const s = theme.space;
+  const c = theme.colors;
+  const today = calendarTodayKey(zone);
+  const names = calendarWeekdayNames(weekStart, "narrow");
+  return (
+    <ScrollView contentContainerStyle={{ paddingHorizontal: s[2], paddingBottom: s[8] }}>
+      <View style={{ flexDirection: "row" }}>
+        {names.map((n, i) => (
+          <Text key={i} role="caption" tone="muted" style={{ flex: 1, textAlign: "center", paddingVertical: s[2] }}>
+            {n}
+          </Text>
+        ))}
+      </View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+        {grid.map((d) => {
+          const dayItems = calendarOnDay(items, d, zone);
+          const inMonth = calendarSameMonth(d, month);
+          const isToday = d === today;
+          return (
+            <Pressable
+              key={d}
+              accessibilityRole="button"
+              accessibilityLabel={`${formatCalendarDayLong(d)}, ${dayItems.length === 0 ? "nothing scheduled" : `${dayItems.length} ${dayItems.length === 1 ? "event" : "events"}`}`}
+              onPress={() => onDay(d)}
+              style={({ pressed }) => ({
+                width: `${100 / 7}%`,
+                minHeight: theme.tap.lg + s[2],
+                alignItems: "center",
+                gap: s[1],
+                paddingVertical: s[1],
+                borderTopWidth: 1,
+                borderColor: c.border,
+                backgroundColor: pressed ? c.sunken : "transparent",
+              })}
+            >
+              <View style={{ minWidth: theme.tap.sm - s[2], height: theme.tap.sm - s[2], borderRadius: theme.radius.pill, alignItems: "center", justifyContent: "center", backgroundColor: isToday ? c.primary : "transparent" }}>
+                <Text role="label" weight={isToday ? 600 : 400} style={{ color: isToday ? c.primaryFg : inMonth ? c.text : c.textSubtle }}>
+                  {Number(d.slice(8))}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: s[0.5] }}>
+                {dayItems.slice(0, 3).map((o) => (
+                  <CalendarDot key={calendarOccurrenceKey(o)} color={calendarColors(theme, o.color).dot} />
+                ))}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
+function DayTimeline({ days, zone, items, refreshing, onRefresh }: { days: string[]; zone: string; items: CalendarOccurrence[]; refreshing: boolean; onRefresh: () => void }) {
   const theme = useTheme();
   const s = theme.space;
   const c = theme.colors;
   const now = useNow(60_000);
   const today = calendarTodayKey(zone);
   const ref = useRef<ScrollView>(null);
-  const onDay = calendarOnDay(items, day, zone);
-  const allDay = onDay.filter((o) => o.all_day);
-  const placed = calendarLayoutDay(onDay.filter((o) => !o.all_day), day, zone, 30);
   const [width, setWidth] = useState(0);
   const gutter = theme.space[12];
+  const multi = days.length > 1;
+  const colWidth = width / days.length;
+  const allDay = days.flatMap((d) => calendarOnDay(items, d, zone).filter((o) => o.all_day)).filter((o, i, arr) => arr.findIndex((x) => calendarOccurrenceKey(x) === calendarOccurrenceKey(o)) === i);
 
   useEffect(() => {
-    const target = day === today ? Math.max(0, calendarMinutesOfDay(Date.now(), zone) - 60) : 8 * 60;
+    const target = days.includes(today) ? Math.max(0, calendarMinutesOfDay(Date.now(), zone) - 60) : 8 * 60;
     const t = setTimeout(() => ref.current?.scrollTo({ y: (target / 60) * HOUR, animated: false }), 0);
     return () => clearTimeout(t);
-  }, [day, today, zone]);
+  }, [days.join(","), today, zone]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <View style={{ flex: 1 }}>
@@ -252,6 +356,15 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
           })}
         </View>
       ) : null}
+      {multi ? (
+        <View style={{ flexDirection: "row", paddingLeft: gutter, paddingBottom: s[1] }}>
+          {days.map((d) => (
+            <Text key={d} role="caption" weight={600} style={{ flex: 1, textAlign: "center", color: d === today ? c.primaryStrong : c.textMuted }} numberOfLines={1}>
+              {formatCalendarDay(d)}
+            </Text>
+          ))}
+        </View>
+      ) : null}
       <ScrollView ref={ref} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />} contentContainerStyle={{ paddingBottom: s[8] }}>
         <View style={{ height: 24 * HOUR, flexDirection: "row" }}>
           <View style={{ width: gutter }}>
@@ -261,12 +374,16 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
               </Text>
             ))}
           </View>
-          <View style={{ flex: 1 }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+          <View style={{ flex: 1, flexDirection: "row" }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+            {days.map((day) => {
+              const placed = calendarLayoutDay(calendarOnDay(items, day, zone).filter((o) => !o.all_day), day, zone, 30);
+              return (
+          <View key={day} style={{ flex: 1, borderLeftWidth: multi ? 1 : 0, borderColor: c.border }}>
             {Array.from({ length: 24 }, (_, h) => (
               <Pressable
                 key={h}
                 accessibilityRole="button"
-                accessibilityLabel={`Add an event at ${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? "AM" : "PM"}`}
+                accessibilityLabel={`Add an event${multi ? ` on ${formatCalendarDay(day)}` : ""} at ${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? "AM" : "PM"}`}
                 onPress={() => newEvent(calendarFromWall(day, h * 60, zone), calendarFromWall(day, h * 60 + 30, zone))}
                 style={({ pressed }) => ({ height: HOUR, borderTopWidth: 1, borderColor: c.border, backgroundColor: pressed ? c.sunken : "transparent" })}
               />
@@ -274,7 +391,7 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
             {placed.map((p) => {
               const o = p.item;
               const col = calendarColors(theme, o.color);
-              const w = width / p.columns;
+              const w = colWidth / p.columns;
               return (
                 <Pressable
                   key={calendarOccurrenceKey(o)}
@@ -313,6 +430,9 @@ function DayTimeline({ day, zone, items, refreshing, onRefresh }: { day: string;
             {day === today ? (
               <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, top: (calendarMinutesOfDay(now, zone) / 60) * HOUR, height: 2, backgroundColor: c.danger }} />
             ) : null}
+          </View>
+              );
+            })}
           </View>
         </View>
       </ScrollView>

@@ -1,8 +1,8 @@
 {
   "name": "calls",
   "title": "Calls",
-  "version": "1.3.0",
-  "summary": "Video meetings with a shareable link and a lobby for guests, instant calls that ring people's devices, and Zoom or Teams meetings (plus Meet from Google Calendar) beside them.",
+  "version": "1.4.1",
+  "summary": "Video meetings with a shareable link and a lobby for guests, instant calls that ring, recording, captions and transcripts, polls and Q&A, breakout rooms and host controls, plus Zoom or Teams meetings (and Meet from Google Calendar) beside them.",
   "requires": [
     "orgs",
     "notifications"
@@ -85,6 +85,37 @@
       "required": "optional",
       "default": "true",
       "doc": "true: when livekit-server isn't on PATH, dev-up fetches the pinned release into .data/bin (Linux: the release binary; macOS: builds the release source with Go, about 2 minutes once). Both are checksum-verified. false: install it yourself (brew install livekit)."
+    },
+    {
+      "name": "CALLS_RECORDING",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "false",
+      "doc": "true: hosts may record calls (LiveKit Egress room composite to one MP4 in S3_BUCKET). Needs an Egress service on the LiveKit project (included in LiveKit Cloud; deploy livekit/egress when self-hosting) and S3 storage; without either the Record control stays hidden."
+    },
+    {
+      "name": "CALLS_RECORDING_RETENTION",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "2160h",
+      "doc": "How long a finished recording is kept before it is deleted (Go duration; 0 keeps recordings until a host deletes them)."
+    },
+    {
+      "name": "CALLS_RECORDING_LAYOUT",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "default": "speaker",
+      "doc": "Egress layout: speaker (active speaker and screen share large), grid, or single-speaker."
+    },
+    {
+      "name": "CALLS_RECORDING_S3_ENDPOINT",
+      "tier": "backend",
+      "group": "calls",
+      "required": "optional",
+      "doc": "S3 endpoint the Egress service uploads to, when it differs from S3_ENDPOINT (e.g. an internal address). Empty: S3_ENDPOINT (empty for AWS)."
     }
   ],
   "files": [
@@ -202,8 +233,10 @@
     "Time zones: calls.SetUserZone(fn) gives each person's zone (e.g. calendar.UserZone) so invitations, agent previews and search read in it; without it, invitations use the inviter's device zone (sent as time_zone) and always name the zone. On the client, call setCallsTimeZone(zone) (shared, web and mobile) from a session mount with the person's zone (e.g. their calendar settings' zone) so Calls shows times on the same clock; times in another zone than the device's are labelled.",
     "Channels and DMs: a \"Start call\" button calls POST /v1/calls/calls {user_ids} (or calls.StartCall from Go) and opens /meet/<code>?autojoin=1. Keep the product words the same everywhere: Start call (an instant call), New meeting (a link), Video call (a calendar location type).",
     "Set PUBLIC_WEB_URL: join links are PUBLIC_WEB_URL/meet/<code> (public on web: guests knock there). Mobile: configure universal links for /meet/* to open the app's meet/[code] route.",
-    "Privacy policy: name LiveKit (or your SFU host) as a processor of call audio and video; calls aren't recorded. Mobile: the plugin adds camera and microphone purpose strings and iOS background audio; rebuild the dev client.",
+    "Privacy policy: name LiveKit (or your SFU host) as a processor of call audio and video; recordings go to your S3 bucket and captions in Chrome/Edge send each captioning speaker's audio to Google/Microsoft. Mobile: the plugin adds camera and microphone purpose strings and iOS background audio; rebuild the dev client.",
     "Mobile placement: Calls is a Home row; give it a tab if calls are a primary destination.",
-    "Meeting providers: with the connectors feature (2.0+), people connect Zoom (calls.zoom.meetings) and Microsoft (calls.microsoft.teams); offer them in your calendar's \"Video call\" (calls.Providers, CreateProviderMeeting / UpdateProviderMeeting / CancelProviderMeeting from your calendar.Conferencing) and list calendar meetings in Calls with calls.SetCalendarMeetings (e.g. over calendar.PlatformMeetings)."
+    "Meeting providers: with the connectors feature (2.0+), people connect Zoom (calls.zoom.meetings) and Microsoft (calls.microsoft.teams); offer them in your calendar's \"Video call\" (calls.Providers, CreateProviderMeeting / UpdateProviderMeeting / CancelProviderMeeting from your calendar.Conferencing) and list calendar meetings in Calls with calls.SetCalendarMeetings (e.g. over calendar.PlatformMeetings).",
+    "Recording: set CALLS_RECORDING=true once the LiveKit project has Egress and S3_* is reachable from it (CALLS_RECORDING_S3_ENDPOINT when the address differs); egress events arrive on the same /webhooks/livekit. Allow GET and Range from the web origin in the bucket's CORS for playback. Workspaces can still turn recording off (Calls ⋮ → Calls in this workspace).",
+    "Captions and transcripts are off per workspace until an owner or admin turns them on (Calls ⋮ → Calls in this workspace). To turn saved transcripts into meeting notes, register calls.OnTranscriptReady(fn) and read calls.ReadTranscript(ctx, q, sessionID) (e.g. have the assistant write a docs page linked from the calendar event in TranscriptReady.Source); on the client, setCallsTranscriptAction({label, run}) adds the action to transcripts and setCallsNotesLink(meeting => {href, label}) shows the notes on the meeting page."
   ]
 }

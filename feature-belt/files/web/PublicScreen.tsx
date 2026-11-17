@@ -1,11 +1,22 @@
 "use client";
 
-import { errorMessage, filesFormatSize, hasErrorCode, useAuthSession, useFilesPublic, useFilesPublicChildren, useFilesPublicUrl, type FilesPublicItem, type FilesPublicView } from "@scaffoldapp/shared";
-import { Badge, Button, EmptyState, ErrorState, Skeleton, SkeletonGroup, SkeletonRow, cn, toast } from "@scaffoldapp/ui-web";
-import { ChevronRight, Download, Flag, FolderOpen, Link2Off } from "lucide-react";
+import {
+  errorMessage,
+  filesFormatSize,
+  hasErrorCode,
+  useAuthSession,
+  useFilesPublic,
+  useFilesPublicChildren,
+  useFilesPublicPassword,
+  useFilesPublicUrl,
+  type FilesPublicItem,
+  type FilesPublicView,
+} from "@scaffoldapp/shared";
+import { Badge, Button, EmptyState, ErrorState, Field, Input, Skeleton, SkeletonGroup, SkeletonRow, cn, toast } from "@scaffoldapp/ui-web";
+import { ChevronRight, Download, Flag, FolderOpen, KeyRound, Link2Off } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { LoadMore } from "@/components/shell/LoadMore";
 import { ReportDialog } from "@/features/moderation";
 import { formatDate, formatRelative } from "@/lib/format";
@@ -21,7 +32,8 @@ import { FilesPreview } from "./Preview";
  */
 export function FilesPublicScreen({ token }: { token: string }) {
   const [itemId, setItemId] = useUrlState("item", "");
-  const view = useFilesPublic(token, itemId || null);
+  const [proof, setProof] = useState(() => readProof(token));
+  const view = useFilesPublic(token, itemId || null, undefined, proof || undefined);
 
   return (
     <div className="mx-auto flex w-full max-w-content flex-col gap-6 px-gutter py-section">
@@ -30,6 +42,15 @@ export function FilesPublicScreen({ token }: { token: string }) {
           <Skeleton className="h-8 w-64" />
           <Skeleton className="h-96 w-full rounded-lg" />
         </div>
+      ) : view.isError && hasErrorCode(view.error, "link_password_required") ? (
+        <PasswordGate
+          token={token}
+          retry={!!proof}
+          onProof={(u) => {
+            saveProof(token, u);
+            setProof(u);
+          }}
+        />
       ) : view.isError ? (
         hasErrorCode(view.error, "link_not_found") || hasErrorCode(view.error, "public_disabled") || hasErrorCode(view.error, "not_found") ? (
           <EmptyState icon={<Link2Off />} title={errorMessage(view.error, "This link doesn't work anymore. Ask for a new one.")} />
@@ -37,15 +58,63 @@ export function FilesPublicScreen({ token }: { token: string }) {
           <ErrorState title="Couldn't open this link" info={errorMessage(view.error, "")} onRetry={() => void view.refetch()} />
         )
       ) : (
-        <PublicContent token={token} view={view.data} onOpen={(id) => setItemId(id === view.data.root_id ? null : id)} />
+        <PublicContent token={token} proof={proof} view={view.data} onOpen={(id) => setItemId(id === view.data.root_id ? null : id)} />
       )}
     </div>
   );
 }
 
-function PublicContent({ token, view, onOpen }: { token: string; view: FilesPublicView; onOpen: (id: string) => void }) {
+const proofKey = (token: string) => `files.link-proof.${token.slice(-12)}`;
+
+/** The password proof for this tab (sessionStorage; gone when the tab closes). */
+function readProof(token: string): string {
+  try {
+    return typeof window === "undefined" ? "" : (window.sessionStorage.getItem(proofKey(token)) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function saveProof(token: string, proof: string) {
+  try {
+    window.sessionStorage.setItem(proofKey(token), proof);
+  } catch {
+    // Private mode: it lasts for this page only.
+  }
+}
+
+/** The password form a protected link shows first. */
+function PasswordGate({ token, retry, onProof }: { token: string; retry: boolean; onProof: (proof: string) => void }) {
+  const m = useFilesPublicPassword(token);
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState<string | null>(retry ? "The password changed. Enter the new one." : null);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    m.mutate(pw, {
+      onSuccess: (r) => onProof(r.proof),
+      onError: (err) => setError(hasErrorCode(err, "rate_limited") ? "Too many tries. Wait a minute and try again." : errorMessage(err, "That password isn't right.")),
+    });
+  };
+  return (
+    <form onSubmit={submit} className="mx-auto flex w-full max-w-form flex-col gap-4 rounded-xl border border-border bg-surface p-card">
+      <div className="flex items-center gap-3">
+        <KeyRound className="size-6 text-fg-muted" aria-hidden />
+        <h1 className="type-title-sm text-fg">This link needs a password</h1>
+      </div>
+      <Field label="Password" error={error ?? undefined}>
+        <Input type="password" autoComplete="current-password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
+      </Field>
+      <Button type="submit" loading={m.isPending} disabled={!pw}>
+        Open
+      </Button>
+    </form>
+  );
+}
+
+function PublicContent({ token, proof, view, onOpen }: { token: string; proof: string; view: FilesPublicView; onOpen: (id: string) => void }) {
   const item = view.item;
-  const url = useFilesPublicUrl(token);
+  const url = useFilesPublicUrl(token, proof || undefined);
   const download = () =>
     url.mutate({ itemId: item.id, disposition: "attachment" }, { onSuccess: (u) => startDownload(u.url), onError: (e) => toast.error(errorMessage(e, "Couldn't start the download.")) });
   return (
@@ -70,7 +139,7 @@ function PublicContent({ token, view, onOpen }: { token: string; view: FilesPubl
             {item.name}
           </h1>
           {view.expires_at ? <Badge title={formatDate(view.expires_at)}>Link expires {formatRelative(view.expires_at)}</Badge> : null}
-          {item.type === "file" ? (
+          {item.type === "file" && view.allow_download ? (
             <Button leftIcon={<Download />} onClick={download} loading={url.isPending}>
               Download
             </Button>
@@ -78,13 +147,17 @@ function PublicContent({ token, view, onOpen }: { token: string; view: FilesPubl
           <ReportItem itemId={item.id} name={item.name} />
         </div>
       </header>
-      {item.type === "folder" ? <PublicFolder token={token} folder={item} onOpen={onOpen} /> : <FilesPreview item={item} source={{ kind: "public", token }} onDownload={download} />}
+      {item.type === "folder" ? (
+        <PublicFolder token={token} proof={proof} folder={item} onOpen={onOpen} />
+      ) : (
+        <FilesPreview item={item} source={{ kind: "public", token, proof: proof || undefined }} onDownload={view.allow_download ? download : undefined} />
+      )}
     </>
   );
 }
 
-function PublicFolder({ token, folder, onOpen }: { token: string; folder: FilesPublicItem; onOpen: (id: string) => void }) {
-  const children = useFilesPublicChildren(token, folder.id);
+function PublicFolder({ token, proof, folder, onOpen }: { token: string; proof: string; folder: FilesPublicItem; onOpen: (id: string) => void }) {
+  const children = useFilesPublicChildren(token, folder.id, {}, proof || undefined);
   const rows = children.data?.items ?? [];
   if (children.isPending) {
     return (

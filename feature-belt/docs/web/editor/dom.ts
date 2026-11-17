@@ -4,7 +4,9 @@
  * <mark> wrappers that reading ignores. Offsets count UTF-16 units of the plain text
  * (a chip counts its label's length), matching shared/rich.ts.
  */
-import { docsFormatDate, docsNormalize, type DocsRefs, type DocsSpan } from "@scaffoldapp/shared";
+import { docsFormatDate, docsIsColor, docsNormalize, type DocsColor, type DocsRefs, type DocsSpan } from "@scaffoldapp/shared";
+import { colorClass } from "./colors";
+import { renderTeX } from "./katex";
 
 export interface Decoration {
   start: number;
@@ -34,7 +36,21 @@ export function mentionLabel(sp: DocsSpan, refs?: DocsRefs): string {
     if (p && p.title === null) return "No access";
     return p?.title ? `${p.icon ? `${p.icon} ` : ""}${p.title}` : sp.text;
   }
-  return docsFormatDate(m.date) || sp.text;
+  const day = docsFormatDate(m.date) || sp.text;
+  return `${day}${m.time ? ` ${formatTime(m.time)}` : ""}${m.remind_at ? " ⏰" : ""}`;
+}
+
+/** "14:30" → the reader's way of showing a time of day. */
+export function formatTime(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  const d = new Date(2000, 0, 1, h, m);
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(d);
+}
+
+/** A chip edits never split: a mention or an inline equation. */
+export function isAtom(n: Node): boolean {
+  return n instanceof HTMLElement && (!!n.dataset["mention"] || n.dataset["equation"] !== undefined);
 }
 
 function splitAt(spans: DocsSpan[], cuts: number[]): DocsSpan[] {
@@ -44,7 +60,7 @@ function splitAt(spans: DocsSpan[], cuts: number[]): DocsSpan[] {
     const s = at;
     const e = at + sp.text.length;
     at = e;
-    if (sp.mention) {
+    if (sp.mention || sp.equation) {
       out.push(sp);
       continue;
     }
@@ -70,7 +86,17 @@ export function renderSpans(el: HTMLElement, spans: readonly DocsSpan[], refs?: 
     const s = at;
     at += sp.text.length;
     let node: HTMLElement;
-    if (sp.mention) {
+    if (sp.equation) {
+      node = document.createElement("span");
+      node.contentEditable = "false";
+      node.dataset["equation"] = sp.text;
+      node.dataset["text"] = sp.text;
+      node.className = "mx-px cursor-pointer rounded-xs px-0.5 hover:bg-sunken";
+      node.setAttribute("role", "img");
+      node.setAttribute("aria-label", `Equation: ${sp.text}`);
+      node.textContent = sp.text;
+      renderTeX(node, sp.text, false);
+    } else if (sp.mention) {
       node = document.createElement("span");
       node.contentEditable = "false";
       node.dataset["mention"] = JSON.stringify(sp.mention);
@@ -100,8 +126,12 @@ export function renderSpans(el: HTMLElement, spans: readonly DocsSpan[], refs?: 
     for (const m of ["bold", "italic", "underline", "strike", "code"] as const) {
       if (sp[m]) {
         node.dataset[m] = "1";
-        if (!(m === "code" && sp.mention)) classes.push(MARK_CLASS[m]);
+        if (!(m === "code" && (sp.mention || sp.equation))) classes.push(MARK_CLASS[m]);
       }
+    }
+    if (sp.color) {
+      node.dataset["color"] = sp.color;
+      classes.push(colorClass(sp.color, true));
     }
     if (classes.length) node.className = `${node.className} ${classes.join(" ")}`.trim();
     const deco = decorations.find((d) => s >= d.start && s < d.end);
@@ -128,6 +158,7 @@ interface Fmt {
   strike?: boolean;
   code?: boolean;
   link?: string;
+  color?: DocsColor;
 }
 
 function fmtOf(el: HTMLElement, parent: Fmt): Fmt {
@@ -143,6 +174,7 @@ function fmtOf(el: HTMLElement, parent: Fmt): Fmt {
     const href = el.getAttribute("href");
     if (href && /^(https?:|mailto:)/i.test(href)) f.link = href;
   }
+  if (docsIsColor(d["color"])) f.color = d["color"];
   return f;
 }
 
@@ -157,9 +189,14 @@ export function readSpans(el: HTMLElement): DocsSpan[] {
         continue;
       }
       if (!(child instanceof HTMLElement)) continue;
+      if (child.dataset["equation"] !== undefined) {
+        const tex = child.dataset["equation"];
+        if (tex) out.push({ text: tex, equation: true, ...(fmt.bold ? { bold: true } : {}), ...(fmt.italic ? { italic: true } : {}), ...(fmt.color ? { color: fmt.color } : {}) });
+        continue;
+      }
       if (child.dataset["mention"]) {
         try {
-          out.push({ text: child.dataset["text"] || child.textContent || "", mention: JSON.parse(child.dataset["mention"]), ...(fmt.bold ? { bold: true } : {}), ...(fmt.italic ? { italic: true } : {}) });
+          out.push({ text: child.dataset["text"] || child.textContent || "", mention: JSON.parse(child.dataset["mention"]), ...(fmt.bold ? { bold: true } : {}), ...(fmt.italic ? { italic: true } : {}), ...(fmt.color ? { color: fmt.color } : {}) });
         } catch {
           out.push({ ...fmt, text: child.textContent ?? "" });
         }
@@ -184,7 +221,7 @@ export function readSpans(el: HTMLElement): DocsSpan[] {
 function nodeLength(node: Node): number {
   if (node.nodeType === Node.TEXT_NODE) return (node.textContent ?? "").replace(/​/g, "").length;
   if (node instanceof HTMLElement) {
-    if (node.dataset["mention"]) return (node.dataset["text"] || node.textContent || "").length;
+    if (isAtom(node)) return (node.dataset["text"] || node.textContent || "").length;
     if (node.tagName === "BR") return node.dataset["trailing"] ? 0 : 1;
   }
   let n = 0;
@@ -199,7 +236,7 @@ export function offsetOf(el: HTMLElement, node: Node, offset: number): number {
   // A position inside a chip counts as after it.
   let chip: Node | null = node;
   while (chip && chip !== el) {
-    if (chip instanceof HTMLElement && chip.dataset["mention"]) {
+    if (isAtom(chip)) {
       node = chip.parentNode!;
       offset = Array.prototype.indexOf.call(node.childNodes, chip) + 1;
       break;
@@ -216,7 +253,7 @@ export function offsetOf(el: HTMLElement, node: Node, offset: number): number {
       }
       return true;
     }
-    if (n.nodeType === Node.TEXT_NODE || (n instanceof HTMLElement && (n.dataset["mention"] || n.tagName === "BR"))) {
+    if (n.nodeType === Node.TEXT_NODE || isAtom(n) || (n instanceof HTMLElement && n.tagName === "BR")) {
       total += nodeLength(n);
       return false;
     }
@@ -250,8 +287,8 @@ function positionAt(el: HTMLElement, target: number): { node: Node; offset: numb
         remaining -= len;
         continue;
       }
-      if (c instanceof HTMLElement && (c.dataset["mention"] || c.tagName === "BR")) {
-        if (remaining < len || (remaining === len && c.tagName !== "BR")) {
+      if (isAtom(c) || (c instanceof HTMLElement && c.tagName === "BR")) {
+        if (remaining < len || (remaining === len && (c as HTMLElement).tagName !== "BR")) {
           if (remaining === 0) return { node: n, offset: i };
           remaining -= len;
           if (remaining <= 0) return { node: n, offset: i + 1 };

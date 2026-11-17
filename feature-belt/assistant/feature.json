@@ -1,8 +1,8 @@
 {
   "name": "assistant",
   "title": "AI assistant",
-  "version": "1.1.2",
-  "summary": "Chat with an AI assistant that reads the user's data in the app and in services they connected, through scoped tools, with streamed replies, approval for outside changes, quotas, consent and reporting.",
+  "version": "1.2.0",
+  "summary": "Chat with an AI assistant that reads the user's data in the app and in services they connected, through scoped tools, with streamed replies, approval for outside changes, quotas, consent and reporting; Summarise and Ask about this from any resource's ⋮ menu.",
   "requires": [
     "moderation"
   ],
@@ -188,7 +188,7 @@
     {
       "file": "web/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { assistantAdminNav, assistantHomeTile, assistantNav, assistantSettings } from \"./assistant/nav\";"
+      "insert": "import { assistantAdminNav, assistantAskAction, assistantHomeTile, assistantNav, assistantNewAction, assistantPanelMount, assistantResourceMenu, assistantSettings } from \"./assistant/nav\";"
     },
     {
       "file": "web/src/features/registry.tsx",
@@ -211,9 +211,29 @@
       "insert": "assistantSettings,"
     },
     {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "session",
+      "insert": "assistantPanelMount,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "resource-menu",
+      "insert": "assistantResourceMenu,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "assistantAskAction,"
+    },
+    {
+      "file": "web/src/features/registry.tsx",
+      "anchor": "quick-actions",
+      "insert": "assistantNewAction,"
+    },
+    {
       "file": "mobile/src/features/registry.tsx",
       "anchor": "imports",
-      "insert": "import { assistantHome, assistantSettings } from \"./assistant/registry\";"
+      "insert": "import { assistantHome, assistantResourceMenu, assistantSettings } from \"./assistant/registry\";"
     },
     {
       "file": "mobile/src/features/registry.tsx",
@@ -224,6 +244,11 @@
       "file": "mobile/src/features/registry.tsx",
       "anchor": "settings",
       "insert": "assistantSettings,"
+    },
+    {
+      "file": "mobile/src/features/registry.tsx",
+      "anchor": "resource-menu",
+      "insert": "assistantResourceMenu,"
     }
   ],
   "stitch": [
@@ -232,6 +257,7 @@
     "Decide ASSISTANT_ALLOW_WRITES: leave it off unless the app's write tools are safe for a model to call on the user's say-so. With the agents feature installed, turn it on and let each user's AI agent scope decide (read only by default). External tools from connected services follow each connection's changes switch and per-call approval instead.",
     "Set daily limits (ASSISTANT_DAILY_MESSAGES, ASSISTANT_DAILY_TOKENS) from your cost model, and add a prices row in pricing.go for any model you configure that isn't listed.",
     "Make sure each feature you want the assistant to use implements app.ToolProvider with clear, prescriptive tool descriptions.",
-    "Mobile: the assistant is a Home row; if it is central to the app, give it a tab in mobile/app/(tabs) instead."
+    "Mobile: the assistant is a Home row; if it is central to the app, give it a tab in mobile/app/(tabs) instead.",
+    "In-context help: channels.channel (unread / 24 h / 7 days), channels.message (thread), docs.page, calls.meeting (its saved transcript, or says there is none) and crm.company/contact/deal/ticket (timeline) work out of the box through those features' read tools. Register other kinds, or a better reader, with assistant.RegisterContext(kind, fn, assistant.WithContextLabel(\"…\"), assistant.WithContextScopes(…)) from stitching; fn reads as the person through the feature's access-checked code (ctx carries the assistant's agent marker)."
   ]
 }

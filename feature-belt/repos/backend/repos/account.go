@@ -8,8 +8,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DeleteAccount removes the person's git credentials and review requests
-// and takes their name off pull requests, reviews, comments and events.
+// DeleteAccount removes the person's git credentials, review requests,
+// assignments, reactions, viewed marks, unsubmitted reviews and download
+// tokens, and takes their name off issues, pull requests, reviews,
+// comments, events, releases, milestones, tokens and webhooks they made.
 // What they wrote stays (other people's reviews depend on it) without
 // attribution. Commits keep the author name and address recorded in git
 // (history can't be rewritten; in-app commits used a no-reply address).
@@ -17,6 +19,27 @@ import (
 // which deletes the repository through OnDelete).
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 	for _, q := range []string{
+		// Unsubmitted reviews were never posted: they go.
+		`DELETE FROM repos_comments WHERE review_id IN (SELECT id FROM repos_reviews WHERE author_id = $1 AND state = 'pending')`,
+		`DELETE FROM repos_reviews WHERE author_id = $1 AND state = 'pending'`,
+		`DELETE FROM repos_viewed_files WHERE user_id = $1`,
+		`DELETE FROM repos_reactions WHERE user_id = $1`,
+		`DELETE FROM repos_archive_tokens WHERE user_id = $1`,
+		`DELETE FROM repos_issue_assignees WHERE user_id = $1`,
+		`DELETE FROM repos_pull_assignees WHERE user_id = $1`,
+		`UPDATE repos_issue_assignees SET assigned_by = NULL WHERE assigned_by = $1`,
+		`UPDATE repos_pull_assignees SET assigned_by = NULL WHERE assigned_by = $1`,
+		`UPDATE repos_pulls SET auto_merge_method = NULL, auto_merge_by = NULL, auto_merge_at = NULL WHERE auto_merge_by = $1`,
+		`UPDATE repos_issues SET author_id = NULL WHERE author_id = $1`,
+		`UPDATE repos_issues SET closed_by = NULL WHERE closed_by = $1`,
+		`UPDATE repos_issue_comments SET author_id = NULL WHERE author_id = $1`,
+		`UPDATE repos_issue_events SET actor_id = NULL WHERE actor_id = $1`,
+		`UPDATE repos_milestones SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE repos_references SET actor_id = NULL WHERE actor_id = $1`,
+		`UPDATE repos_ci_tokens SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE repos_releases SET author_id = NULL WHERE author_id = $1`,
+		`UPDATE repos_release_assets SET uploaded_by = NULL WHERE uploaded_by = $1`,
+		`UPDATE repos_webhooks SET created_by = NULL WHERE created_by = $1`,
 		`DELETE FROM repos_git_credentials WHERE user_id = $1`,
 		`DELETE FROM repos_review_requests WHERE user_id = $1`,
 		`UPDATE repos_review_requests SET requested_by = NULL WHERE requested_by = $1`,
@@ -80,6 +103,27 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		Line      *int      `json:"line"`
 		CreatedAt time.Time `json:"created_at"`
 	}
+	type issue struct {
+		RepoID    uuid.UUID `json:"repo_id"`
+		Number    int       `json:"number"`
+		Title     string    `json:"title"`
+		Body      string    `json:"body"`
+		State     string    `json:"state"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	type issueComment struct {
+		RepoID    uuid.UUID `json:"repo_id"`
+		Number    int       `json:"number"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	type release struct {
+		RepoID    uuid.UUID `json:"repo_id"`
+		Tag       string    `json:"tag"`
+		Name      string    `json:"name"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+	}
 	type link struct {
 		Provider  string    `json:"provider"`
 		WebBase   string    `json:"web_base"`
@@ -87,12 +131,15 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 		CreatedAt time.Time `json:"created_at"`
 	}
 	out := struct {
-		Credentials  []credential `json:"git_credentials"`
-		Repositories []repo       `json:"repositories_created"`
-		Pulls        []pull       `json:"pull_requests"`
-		Reviews      []review     `json:"reviews"`
-		Comments     []comment    `json:"comments"`
-		Links        []link       `json:"connected_links"`
+		Credentials   []credential   `json:"git_credentials"`
+		Repositories  []repo         `json:"repositories_created"`
+		Pulls         []pull         `json:"pull_requests"`
+		Reviews       []review       `json:"reviews"`
+		Comments      []comment      `json:"comments"`
+		Links         []link         `json:"connected_links"`
+		Issues        []issue        `json:"issues"`
+		IssueComments []issueComment `json:"issue_comments"`
+		Releases      []release      `json:"releases"`
 	}{}
 	collect := func(sql string, dst any, scan func(pgx.Rows) error) error {
 		rows, err := s.d.Pool.Query(ctx, sql, userID)
@@ -159,6 +206,34 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 			var x link
 			err := r.Scan(&x.Provider, &x.WebBase, &x.Path, &x.CreatedAt)
 			out.Links = append(out.Links, x)
+			return err
+		}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT repo_id, number, title, body, state, created_at FROM repos_issues WHERE author_id = $1 ORDER BY created_at`, nil,
+		func(r pgx.Rows) error {
+			var x issue
+			err := r.Scan(&x.RepoID, &x.Number, &x.Title, &x.Body, &x.State, &x.CreatedAt)
+			out.Issues = append(out.Issues, x)
+			return err
+		}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT i.repo_id, i.number, c.body, c.created_at FROM repos_issue_comments c JOIN repos_issues i ON i.id = c.issue_id
+		WHERE c.author_id = $1 AND c.deleted_at IS NULL ORDER BY c.created_at`, nil,
+		func(r pgx.Rows) error {
+			var x issueComment
+			err := r.Scan(&x.RepoID, &x.Number, &x.Body, &x.CreatedAt)
+			out.IssueComments = append(out.IssueComments, x)
+			return err
+		}); err != nil {
+		return nil, err
+	}
+	if err := collect(`SELECT repo_id, tag, name, body, created_at FROM repos_releases WHERE author_id = $1 ORDER BY created_at`, nil,
+		func(r pgx.Rows) error {
+			var x release
+			err := r.Scan(&x.RepoID, &x.Tag, &x.Name, &x.Body, &x.CreatedAt)
+			out.Releases = append(out.Releases, x)
 			return err
 		}); err != nil {
 		return nil, err

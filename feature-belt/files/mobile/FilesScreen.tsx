@@ -4,9 +4,8 @@ import {
   filesCanEdit,
   filesCanManage,
   filesFormatSize,
-  filesIsTextPreview,
+  filesHasFilters,
   filesKindLabel,
-  filesParseCsv,
   hasErrorCode,
   orgsNounA,
   orgsNounTitle,
@@ -24,14 +23,15 @@ import {
   useFilesSection,
   useFilesShortcut,
   useFilesStar,
-  useFilesText,
+  useMe,
   useFilesVersions,
   useTopic,
   type FilesItem,
+  type FilesSearchFilters,
   type FilesSection,
   type PagedQueryResult,
 } from "@scaffoldapp/shared";
-import { Badge, Banner, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, Sheet, Skeleton, SkeletonRow, SourceBadge, Text, toast, useTheme } from "@scaffoldapp/ui-native";
+import { Badge, Banner, Button, ConfirmDialog, EmptyState, ErrorState, FilePreview, IconButton, Input, ListGroup, ListRow, ProviderIcon, Screen, Sheet, Skeleton, SkeletonRow, SourceBadge, Text, toast, useTheme } from "@scaffoldapp/ui-native";
 import { Image } from "expo-image";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import {
@@ -60,13 +60,13 @@ import {
   type LucideIcon,
 } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
-import { Linking, Pressable, RefreshControl, ScrollView, View } from "react-native";
+import { Linking, Pressable, RefreshControl, View } from "react-native";
 import { ResourceMenu } from "@/components/resource/ResourceMenu";
 import type { ResourceMenuAction } from "@/features/registry";
-import { filesOpenInBrowser, filesPickDocuments, filesPickPhotos, filesSaveOrShare, filesUploadLocal, type FilesLocalFile } from "./actions";
+import { filesPickDocuments, filesPickPhotos, filesSaveOrShare, filesUploadLocal, type FilesLocalFile } from "./actions";
 import { FilesConnectedHome } from "./ConnectedScreens";
 import { filesIconTone, filesItemIcon } from "./icons";
-import { FILES_MONO, FilesMarkdown } from "./Markdown";
+import { LockLine, MobileComments, RequestFilesSheet, SearchFilterChips, useFilesExtraRowsNative } from "./depth";
 import { MoveSheet, NewFolderSheet, RenameSheet } from "./sheets";
 
 const SECTION_ICON: Record<FilesSection, LucideIcon> = { my: HardDrive, shared: Users, shared_with_me: UserPlus, recent: Clock, starred: Star, trash: Trash };
@@ -95,10 +95,12 @@ function useItemSheets(orgId: string | null) {
   const [renaming, setRenaming] = useState<FilesItem | null>(null);
   const [moving, setMoving] = useState<{ item: FilesItem; mode: "move" | "copy" } | null>(null);
   const [deleting, setDeleting] = useState<FilesItem | null>(null);
+  const [requesting, setRequesting] = useState<FilesItem | null>(null);
   const batch = useFilesBatch();
   const element = (
     <>
       <RenameSheet item={renaming} onClose={() => setRenaming(null)} />
+      <RequestFilesSheet folder={requesting} onClose={() => setRequesting(null)} />
       {orgId ? <MoveSheet orgId={orgId} item={moving?.item ?? null} mode={moving?.mode ?? "move"} onClose={() => setMoving(null)} /> : null}
       <ConfirmDialog
         open={deleting !== null}
@@ -117,7 +119,14 @@ function useItemSheets(orgId: string | null) {
       </ConfirmDialog>
     </>
   );
-  return { element, rename: setRenaming, move: (item: FilesItem) => setMoving({ item, mode: "move" }), copy: (item: FilesItem) => setMoving({ item, mode: "copy" }), remove: setDeleting };
+  return {
+    element,
+    rename: setRenaming,
+    move: (item: FilesItem) => setMoving({ item, mode: "move" }),
+    copy: (item: FilesItem) => setMoving({ item, mode: "copy" }),
+    remove: setDeleting,
+    requestFiles: setRequesting,
+  };
 }
 
 /** The screen's own ⋮ rows for an item (Share… and AI agent access come from other features). */
@@ -125,6 +134,8 @@ function useItemMenu(item: FilesItem | null | undefined, sheets: ReturnType<type
   const api = useApi();
   const star = useFilesStar();
   const batch = useFilesBatch();
+  const me = useMe();
+  const extra = useFilesExtraRowsNative(item, me.data?.id, sheets.requestFiles);
   if (!item) return [];
   const edit = filesCanEdit(item);
   const rows: ResourceMenuAction[] = [];
@@ -144,6 +155,7 @@ function useItemMenu(item: FilesItem | null | undefined, sheets: ReturnType<type
   if (edit) rows.push({ id: "move", label: "Move", icon: FolderInput, onSelect: () => sheets.move(item) });
   if (item.type === "file" || item.type === "folder") rows.push({ id: "copy", label: "Make a copy", icon: Copy, onSelect: () => sheets.copy(item) });
   rows.push({ id: "star", label: item.starred ? "Remove star" : "Star", icon: item.starred ? StarOff : Star, onSelect: () => star.mutate({ id: item.id, on: !item.starred }) });
+  rows.push(...extra);
   if (edit)
     rows.push({
       id: "trash",
@@ -289,10 +301,11 @@ export function FilesHomeScreen() {
   const [q, setQ] = useState("");
   const debounced = useDebouncedValue(q, 300);
   const query = useFilesSection(org?.id, section, { thumbs: true });
-  const search = useFilesSearch(org?.id, debounced);
+  const [filters, setFilters] = useState<FilesSearchFilters>({});
+  const search = useFilesSearch(org?.id, debounced, undefined, filters);
   const sheets = useItemSheets(org?.id ?? null);
   const drive = useFilesDrive(org?.id);
-  const searching = debounced.trim().length > 0;
+  const searching = debounced.trim().length > 0 || filesHasFilters(filters);
   const searchQuery = useMemo(
     () => ({ ...search, data: search.data ? { ...search.data, items: search.data.items.map((h) => h.item) } : undefined }) as unknown as PagedQueryResult<FilesItem>,
     [search],
@@ -333,13 +346,18 @@ export function FilesHomeScreen() {
           <ChevronDown size={20} color={theme.colors.textMuted} />
         </Pressable>
         <Input value={q} onChangeText={setQ} placeholder="Search files" leadingIcon={Search} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Search files" returnKeyType="search" />
+        <SearchFilterChips value={filters} onChange={setFilters} />
         {drive.data && drive.data.quota_bytes > 0 && section === "my" && !searching ? (
           <Text role="caption" tone="muted">
             {filesFormatSize(drive.data.used_bytes)} of {filesFormatSize(drive.data.quota_bytes)} used
           </Text>
         ) : null}
       </View>
-      {searching ? <ItemList query={searchQuery} empty={`Nothing matches “${debounced.trim()}”`} sheets={sheets} search /> : <ItemList query={query} empty={EMPTY[section]} sheets={sheets} />}
+      {searching ? (
+        <ItemList query={searchQuery} empty={debounced.trim() ? `Nothing matches “${debounced.trim()}”` : "Nothing matches these filters"} sheets={sheets} search />
+      ) : (
+        <ItemList query={query} empty={EMPTY[section]} sheets={sheets} />
+      )}
       {!searching && section === "my" ? <FilesConnectedHome orgId={org?.id ?? null} /> : null}
       <Sheet open={picking} onClose={() => setPicking(false)} title="Drive">
         <ListGroup>
@@ -467,87 +485,29 @@ function FolderBody({ item, sheets }: { item: FilesItem; sheets: ReturnType<type
 }
 
 function FileBody({ item }: { item: FilesItem }) {
-  const theme = useTheme();
   const api = useApi();
-  const media = item.preview === "image";
-  const text = filesIsTextPreview(item.preview) && item.preview !== "svg";
-  const url = useFilesPreviewUrl(item.id, null, media);
-  const content = useFilesText(text ? item.id : null);
-  const browser = item.preview === "pdf" || item.preview === "video" || item.preview === "audio" || item.preview === "office" || item.preview === "svg";
+  const me = useMe();
+  const url = useFilesPreviewUrl(item.trashed_at ? null : item.id, null, true);
   return (
     <Screen
       edges={["bottom"]}
       footer={
-        <View style={{ flexDirection: "row", gap: theme.space[2] }}>
-          {browser ? (
-            <Button style={{ flex: 1 }} leftIcon={ExternalLink} onPress={() => void filesOpenInBrowser(api.http, item)}>
-              Open
-            </Button>
-          ) : null}
-          <Button style={{ flex: 1 }} variant={browser ? "secondary" : "primary"} leftIcon={Download} onPress={() => void filesSaveOrShare(api.http, item)}>
-            Save or send
-          </Button>
-        </View>
+        <Button fullWidth leftIcon={Download} onPress={() => void filesSaveOrShare(api.http, item)}>
+          Save or send
+        </Button>
       }
     >
-      {item.trashed_at ? <Banner tone="warning" title="This file is in the trash." /> : null}
-      {media ? (
-        url.isPending ? (
-          <Skeleton height={320} />
-        ) : url.isError ? (
-          <ErrorState compact title="Couldn't load the preview" onRetry={() => void url.refetch()} />
-        ) : (
-          <Image source={{ uri: url.data.url }} style={{ width: "100%", aspectRatio: 1, borderRadius: theme.radius.lg, backgroundColor: theme.colors.sunken }} contentFit="contain" accessibilityLabel={item.name} />
-        )
-      ) : text ? (
-        content.isPending ? (
-          <Skeleton height={320} />
-        ) : content.isError ? (
-          <ErrorState compact title="Couldn't load the file" info={errorMessage(content.error)} onRetry={() => void content.refetch()} />
-        ) : item.preview === "markdown" ? (
-          <View style={{ backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border, padding: theme.space[4] }}>
-            <FilesMarkdown text={content.data.text} />
-          </View>
-        ) : item.preview === "csv" ? (
-          <CsvView text={content.data.text} />
-        ) : (
-          <ScrollView horizontal style={{ backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border }} contentContainerStyle={{ padding: theme.space[4] }}>
-            <Text role="label" selectable style={{ fontFamily: FILES_MONO }}>
-              {content.data.text.split("\n").slice(0, 2000).join("\n")}
-            </Text>
-          </ScrollView>
-        )
+      {item.trashed_at ? <Banner tone="warning" title="This file is in the trash." /> : <LockLine item={item} myId={me.data?.id} />}
+      {item.trashed_at ? null : url.isPending ? (
+        <Skeleton height={320} />
+      ) : url.isError ? (
+        <ErrorState compact title="Couldn't load the preview" info={errorMessage(url.error)} onRetry={() => void url.refetch()} />
       ) : (
-        <View style={{ alignItems: "center", gap: theme.space[3], paddingVertical: theme.space[10], backgroundColor: theme.colors.surface, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border }}>
-          <ItemIcon item={item} />
-          <Text role="titleSm" align="center">
-            {browser ? `Open to view this ${filesKindLabel(item).toLowerCase()}` : "No preview for this file"}
-          </Text>
-        </View>
+        <FilePreview url={url.data.url} name={item.name} mime={item.mime_type} size={item.size} />
       )}
-      {content.data?.truncated ? <Banner tone="info" title="Showing the first 1 MB." /> : null}
       <Details item={item} />
+      {item.trashed_at ? null : <MobileComments item={item} />}
     </Screen>
-  );
-}
-
-function CsvView({ text }: { text: string }) {
-  const theme = useTheme();
-  const { rows } = useMemo(() => filesParseCsv(text, 201), [text]);
-  return (
-    <ScrollView horizontal style={{ borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.lg, backgroundColor: theme.colors.surface }}>
-      <View>
-        {rows.map((r, i) => (
-          <View key={i} style={{ flexDirection: "row", borderTopWidth: i ? 1 : 0, borderColor: theme.colors.border, backgroundColor: i ? undefined : theme.colors.sunken }}>
-            {r.map((c, j) => (
-              <Text key={j} role="label" weight={i ? undefined : 600} style={{ width: 128, paddingHorizontal: theme.space[3], paddingVertical: theme.space[2] }} numberOfLines={2}>
-                {c}
-              </Text>
-            ))}
-          </View>
-        ))}
-      </View>
-    </ScrollView>
   );
 }
 

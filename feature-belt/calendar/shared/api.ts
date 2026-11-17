@@ -4,6 +4,14 @@ import type { Page } from "../types";
 import type {
   CalendarBooking,
   CalendarBookingConfirmation,
+  CalendarCalendar,
+  CalendarCalendarInput,
+  CalendarCalendarPrefs,
+  CalendarCalendars,
+  CalendarRoom,
+  CalendarRoomInput,
+  CalendarRooms,
+  CalendarSearchHit,
   CalendarBookingLink,
   CalendarBookingLinkInput,
   CalendarBookingRequest,
@@ -58,8 +66,30 @@ export function calendarEndpoints(http: HttpClient) {
           send_updates: params.send_updates === false ? "false" : undefined,
         },
       }),
-    respond: (id: string, response: Exclude<CalendarResponse, "needs_action">, o?: CallOptions) =>
-      http.put<CalendarEventDetail>(`${C}/events/${seg(id)}/rsvp`, { response }, o),
+    respond: (id: string, response: Exclude<CalendarResponse, "needs_action">, note?: string, o?: CallOptions) =>
+      http.put<CalendarEventDetail>(`${C}/events/${seg(id)}/rsvp`, note === undefined ? { response } : { response, note }, o),
+    /** As a guest of a one-off event: propose a new time (one at a time). */
+    propose: (id: string, body: { starts_at: string; ends_at: string; note?: string }, o?: CallOptions) =>
+      http.post<CalendarEventDetail>(`${C}/events/${seg(id)}/propose`, body, o),
+    withdrawProposal: (id: string, o?: CallOptions) => http.delete<CalendarEventDetail>(`${C}/events/${seg(id)}/propose`, o),
+    /** As the organizer: accept a guest's proposal (moves the event) or keep the time. */
+    answerProposal: (id: string, attendeeId: string, accept: boolean, o?: CallOptions) =>
+      http.post<CalendarEventDetail>(`${C}/events/${seg(id)}/proposals/${seg(attendeeId)}`, { accept }, o),
+    search: (q: string, o?: CallOptions) => http.get<{ items: CalendarSearchHit[] }>(`${C}/search`, { ...o, query: { q } }),
+
+    /** Your calendars, your teams' and the ones you added, plus those shared with you. */
+    calendars: (orgId?: string | null, o?: CallOptions) => http.get<CalendarCalendars>(`${C}/calendars`, { ...o, query: { org_id: orgId ?? undefined } }),
+    createCalendar: (body: CalendarCalendarInput, o?: CallOptions) => http.post<CalendarCalendar>(`${C}/calendars`, body, o),
+    updateCalendar: (id: string, body: CalendarCalendarInput, o?: CallOptions) => http.patch<CalendarCalendar>(`${C}/calendars/${seg(id)}`, body, o),
+    calendarPrefs: (id: string, body: CalendarCalendarPrefs, o?: CallOptions) => http.put<CalendarCalendar>(`${C}/calendars/${seg(id)}/prefs`, body, o),
+    deleteCalendar: (id: string, o?: CallOptions) => http.delete<void>(`${C}/calendars/${seg(id)}`, o),
+
+    /** A workspace's rooms; with from/to each has busy times and whether it's free throughout. */
+    rooms: (params: { org_id: string; from?: string; to?: string; capacity?: number; q?: string; exclude_event?: string }, o?: CallOptions) =>
+      http.get<CalendarRooms>(`${C}/rooms`, { ...o, query: { ...params } }),
+    createRoom: (body: CalendarRoomInput, o?: CallOptions) => http.post<CalendarRoom>(`${C}/rooms`, body, o),
+    updateRoom: (id: string, body: CalendarRoomInput, o?: CallOptions) => http.patch<CalendarRoom>(`${C}/rooms/${seg(id)}`, body, o),
+    deleteRoom: (id: string, o?: CallOptions) => http.delete<void>(`${C}/rooms/${seg(id)}`, o),
     /** The event (whole series) as iCalendar text. */
     eventIcs: (id: string, o?: CallOptions) => http.text("GET", `${C}/events/${seg(id)}.ics`, { ...o, accept: "text/calendar" }),
 
@@ -98,6 +128,8 @@ export function calendarEndpoints(http: HttpClient) {
       http.get<Page<CalendarBooking>>(`${C}/bookings`, { ...o, query: { role: params.role, when: params.when, cursor: params.cursor, limit: params.limit } }),
     booking: (id: string, o?: CallOptions) => http.get<CalendarBooking>(`${C}/bookings/${seg(id)}`, o),
     cancelBooking: (id: string, reason: string, o?: CallOptions) => http.post<CalendarBooking>(`${C}/bookings/${seg(id)}/cancel`, { reason }, o),
+    /** Hand a round-robin booking to another host of its link. */
+    reassignBooking: (id: string, userId: string, o?: CallOptions) => http.post<CalendarBooking>(`${C}/bookings/${seg(id)}/reassign`, { user_id: userId }, o),
 
     /** Booking pages. Signed-in callers send their token (internal links need it). */
     book: {
@@ -144,8 +176,8 @@ export function calendarEndpoints(http: HttpClient) {
     /** An external guest's RSVP link. */
     guest: {
       get: (token: string, o?: CallOptions) => http.get<CalendarGuestInvitation>(`${C}/rsvp/${seg(token)}`, { ...o, auth: false }),
-      respond: (token: string, response: Exclude<CalendarResponse, "needs_action">, o?: CallOptions) =>
-        http.post<CalendarGuestInvitation>(`${C}/rsvp/${seg(token)}`, { response }, { ...o, auth: false }),
+      respond: (token: string, response: Exclude<CalendarResponse, "needs_action">, note?: string, o?: CallOptions) =>
+        http.post<CalendarGuestInvitation>(`${C}/rsvp/${seg(token)}`, note === undefined ? { response } : { response, note }, { ...o, auth: false }),
     },
   };
 }

@@ -112,6 +112,7 @@ type settings struct {
 type Service struct {
 	d     *app.Deps
 	cfg   settings
+	rec   recordingSettings
 	media Media // nil when unconfigured: call routes answer 503
 }
 
@@ -130,7 +131,7 @@ func New(d *app.Deps) *Service {
 		tokenTTL:        between("CALLS_TOKEN_TTL", config.Duration("CALLS_TOKEN_TTL", 10*time.Minute), time.Minute, 6*time.Hour),
 		ringTimeout:     between("CALLS_RING_TIMEOUT", config.Duration("CALLS_RING_TIMEOUT", 45*time.Second), 10*time.Second, 5*time.Minute),
 		maxParticipants: config.Int("CALLS_MAX_PARTICIPANTS", 100),
-	}}
+	}, rec: readRecordingSettings()}
 	if s.cfg.maxParticipants < 2 || s.cfg.maxParticipants > 1000 {
 		config.Problem("CALLS_MAX_PARTICIPANTS must be between 2 and 1000 (got %d)", s.cfg.maxParticipants)
 		s.cfg.maxParticipants = 100
@@ -144,9 +145,10 @@ func New(d *app.Deps) *Service {
 	meetingTarget := notifications.DataTarget(AgentKindMeeting, "meeting_id")
 	notifications.RegisterKind(notifications.Kind{ID: KindNotifyInvite, Label: "Meeting invitations", Push: true, Email: true, AgentTarget: meetingTarget})
 	notifications.RegisterKind(notifications.Kind{ID: KindNotifyMissed, Label: "Missed calls", Push: true, AgentTarget: meetingTarget})
+	notifications.RegisterKind(notifications.Kind{ID: KindNotifyRecording, Label: "Recordings ready", Push: true, Email: true, AgentTarget: meetingTarget})
 	orgs.OnMemberRemoved(s.memberRemoved)
 	current.Store(s)
-	slog.Info("calls: media", "provider", s.mediaName(), "configured", s.media != nil)
+	slog.Info("calls: media", "provider", s.mediaName(), "configured", s.media != nil, "recording", s.recordingAvailable())
 	return s
 }
 
@@ -211,6 +213,18 @@ func (s *Service) mediaName() string {
 	return s.media.Name()
 }
 
+// refuseAgentCredential: the guest routes take a lobby key, never a
+// credential minted for an AI agent (agents act only at the agent endpoint).
+func refuseAgentCredential(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && auth.IsAgentCredential(strings.TrimSpace(tok)) {
+			httpx.Fail(w, r, httpx.NewError(http.StatusUnauthorized, "agent_credential", "This credential is for AI agents. It works only at the agent endpoint."))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Per-IP limits for the anonymous guest routes.
 var (
 	previewLimit = httprate.LimitBy(60, time.Minute, httpx.KeyByClientIP, httprate.WithLimitHandler(httpx.RateLimitedHandler))
@@ -219,8 +233,10 @@ var (
 	guestLimit   = httprate.LimitBy(30, time.Minute, httpx.KeyByClientIP, httprate.WithLimitHandler(httpx.RateLimitedHandler))
 )
 
-func (s *Service) MountPublic(r chi.Router) {
+func (s *Service) MountPublic(root chi.Router) {
 	h := httpx.Handler
+	// Guests have no session; a credential minted for an AI agent never opens these.
+	r := root.With(refuseAgentCredential)
 	r.With(previewLimit).Get("/calls/public/meetings/{code}", h(s.publicMeeting))
 	r.With(knockLimit).Post("/calls/public/meetings/{code}/knock", h(s.guestKnock))
 	r.With(pollLimit).Post("/calls/public/lobby/{id}/status", h(s.guestStatus))
@@ -228,6 +244,16 @@ func (s *Service) MountPublic(r chi.Router) {
 	r.With(pollLimit).Post("/calls/public/lobby/{id}/leave", h(s.guestLeave))
 	r.With(guestLimit).Post("/calls/public/lobby/{id}/token", h(s.guestToken))
 	r.With(guestLimit).Post("/calls/public/lobby/{id}/hand", h(s.guestHand))
+	// In the call, as an admitted guest ({key} in the body).
+	r.With(pollLimit).Post("/calls/public/lobby/{id}/room", s.guestAct(s.roomState))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/polls/{pollID}/vote", s.guestAct(s.votePoll))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/questions", s.guestAct(s.askQuestion))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/questions/{questionID}/vote", s.guestAct(s.voteQuestion))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/questions/{questionID}/delete", s.guestAct(s.deleteQuestion))
+	r.With(pollLimit).Post("/calls/public/lobby/{id}/transcript", s.guestAct(s.postTranscript))
+	r.With(pollLimit).Post("/calls/public/lobby/{id}/chat", s.guestAct(s.postChat))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/breakouts/join", s.guestAct(s.joinBreakout))
+	r.With(guestLimit).Post("/calls/public/lobby/{id}/breakouts/help", s.guestAct(s.breakoutHelp))
 }
 
 func (s *Service) MountUser(r chi.Router) {
@@ -244,6 +270,15 @@ func (s *Service) MountUser(r chi.Router) {
 	r.Get("/calls/meetings/{id}/lobby", h(s.listLobby))
 	r.Get("/calls/meetings/{id}/rings", h(s.listMeetingRings))
 	r.Get("/calls/lobby/{id}", h(s.getMyKnock))
+	r.Get("/calls/meetings/{id}/room", s.userAct(s.roomState))
+	r.Get("/calls/meetings/{id}/breakouts", s.userAct(s.getBreakouts))
+	r.Get("/calls/meetings/{id}/recordings", h(s.listMeetingRecordings))
+	r.Get("/calls/meetings/{id}/sessions", h(s.listMeetingSessions))
+	r.Get("/calls/recordings/{recordingID}", h(s.getRecording))
+	r.Get("/calls/history/{id}/transcript", h(s.getTranscript))
+	r.Get("/calls/history/{id}/chat", h(s.getSavedChat))
+	r.With(auth.RateLimit(30, time.Minute)).Get("/calls/history/{id}/attendance.csv", h(s.attendanceCSV))
+	r.Get("/calls/orgs/{orgID}/settings", h(s.getOrgSettings))
 	// The callee's own state: allowed while suspended.
 	r.Delete("/calls/lobby/{id}", h(s.cancelMyKnock))
 	r.Post("/calls/rings/{id}/decline", h(s.declineRing))
@@ -267,6 +302,34 @@ func (s *Service) MountUser(r chi.Router) {
 	w.With(auth.RateLimit(30, 10*time.Minute)).Post("/calls/meetings/{id}/ring", h(s.ringAgain))
 	r.Delete("/calls/meetings/{id}/ring", h(s.stopRinging))
 	w.With(auth.RateLimit(30, time.Hour)).Post("/calls/calls", h(s.startCall))
+
+	// Host controls on the live room.
+	w.With(auth.RateLimit(60, time.Minute)).Put("/calls/meetings/{id}/spotlight", h(s.spotlight))
+	w.With(auth.RateLimit(60, time.Minute)).Post("/calls/meetings/{id}/ask-unmute", h(s.askUnmute))
+	w.With(auth.RateLimit(20, time.Minute)).Post("/calls/meetings/{id}/recording", h(s.startRecording))
+	w.With(auth.RateLimit(20, time.Minute)).Delete("/calls/meetings/{id}/recording", h(s.stopRecording))
+	w.Delete("/calls/recordings/{recordingID}", h(s.deleteRecording))
+	w.With(auth.RateLimit(30, time.Minute)).Put("/calls/meetings/{id}/transcribing", h(s.setTranscribing))
+	w.With(auth.RateLimit(30, time.Minute)).Put("/calls/orgs/{orgID}/settings", h(s.putOrgSettings))
+	// Polls and questions (hosts manage; everyone in the call votes and asks).
+	w.With(auth.RateLimit(60, time.Minute)).Post("/calls/meetings/{id}/polls", s.userAct(s.postPoll))
+	w.With(auth.RateLimit(120, time.Minute)).Patch("/calls/meetings/{id}/polls/{pollID}", s.userAct(s.patchPoll))
+	w.Delete("/calls/meetings/{id}/polls/{pollID}", s.userAct(s.deletePoll))
+	w.With(auth.RateLimit(60, time.Minute)).Post("/calls/meetings/{id}/polls/{pollID}/vote", s.userAct(s.votePoll))
+	w.With(auth.RateLimit(10, time.Minute)).Post("/calls/meetings/{id}/questions", s.userAct(s.askQuestion))
+	w.With(auth.RateLimit(120, time.Minute)).Post("/calls/meetings/{id}/questions/{questionID}/vote", s.userAct(s.voteQuestion))
+	w.With(auth.RateLimit(120, time.Minute)).Patch("/calls/meetings/{id}/questions/{questionID}", s.userAct(s.patchQuestion))
+	w.Delete("/calls/meetings/{id}/questions/{questionID}", s.userAct(s.deleteQuestion))
+	// Captions saved to the transcript, saved chat.
+	w.With(auth.RateLimit(240, time.Minute)).Post("/calls/meetings/{id}/transcript", s.userAct(s.postTranscript))
+	w.With(auth.RateLimit(120, time.Minute)).Post("/calls/meetings/{id}/chat", s.userAct(s.postChat))
+	// Breakout rooms.
+	w.With(auth.RateLimit(20, time.Minute)).Post("/calls/meetings/{id}/breakouts", s.userAct(s.createBreakouts))
+	w.With(auth.RateLimit(120, time.Minute)).Patch("/calls/meetings/{id}/breakouts", s.userAct(s.patchBreakouts))
+	w.With(auth.RateLimit(30, time.Minute)).Post("/calls/meetings/{id}/breakouts/broadcast", s.userAct(s.broadcastBreakouts))
+	w.With(auth.RateLimit(30, time.Minute)).Post("/calls/meetings/{id}/breakouts/close", s.userAct(s.closeBreakouts))
+	w.With(auth.RateLimit(60, time.Minute)).Post("/calls/meetings/{id}/breakouts/join", s.userAct(s.joinBreakout))
+	w.With(auth.RateLimit(10, time.Minute)).Post("/calls/meetings/{id}/breakouts/help", s.userAct(s.breakoutHelp))
 }
 
 func (s *Service) MountWebhooks(r chi.Router) {
@@ -278,6 +341,8 @@ func (s *Service) Start(ctx context.Context) {
 	go jobs.Every(ctx, s.d.Pool, "calls.rings", 5*time.Second, s.expireRings)
 	go jobs.Every(ctx, s.d.Pool, "calls.lobby", lobbyCheckIn, s.sweepLobby)
 	go jobs.Every(ctx, s.d.Pool, "calls.reconcile", time.Minute, s.reconcile)
+	go jobs.Every(ctx, s.d.Pool, "calls.breakouts", 5*time.Second, s.sweepBreakouts)
+	go jobs.Every(ctx, s.d.Pool, "calls.recordings", 10*time.Minute, s.sweepRecordings)
 }
 
 // AuthorizeTopic admits people who may join a meeting to calls:<meeting id>.

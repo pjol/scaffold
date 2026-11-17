@@ -209,10 +209,18 @@ func (s *Service) rsvpTokenGet(w http.ResponseWriter, r *http.Request) error {
 func (s *Service) rsvpTokenPost(w http.ResponseWriter, r *http.Request) error {
 	token := chi.URLParam(r, "token")
 	var in struct {
-		Response string `json:"response"`
+		Response string  `json:"response"`
+		Note     *string `json:"note"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		return err
+	}
+	if in.Note != nil {
+		n, ok := cleanText(*in.Note, 500)
+		if !ok {
+			return httpx.BadRequest("Notes are up to 500 characters.")
+		}
+		in.Note = &n
 	}
 	in.Response = strings.TrimSpace(in.Response)
 	if in.Response != ResponseAccepted && in.Response != ResponseTentative && in.Response != ResponseDeclined {
@@ -226,7 +234,7 @@ func (s *Service) rsvpTokenPost(w http.ResponseWriter, r *http.Request) error {
 	if who == "" {
 		who = "A guest"
 	}
-	if err := s.setResponse(r.Context(), base, attendeeID, prev, in.Response, who); err != nil {
+	if err := s.setResponse(r.Context(), base, attendeeID, prev, in.Response, who, in.Note); err != nil {
 		return err
 	}
 	kickOutbox()

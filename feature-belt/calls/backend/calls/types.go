@@ -55,6 +55,20 @@ type Meeting struct {
 	CanceledAt   *time.Time `json:"canceled_at"`
 	LiveSince    *time.Time `json:"live_since"` // set while someone is in the call
 	CreatedAt    time.Time  `json:"created_at"`
+	MeetingRules
+}
+
+// MeetingRules are what hosts allow people who aren't hosts to do in the
+// room, and who may open the meeting's records afterwards.
+type MeetingRules struct {
+	AllowScreenShare  bool   `json:"allow_screen_share"`
+	AllowChat         bool   `json:"allow_chat"`
+	AllowReactions    bool   `json:"allow_reactions"`
+	AllowUnmute       bool   `json:"allow_unmute"` // false: people unmute only when a host lets them
+	MuteOnEntry       bool   `json:"mute_on_entry"`
+	SaveChat          bool   `json:"save_chat"`
+	ModerateQuestions bool   `json:"moderate_questions"` // questions wait for a host's approval
+	RecordsAccess     string `json:"records_access"`     // participants | invited | org
 }
 
 // Invitee is someone invited by account; role cohost shares host controls.
@@ -82,6 +96,7 @@ type JoinInfo struct {
 	Title     *string        `json:"title"`
 	HostName  *string        `json:"host_name"`
 	Live      bool           `json:"live"`
+	Recording bool           `json:"recording"` // the room is being recorded now (shown before joining)
 	Meeting   *MeetingDetail `json:"meeting"`
 	Lobby     *LobbyEntry    `json:"lobby"` // the caller's open request to join
 }
@@ -97,6 +112,7 @@ type PublicMeeting struct {
 	Live          bool    `json:"live"`
 	Canceled      bool    `json:"canceled"`
 	Locked        bool    `json:"locked"`
+	Recording     bool    `json:"recording"`
 }
 
 // JoinToken is a short-lived SFU credential for one room.
@@ -201,6 +217,30 @@ type CallDetail struct {
 	Live            bool         `json:"live"`
 	Participants    []Attendance `json:"participants"`
 	CanJoin         bool         `json:"can_join"`
+	IsHost          bool         `json:"is_host"` // host or co-host: attendance CSV
+	Records         *CallRecords `json:"records"` // nil when the records rule leaves the caller out
+}
+
+// CallRecords is what a call kept: recordings, the transcript and saved chat.
+type CallRecords struct {
+	Recordings      []Recording `json:"recordings"`
+	TranscriptLines int         `json:"transcript_lines"`
+	ChatMessages    int         `json:"chat_messages"`
+	Polls           int         `json:"polls"`
+	Questions       int         `json:"questions"`
+}
+
+// SessionSummary is one call (session) of a meeting, for the meeting page.
+type SessionSummary struct {
+	ID               uuid.UUID  `json:"id"`
+	StartedAt        time.Time  `json:"started_at"`
+	EndedAt          *time.Time `json:"ended_at"`
+	DurationSeconds  int        `json:"duration_seconds"`
+	Live             bool       `json:"live"`
+	ParticipantCount int        `json:"participant_count"`
+	Recordings       int        `json:"recordings"`
+	TranscriptLines  int        `json:"transcript_lines"`
+	ChatMessages     int        `json:"chat_messages"`
 }
 
 // ---- meeting rows --------------------------------------------------------------
@@ -229,24 +269,37 @@ type meetingRow struct {
 	LiveSession  *uuid.UUID // the open session (a room was opened for it)
 	LiveSince    *time.Time
 	LiveNow      bool // someone is in the room right now
+	Rules        MeetingRules
 }
 
 const meetingSelect = `
 	SELECT m.id, m.code, m.kind, m.title, m.host_id, u.display_name, u.avatar_url, u.status,
 	       m.org_id, o.name, m.access, m.lobby_enabled, m.locked, m.starts_at, m.ends_at,
 	       m.source_kind, m.source_id, m.canceled_at, m.created_at, ls.id, ls.started_at,
-	       ls.id IS NOT NULL AND EXISTS (SELECT 1 FROM calls_participants p WHERE p.session_id = ls.id AND p.left_at IS NULL)
+	       ls.id IS NOT NULL AND EXISTS (SELECT 1 FROM calls_participants p WHERE p.session_id = ls.id AND p.left_at IS NULL),
+	       m.allow_screen_share, m.allow_chat, m.allow_reactions, m.allow_unmute, m.mute_on_entry, m.save_chat,
+	       m.moderate_questions, m.records_access
 	FROM calls_meetings m
 	JOIN users u ON u.id = m.host_id
 	LEFT JOIN orgs o ON o.id = m.org_id
 	LEFT JOIN calls_sessions ls ON ls.meeting_id = m.id AND ls.ended_at IS NULL`
 
 func scanMeetings(rows pgx.Rows) ([]meetingRow, error) {
-	list, err := pgx.CollectRows(rows, pgx.RowToStructByPos[meetingRow])
-	if list == nil {
-		list = []meetingRow{}
+	defer rows.Close()
+	list := []meetingRow{}
+	for rows.Next() {
+		var m meetingRow
+		r := &m.Rules
+		if err := rows.Scan(&m.ID, &m.Code, &m.Kind, &m.Title, &m.HostID, &m.HostName, &m.HostAvatar, &m.HostStatus,
+			&m.OrgID, &m.OrgName, &m.Access, &m.LobbyEnabled, &m.Locked, &m.StartsAt, &m.EndsAt,
+			&m.SourceKind, &m.SourceID, &m.CanceledAt, &m.CreatedAt, &m.LiveSession, &m.LiveSince, &m.LiveNow,
+			&r.AllowScreenShare, &r.AllowChat, &r.AllowReactions, &r.AllowUnmute, &r.MuteOnEntry, &r.SaveChat,
+			&r.ModerateQuestions, &r.RecordsAccess); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
 	}
-	return list, err
+	return list, rows.Err()
 }
 
 func loadMeeting(ctx context.Context, q db.Querier, id uuid.UUID) (*meetingRow, error) {
@@ -294,6 +347,7 @@ func (s *Service) toMeeting(m *meetingRow) Meeting {
 		Host:  userRef(m.HostID, m.HostName, m.HostAvatar, m.HostStatus),
 		OrgID: m.OrgID, OrgName: m.OrgName, Access: m.Access, LobbyEnabled: m.LobbyEnabled, Locked: m.Locked,
 		StartsAt: m.StartsAt, EndsAt: m.EndsAt, CanceledAt: m.CanceledAt, CreatedAt: m.CreatedAt,
+		MeetingRules: m.Rules,
 	}
 	if m.LiveNow {
 		out.LiveSince = m.LiveSince

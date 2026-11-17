@@ -1,14 +1,22 @@
 "use client";
 
-import { errorMessage, useAdminMcpConnections, useAdminRevokeMcpConnection, type McpAdminConnection } from "@scaffoldapp/shared";
+import {
+  errorMessage,
+  useAdminMcpAAuthLinks,
+  useAdminMcpConnections,
+  useAdminRevokeMcpConnection,
+  useAdminUnlinkMcpAAuth,
+  type McpAdminAAuthLink,
+  type McpAdminConnection,
+} from "@scaffoldapp/shared";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Select, toast } from "@scaffoldapp/ui-web";
-import { Plug, SearchX } from "lucide-react";
+import { Plug, SearchX, ServerCog } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { SearchInput } from "@/components/admin/SearchInput";
 import { Table, TableSkeleton, TD, TH, THead, TR } from "@/components/admin/Table";
 import { LoadMore } from "@/components/shell/LoadMore";
-import { PageHeader } from "@/components/shell/PageHeader";
+import { PageHeader, Section } from "@/components/shell/PageHeader";
 import { formatDate, formatRelative } from "@/lib/format";
 import { useUrlState } from "@/lib/url-state";
 
@@ -34,7 +42,11 @@ function statusOf(c: McpAdminConnection): { label: string; tone: "neutral" | "da
   return { label: c.scopes.includes("write") ? "Read and write" : "Read only", tone: c.scopes.includes("write") ? "warning" : "neutral" };
 }
 
-/** Admin → Connected apps: every OAuth grant, newest first; revoke is audited (mcp.oauth.revoke). */
+/**
+ * Admin → Connected apps: every OAuth grant, newest first; revoke is audited (mcp.oauth.revoke).
+ * Below, person servers people linked over AAuth, with the same filters; unlink is audited
+ * (mcp.aauth.unlink).
+ */
 export function AdminConnectionsScreen() {
   const [user, setUser] = useUrlState("user", "");
   const [status, setStatus] = useUrlState<StatusFilter>("status", "active");
@@ -121,6 +133,7 @@ export function AdminConnectionsScreen() {
           )}
         </Card>
       </div>
+      {badUser ? null : <PersonServerLinks userId={userId} status={status} filtered={filtered} />}
       <ConfirmDialog
         open={revoking !== null}
         onOpenChange={(o) => !o && setRevoking(null)}
@@ -138,5 +151,98 @@ export function AdminConnectionsScreen() {
         {revoking ? `${revoking.user_email}'s app stops working right away. The action is recorded in the audit log.` : null}
       </ConfirmDialog>
     </div>
+  );
+}
+
+const LINK_REASONS: Record<NonNullable<McpAdminAAuthLink["revoke_reason"]>, string> = { user: "Unlinked by user", staff: "Unlinked by staff" };
+
+function PersonServerLinks({ userId, status, filtered }: { userId?: string; status: StatusFilter; filtered: boolean }) {
+  const list = useAdminMcpAAuthLinks({ ...(userId ? { user_id: userId } : {}), ...(status !== "any" ? { status } : {}), limit: 50 });
+  const unlink = useAdminUnlinkMcpAAuth();
+  const [unlinking, setUnlinking] = useState<McpAdminAAuthLink | null>(null);
+  const rows = list.data?.items ?? [];
+  const nameOf = (l: McpAdminAAuthLink) => l.person_server.name || l.person_server.host;
+
+  return (
+    <Section title="Person servers" info="Linked over AAuth: the person server's agents can ask for access as the owner. Unlinking stops them at once.">
+      <Card padding="none">
+        {list.isPending ? (
+          <TableSkeleton rows={3} cols={5} />
+        ) : list.isError ? (
+          <ErrorState compact title="Couldn't load person servers" onRetry={() => void list.refetch()} retrying={list.isFetching} />
+        ) : rows.length === 0 ? (
+          <EmptyState compact icon={filtered ? <SearchX /> : <ServerCog />} title={filtered ? "No matching person servers" : "No linked person servers yet"} />
+        ) : (
+          <>
+            <Table label="Person servers" className="min-w-160">
+              <THead>
+                <TH>Person server</TH>
+                <TH>Owner</TH>
+                <TH>Status</TH>
+                <TH align="right">Last used</TH>
+                <TH align="right">Linked</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
+              </THead>
+              <tbody>
+                {rows.map((l) => (
+                  <TR key={l.id}>
+                    <TD>
+                      <span className="flex flex-col">
+                        <span className="font-semibold">{nameOf(l)}</span>
+                        <span className="type-caption text-fg-muted">
+                          {[l.person_server.name ? l.person_server.host : null, l.email].filter(Boolean).join(" · ")}
+                        </span>
+                      </span>
+                    </TD>
+                    <TD className="max-w-56 truncate">
+                      <Link href={`/admin/users/${l.user_id}`} className="underline-offset-2 hover:underline">
+                        {l.user_email}
+                      </Link>
+                    </TD>
+                    <TD>
+                      <Badge size="sm" tone="neutral">
+                        {l.revoked_at ? (l.revoke_reason ? LINK_REASONS[l.revoke_reason] : "Unlinked") : l.agents === 1 ? "1 agent" : `${l.agents} agents`}
+                      </Badge>
+                    </TD>
+                    <TD align="right" className="whitespace-nowrap text-fg-muted">
+                      {l.last_used_at ? formatRelative(l.last_used_at) : "Never"}
+                    </TD>
+                    <TD align="right" className="whitespace-nowrap text-fg-muted">
+                      {formatDate(l.linked_at)}
+                    </TD>
+                    <TD align="right">
+                      {l.revoked_at ? null : (
+                        <Button size="sm" variant="danger-ghost" onClick={() => setUnlinking(l)}>
+                          Unlink
+                        </Button>
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+              </tbody>
+            </Table>
+            <LoadMore hasNextPage={list.hasNextPage} isFetchingNextPage={list.isFetchingNextPage} fetchNextPage={list.fetchNextPage} />
+          </>
+        )}
+      </Card>
+      <ConfirmDialog
+        open={unlinking !== null}
+        onOpenChange={(o) => !o && setUnlinking(null)}
+        title={`Unlink ${unlinking ? nameOf(unlinking) : "this person server"}?`}
+        confirmLabel="Unlink"
+        tone="danger"
+        onConfirm={async () => {
+          if (!unlinking) return;
+          await unlink.mutateAsync(unlinking.id);
+          toast.success("Person server unlinked");
+          setUnlinking(null);
+        }}
+        errorText={(e) => errorMessage(e, "Couldn't unlink. Try again.")}
+      >
+        {unlinking ? `Agents acting for ${unlinking.user_email} through it stop right away. The action is recorded in the audit log.` : null}
+      </ConfirmDialog>
+    </Section>
   );
 }

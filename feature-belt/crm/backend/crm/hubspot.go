@@ -1173,7 +1173,7 @@ func (h *hubspot) assocOf(ctx context.Context, o objectType, id string) (*XAssoc
 	out := &XAssociations{Companies: []XAssocCompany{}, Contacts: []XAssocContact{}, Deals: []XAssocDeal{}}
 	var primary *XRecordRef
 	from := hsObjectName[o]
-	for _, other := range objectTypes {
+	for _, other := range platformTypes {
 		if other == o {
 			continue
 		}
@@ -1898,7 +1898,7 @@ func (h *hubspot) Search(ctx context.Context, q string, types []objectType, limi
 		limit = 20
 	}
 	if len(types) == 0 {
-		types = objectTypes
+		types = platformTypes
 	}
 	out := []XSearchHit{}
 	var pls []XPipeline

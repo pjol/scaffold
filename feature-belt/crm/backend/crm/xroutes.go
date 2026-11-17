@@ -172,7 +172,7 @@ func (s *Service) xProperties(native handlerFn) handlerFn {
 		}
 		ctx := r.Context()
 		if v := r.URL.Query().Get("object"); v != "" {
-			o, ok := parseObject(v)
+			o, ok := parsePlatformObject(v)
 			if !ok {
 				return httpx.BadRequest("object is company, contact or deal.")
 			}
@@ -184,7 +184,7 @@ func (s *Service) xProperties(native handlerFn) handlerFn {
 			return nil
 		}
 		out := map[string][]Property{}
-		for _, o := range objectTypes {
+		for _, o := range platformTypes {
 			list, err := src.Properties(ctx, o)
 			if err != nil {
 				return err
@@ -265,6 +265,10 @@ func (s *Service) xSearch(native handlerFn) handlerFn {
 		types := parseTypes(r.URL.Query().Get("types"))
 		limit := httpx.ParsePage(r).Limit
 		if src != nil {
+			if types = onlyPlatform(types); len(types) == 0 {
+				httpx.OK(w, map[string]any{"items": []any{}})
+				return nil
+			}
 			hits, err := src.Search(ctx, q, types, limit)
 			if err != nil {
 				return err
@@ -301,6 +305,10 @@ func (s *Service) xSearch(native handlerFn) handlerFn {
 // connectedSearch searches each connected account in parallel, each given
 // a short time; slow or failing accounts are left out.
 func (s *Service) connectedSearch(ctx context.Context, userID, orgID uuid.UUID, st sourceSettings, q string, types []objectType, limit int) []XSearchHit {
+	types = onlyPlatform(types)
+	if len(types) == 0 {
+		return nil
+	}
 	conns, err := s.connectedFor(ctx, userID, orgID, st)
 	if err != nil || len(conns) == 0 {
 		return nil
@@ -811,4 +819,15 @@ func (s *Service) mergedList(w http.ResponseWriter, r *http.Request, o objectTyp
 	}
 	httpx.OK(w, out)
 	return nil
+}
+
+// onlyPlatform drops the types connected CRMs don't serve (tickets).
+func onlyPlatform(types []objectType) []objectType {
+	out := []objectType{}
+	for _, o := range types {
+		if o != objTicket {
+			out = append(out, o)
+		}
+	}
+	return out
 }

@@ -124,6 +124,12 @@ func (m mockProvider) plan(req Request) *Response {
 			}
 		}
 	}
+	if att := lastAttachment(req.Messages); att != "" {
+		text := mockPrefix + att + " This reply is scripted; no AI provider was called, so nothing was summarised."
+		resp.Parts = []Part{{Type: PartText, Text: text}}
+		resp.Usage = estimateUsage(req, text)
+		return resp
+	}
 	if strings.Contains(strings.ToLower(last), "long reply") {
 		// A slow, long reply for exercising stop and resume.
 		var b strings.Builder
@@ -144,6 +150,29 @@ func (m mockProvider) plan(req Request) *Response {
 	resp.Parts = []Part{{Type: PartText, Text: text}}
 	resp.Usage = estimateUsage(req, text)
 	return resp
+}
+
+// lastAttachment describes what the latest user message attached (context
+// from Summarise / Ask about this), so development shows it arrived.
+func lastAttachment(msgs []Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != RoleUser {
+			continue
+		}
+		for _, p := range msgs[i].Parts {
+			if p.Type != PartText {
+				continue
+			}
+			if strings.HasPrefix(p.Text, contextOpen) {
+				return fmt.Sprintf("Received the attached content (%d bytes of data).", len(p.Text))
+			}
+			if strings.HasPrefix(p.Text, "<server_notice>The user attached") && strings.Contains(p.Text, "nothing to read") {
+				return "Received an attachment with nothing to read: " + strings.TrimSuffix(strings.TrimPrefix(p.Text, "<server_notice>"), "</server_notice>")
+			}
+		}
+		return ""
+	}
+	return ""
 }
 
 var mockCallRE = regexp.MustCompile(`(?is)\bcall\s+([a-zA-Z0-9_-]{1,64})\s*(\{.*\})?\s*$`)

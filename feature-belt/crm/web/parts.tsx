@@ -3,6 +3,7 @@
 import {
   CRM_PATH,
   CRM_SOURCE_APP,
+  CRM_TICKET_PRIORITY_LABEL,
   CRM_TYPE_LABEL,
   crmMoney,
   errorMessage,
@@ -10,21 +11,33 @@ import {
   useCrmOwners,
   useCrmSearch,
   type CrmObjectType,
+  type CrmPipeline,
   type CrmSearchHit,
   type CrmStageOutcome,
   type CrmTag,
+  type CrmTicketPriority,
   type CrmUserRef,
 } from "@scaffoldapp/shared";
 import { Badge, Input, Skeleton, SkeletonGroup, SourceBadge, Spinner, cn, type BadgeTone } from "@scaffoldapp/ui-web";
-import { Building2, Handshake, Search, UserRound } from "lucide-react";
+import { Building2, Handshake, LifeBuoy, Search, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AppAvatar } from "@/components/shell/AppAvatar";
 
-export const TYPE_ICON: Record<CrmObjectType, typeof Building2> = { company: Building2, contact: UserRound, deal: Handshake };
+export const TYPE_ICON: Record<CrmObjectType, typeof Building2> = { company: Building2, contact: UserRound, deal: Handshake, ticket: LifeBuoy };
 
 export function recordHref(type: CrmObjectType, id: string): string {
   return `/crm/${CRM_PATH[type]}/${id}`;
+}
+
+/** The list page of a type: /crm/tickets. */
+export function listHref(type: CrmObjectType): string {
+  return `/crm/${CRM_PATH[type]}`;
+}
+
+/** A source's pipelines for one record type (absent object_type: a deal pipeline, as older backends and connected CRMs send). */
+export function pipelinesFor(list: CrmPipeline[] | undefined, type: "deal" | "ticket"): CrmPipeline[] {
+  return (list ?? []).filter((p) => (p.object_type ?? "deal") === type);
 }
 
 /** An amount in its currency, tabular. */
@@ -33,7 +46,18 @@ export function MoneyText({ minor, currency, short, className }: { minor: number
   return <span className={cn("tabular-nums", className)}>{crmMoney(minor, currency, { short: !!short })}</span>;
 }
 
-export const OUTCOME_TONE: Record<CrmStageOutcome, BadgeTone> = { open: "neutral", won: "success", lost: "danger" };
+export const OUTCOME_TONE: Record<CrmStageOutcome, BadgeTone> = { open: "neutral", won: "success", lost: "danger", closed: "success" };
+
+export const PRIORITY_TONE: Record<CrmTicketPriority, BadgeTone> = { low: "neutral", medium: "info", high: "warning", urgent: "danger" };
+
+/** A ticket's priority. */
+export function PriorityBadge({ priority }: { priority: CrmTicketPriority }) {
+  return (
+    <Badge tone={PRIORITY_TONE[priority]} dot={priority === "high" || priority === "urgent"}>
+      {CRM_TICKET_PRIORITY_LABEL[priority]}
+    </Badge>
+  );
+}
 
 export function StageBadge({ name, outcome }: { name: string; outcome: CrmStageOutcome }) {
   return (

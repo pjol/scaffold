@@ -3,7 +3,7 @@
 import { useMediaDevices, usePreviewTracks } from "@livekit/components-react";
 import { Avatar, Badge, Banner, Button, Field, IconButton, Input, Select } from "@scaffoldapp/ui-web";
 import { createAudioAnalyser, Track, type LocalAudioTrack, type LocalVideoTrack } from "livekit-client";
-import { Mic, MicOff, Video, VideoOff } from "lucide-react";
+import { Circle, Mic, MicOff, Video, VideoOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { mediaProblem, mediaProblemText, type CallsMediaProblem } from "./media";
 import { readDevicePrefs, writeDevicePrefs, type CallsDevicePrefs } from "./storage";
@@ -13,6 +13,8 @@ export interface PreJoinProps {
   /** "Join now" or "Ask to join". */
   action: "join" | "knock";
   live?: boolean;
+  /** The call is being recorded now: say so before people join. */
+  recording?: boolean;
   /** Guests type a name; people with accounts don't. */
   name?: { value: string; onChange: (v: string) => void };
   /** Shown on the preview when the camera is off. */
@@ -30,7 +32,7 @@ export interface PreJoinProps {
  * pickers, and the join button. Choices are remembered on this browser. A blocked or
  * missing device says so and the person can still join without it.
  */
-export function PreJoin({ title, action, live, name, displayName, avatarUrl, busy, problem, onJoin, footer }: PreJoinProps) {
+export function PreJoin({ title, action, live, recording, name, displayName, avatarUrl, busy, problem, onJoin, footer }: PreJoinProps) {
   const [prefs, setPrefs] = useState<CallsDevicePrefs>(() => readDevicePrefs());
   const [camProblem, setCamProblem] = useState<CallsMediaProblem | null>(null);
   const [micProblem, setMicProblem] = useState<CallsMediaProblem | null>(null);
@@ -143,6 +145,11 @@ export function PreJoin({ title, action, live, name, displayName, avatarUrl, bus
             <Input value={name.value} onChange={(e) => name.onChange(e.target.value)} maxLength={60} autoComplete="name" placeholder="Alex Morgan" autoFocus />
           </Field>
         )}
+        {recording && (
+          <Banner tone="warning" icon={<Circle className="fill-current" aria-hidden />}>
+            This call is being recorded. Joining means you agree to be in the recording.
+          </Banner>
+        )}
         {problem}
         <Button type="submit" size="lg" loading={busy} disabled={needsName} className="lg:min-w-48">
           {action === "join" ? "Join now" : "Ask to join"}
@@ -163,7 +170,7 @@ function PreviewVideo({ track }: { track: LocalVideoTrack }) {
       track.detach(el);
     };
   }, [track]);
-  return <video ref={ref} className="absolute inset-0 size-full -scale-x-100 object-cover" muted playsInline autoPlay aria-label="Your camera preview" />;
+  return <video ref={ref} className={`absolute inset-0 size-full object-cover ${readDevicePrefs().mirror ? "-scale-x-100" : ""}`} muted playsInline autoPlay aria-label="Your camera preview" />;
 }
 
 /** A small live level so people see their microphone works. */

@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net/http"
 	"path"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"scaffoldapp/backend/internal/db"
 	"scaffoldapp/backend/internal/httpx"
 	"scaffoldapp/backend/internal/moderation"
+	"scaffoldapp/backend/internal/orgs"
 	"scaffoldapp/backend/internal/storage"
 )
 
@@ -322,11 +324,12 @@ func (s *Service) channelRefs(ctx context.Context, me uuid.UUID, ids []uuid.UUID
 // ---- sending -------------------------------------------------------------------
 
 type attachmentIn struct {
-	Key       string `json:"key"` // from POST /v1/uploads with purpose channel_attachment
-	FileName  string `json:"file_name"`
-	SizeBytes *int64 `json:"size_bytes"`
-	Width     *int   `json:"width"`
-	Height    *int   `json:"height"`
+	Key         string `json:"key"` // from POST /v1/uploads with purpose channel_attachment
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"` // what the client uploaded; only trusted for display of unknown types
+	SizeBytes   *int64 `json:"size_bytes"`
+	Width       *int   `json:"width"`
+	Height      *int   `json:"height"`
 }
 
 type sendReq struct {
@@ -337,6 +340,10 @@ type sendReq struct {
 	Title             string         `json:"title"` // forum channels: required for a new post
 	Tags              []string       `json:"tags"`
 	Attachments       []attachmentIn `json:"attachments"`
+
+	poll      *pollIn    // POST …/polls
+	forwardOf *uuid.UUID // POST /channels/messages/{id}/forward
+	keepDraft bool       // a scheduled send: the draft is newer than the message
 }
 
 type attachmentRow struct {
@@ -379,7 +386,7 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 	switch {
 	case req.ClientID != "" && !clientIDPattern.MatchString(req.ClientID):
 		return nil, false, httpx.BadRequest("client_id must be 1 to 64 letters, digits, dashes or underscores.")
-	case body == "" && len(req.Attachments) == 0:
+	case body == "" && len(req.Attachments) == 0 && req.forwardOf == nil:
 		return nil, false, httpx.BadRequest("Write a message or attach a file.")
 	case utf8.RuneCountInString(body) > s.cfg.maxChars:
 		return nil, false, httpx.BadRequest(fmt.Sprintf("Messages can be up to %d characters.", s.cfg.maxChars))
@@ -414,6 +421,9 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 	}
 	var tags []string
 	reply := req.ThreadRootID != nil
+	if err := s.requirePost(ctx, s.d.Pool, a, reply); err != nil {
+		return nil, false, err
+	}
 	switch {
 	case reply && (title != "" || len(req.Tags) > 0):
 		return nil, false, httpx.BadRequest("Replies don't have a title or tags.")
@@ -445,7 +455,7 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 
 	var msgID uuid.UUID
 	var rootAuthor *uuid.UUID
-	retried := false
+	retried, links := false, 0
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		if reply {
 			var deleted bool
@@ -479,10 +489,10 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 		}
 		var at time.Time
 		err := tx.QueryRow(ctx, `
-			INSERT INTO channel_messages (channel_id, sender_id, kind, body, thread_root_id, also_in_channel, title, tags, client_id)
-			VALUES ($1, $2, 'text', $3, $4, $5, NULLIF($6, ''), $7, NULLIF($8, ''))
+			INSERT INTO channel_messages (channel_id, sender_id, kind, body, thread_root_id, also_in_channel, title, tags, client_id, forward_of, is_forward)
+			VALUES ($1, $2, 'text', $3, $4, $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9::uuid, $9::uuid IS NOT NULL)
 			ON CONFLICT (sender_id, client_id) WHERE client_id IS NOT NULL DO NOTHING
-			RETURNING id, created_at`, channelID, me, body, req.ThreadRootID, req.AlsoSendToChannel, title, tags, req.ClientID).Scan(&msgID, &at)
+			RETURNING id, created_at`, channelID, me, body, req.ThreadRootID, req.AlsoSendToChannel, title, tags, req.ClientID, req.forwardOf).Scan(&msgID, &at)
 		if db.IsNoRows(err) { // a concurrent retry with the same client_id won
 			retried = true
 			return nil
@@ -504,6 +514,14 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 		if err := saveMentions(ctx, tx, msgID, ments); err != nil {
 			return err
 		}
+		if req.poll != nil {
+			if err := insertPoll(ctx, tx, msgID, req.poll); err != nil {
+				return err
+			}
+		}
+		if links, err = saveLinks(ctx, tx, msgID, body); err != nil {
+			return err
+		}
 		return afterInsert(ctx, tx, channelID, msgID, at, &me, req.ThreadRootID, req.AlsoSendToChannel, rootAuthor, ments)
 	})
 	if err != nil {
@@ -518,6 +536,12 @@ func (s *Service) post(ctx context.Context, me, channelID uuid.UUID, req sendReq
 		return nil, false, err
 	}
 	s.announceNew(ctx, a, msg, ments)
+	if links > 0 {
+		s.kickUnfurl(ctx, a.OrgID, channelID, msgID)
+	}
+	if req.forwardOf == nil && req.poll == nil && !req.keepDraft {
+		s.clearDraft(ctx, me, a.OrgID, channelID, req.ThreadRootID)
+	}
 	return msg, true, nil
 }
 
@@ -619,6 +643,16 @@ func (s *Service) checkDirectSend(ctx context.Context, q db.Querier, channelID, 
 	return nil
 }
 
+// claimedType keeps a client's content type for display when it is well
+// formed (signAttachment never serves it as such).
+func claimedType(ct string) string {
+	mt, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(ct)))
+	if err != nil || len(mt) > 127 || strings.Count(mt, "/") != 1 {
+		return "application/octet-stream"
+	}
+	return mt
+}
+
 func (s *Service) parseAttachments(me uuid.UUID, in []attachmentIn) ([]attachmentRow, error) {
 	out := make([]attachmentRow, 0, len(in))
 	seen := map[string]bool{}
@@ -633,7 +667,8 @@ func (s *Service) parseAttachments(me uuid.UUID, in []attachmentIn) ([]attachmen
 		seen[key] = true
 		info, ok := attachmentExt[strings.ToLower(strings.TrimPrefix(path.Ext(key), "."))]
 		if !ok {
-			return nil, httpx.BadRequest("That file type isn't supported.")
+			// Any other file: shown as a file and always served as a download.
+			info.contentType, info.kind = claimedType(x.ContentType), "file"
 		}
 		positive := func(p *int) bool { return p == nil || (*p > 0 && *p <= 50000) }
 		if !positive(x.Width) || !positive(x.Height) || (x.SizeBytes != nil && (*x.SizeBytes <= 0 || *x.SizeBytes > s.cfg.attachmentMax)) {
@@ -684,8 +719,11 @@ func (s *Service) editMessage(w http.ResponseWriter, r *http.Request) error {
 	if req.Body != nil {
 		body = strings.TrimSpace(*req.Body)
 	}
-	if body == "" && !m.HasFiles {
+	if body == "" && !m.HasFiles && !m.isForward {
 		return httpx.BadRequest("Write a message, or delete it instead.")
+	}
+	if body == "" && m.hasPoll {
+		return httpx.BadRequest("A poll needs a question.")
 	}
 	if utf8.RuneCountInString(body) > s.cfg.maxChars {
 		return httpx.BadRequest(fmt.Sprintf("Messages can be up to %d characters.", s.cfg.maxChars))
@@ -721,6 +759,7 @@ func (s *Service) editMessage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	links := 0
 	err = db.WithTx(ctx, s.d.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			UPDATE channel_messages SET body = $2, title = CASE WHEN title IS NULL THEN NULL ELSE $3 END,
@@ -728,7 +767,16 @@ func (s *Service) editMessage(w http.ResponseWriter, r *http.Request) error {
 			WHERE id = $1 AND deleted_at IS NULL`, id, body, title, tags); err != nil {
 			return err
 		}
-		return saveMentions(ctx, tx, id, ments)
+		if err := saveMentions(ctx, tx, id, ments); err != nil {
+			return err
+		}
+		if m.hasPoll {
+			if _, err := tx.Exec(ctx, `UPDATE channel_polls SET question = $2 WHERE message_id = $1`, id, truncate(body, 300)); err != nil {
+				return err
+			}
+		}
+		links, err = saveLinks(ctx, tx, id, body)
+		return err
 	})
 	if err != nil {
 		return err
@@ -738,6 +786,9 @@ func (s *Service) editMessage(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.publishUpdated(ctx, m.access, msg, true)
+	if links > 0 {
+		s.kickUnfurl(ctx, m.OrgID, m.ChannelID, id)
+	}
 	httpx.OK(w, msg)
 	return nil
 }
@@ -809,6 +860,9 @@ func eraseMessages(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, by string) e
 		`DELETE FROM channel_attachments WHERE message_id = ANY($1)`,
 		`DELETE FROM channel_reactions WHERE message_id = ANY($1)`,
 		`DELETE FROM channel_mentions WHERE message_id = ANY($1)`,
+		`DELETE FROM channel_message_links WHERE message_id = ANY($1)`,
+		`DELETE FROM channel_polls WHERE message_id = ANY($1)`,
+		`DELETE FROM channel_reminders WHERE message_id = ANY($1)`,
 	} {
 		if _, err := tx.Exec(ctx, sql, ids); err != nil {
 			return err
@@ -817,6 +871,7 @@ func eraseMessages(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, by string) e
 	_, err := tx.Exec(ctx, `
 		UPDATE channel_messages SET body = '', title = CASE WHEN title IS NULL THEN NULL ELSE 'Deleted post' END, tags = '{}',
 		  edited_at = NULL, client_id = NULL, mention_channel = false, pinned_at = NULL, pinned_by = NULL,
+		  forward_of = NULL, is_forward = false, links_hidden = false,
 		  deleted_at = COALESCE(deleted_at, now()), deleted_by = COALESCE(deleted_by, $2), updated_at = now()
 		WHERE id = ANY($1) AND kind <> 'system'`, ids, by)
 	return err
@@ -888,12 +943,23 @@ func (s *Service) addReaction(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	emoji := strings.TrimSpace(req.Emoji)
-	if !validEmoji(emoji) {
+	custom := customEmojiRe.MatchString(emoji)
+	if !custom && !validEmoji(emoji) {
 		return httpx.BadRequest("Choose an emoji.")
 	}
 	m, err := s.reactable(ctx, me, id)
 	if err != nil {
 		return err
+	}
+	if custom {
+		name, ok, err := s.resolveEmoji(ctx, m.OrgID, strings.Trim(emoji, ":"))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return httpx.BadRequest("That emoji isn't in this " + orgs.Noun() + ".")
+		}
+		emoji = ":" + name + ":"
 	}
 	tag, err := s.d.Pool.Exec(ctx, `
 		INSERT INTO channel_reactions (message_id, user_id, emoji)

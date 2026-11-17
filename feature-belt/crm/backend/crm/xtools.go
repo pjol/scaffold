@@ -177,7 +177,7 @@ func (in xToolInput) object() (objectType, error) {
 	if in.DealID != "" {
 		return objDeal, nil
 	}
-	o, ok := parseObject(in.RecordType)
+	o, ok := parsePlatformObject(in.RecordType)
 	if !ok {
 		return "", httpx.BadRequest("record_type is company, contact or deal.")
 	}
@@ -736,6 +736,9 @@ func (s *Service) xTimelineTool(ctx context.Context, caller *auth.Identity, o ob
 // xSearchTool is crm_search across connected accounts (source all or one id).
 func (s *Service) xSearchTool(ctx context.Context, caller *auth.Identity, orgIDs []uuid.UUID, source, q string, types []objectType, limit int) ([]XSearchHit, error) {
 	out := []XSearchHit{}
+	if types = onlyPlatform(types); len(types) == 0 {
+		return out, nil
+	}
 	seen := map[string]bool{}
 	for _, orgID := range orgIDs {
 		st, err := s.sourceSettings(ctx, orgID)

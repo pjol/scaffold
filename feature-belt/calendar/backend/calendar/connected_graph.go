@@ -64,23 +64,23 @@ type msEvent struct {
 	Removed *struct {
 		Reason string `json:"reason"`
 	} `json:"@removed"`
-	ChangeKey             string `json:"changeKey"`
-	Subject               string `json:"subject"`
-	BodyPreview           string `json:"bodyPreview"`
-	Body                  *struct {
+	ChangeKey   string `json:"changeKey"`
+	Subject     string `json:"subject"`
+	BodyPreview string `json:"bodyPreview"`
+	Body        *struct {
 		ContentType string `json:"contentType"`
 		Content     string `json:"content"`
 	} `json:"body"`
-	Start                 msTime       `json:"start"`
-	End                   msTime       `json:"end"`
-	IsAllDay              bool         `json:"isAllDay"`
-	IsCancelled           bool         `json:"isCancelled"`
-	IsOrganizer           bool         `json:"isOrganizer"`
-	ShowAs                string       `json:"showAs"`
-	Type                  string       `json:"type"`
-	SeriesMasterID        string       `json:"seriesMasterId"`
-	WebLink               string       `json:"webLink"`
-	Location              *struct {
+	Start          msTime `json:"start"`
+	End            msTime `json:"end"`
+	IsAllDay       bool   `json:"isAllDay"`
+	IsCancelled    bool   `json:"isCancelled"`
+	IsOrganizer    bool   `json:"isOrganizer"`
+	ShowAs         string `json:"showAs"`
+	Type           string `json:"type"`
+	SeriesMasterID string `json:"seriesMasterId"`
+	WebLink        string `json:"webLink"`
+	Location       *struct {
 		DisplayName string `json:"displayName"`
 	} `json:"location"`
 	Organizer *struct {

@@ -139,8 +139,8 @@ func (s *Service) agentFilter(ctx context.Context, caller *auth.Identity, items 
 
 // agentInbox is inbox for an agent: newest first, only what it may read,
 // at most limit items (it looks through up to agentScan rows).
-func (s *Service) agentInbox(ctx context.Context, caller *auth.Identity, unreadOnly bool, limit int) ([]Item, error) {
-	items, err := s.inbox(ctx, caller.UserID, unreadOnly, cursor{}, agentScan)
+func (s *Service) agentInbox(ctx context.Context, caller *auth.Identity, f inboxFilter, limit int) ([]Item, error) {
+	items, err := s.inbox(ctx, caller.UserID, f, cursor{}, agentScan)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (s *Service) agentInbox(ctx context.Context, caller *auth.Identity, unreadO
 // agentUnread is the unread count an agent may know: the unread rows it may
 // read among the newest agentScan.
 func (s *Service) agentUnread(ctx context.Context, caller *auth.Identity) (int, error) {
-	items, err := s.agentInbox(ctx, caller, true, agentScan)
+	items, err := s.agentInbox(ctx, caller, inboxFilter{UnreadOnly: true}, agentScan)
 	return len(items), err
 }
 
@@ -179,7 +179,7 @@ func (s *Service) markTargets(ctx context.Context, caller *auth.Identity, req ma
 		err   error
 	)
 	if req.All {
-		items, err = s.inbox(ctx, caller.UserID, true, cursor{}, agentScan)
+		items, err = s.inbox(ctx, caller.UserID, inboxFilter{UnreadOnly: true}, cursor{}, agentScan)
 	} else {
 		items, err = s.itemsByID(ctx, caller.UserID, req.IDs)
 	}

@@ -38,8 +38,11 @@ const PREVIEW_LABEL: Record<string, string> = {
   markdown: "Markdown",
   code: "Code",
   csv: "CSV",
+  json: "JSON",
   svg: "SVG image",
   office: "Document",
+  archive: "Archive",
+  font: "Font",
   other: "File",
 };
 
@@ -57,7 +60,7 @@ export function filesKindLabel(item: Pick<FilesItem, "preview" | "type_info" | "
 
 /** Previews shown from the text endpoint. */
 export function filesIsTextPreview(preview: FilesPreview): boolean {
-  return preview === "text" || preview === "markdown" || preview === "code" || preview === "csv" || preview === "svg";
+  return preview === "text" || preview === "markdown" || preview === "code" || preview === "csv" || preview === "json" || preview === "svg";
 }
 
 /** Largest text preview clients ask for (the server returns at most 1 MB). */
@@ -74,46 +77,6 @@ export function filesCanManage(item: Pick<FilesItem, "my_level">): boolean {
 /** Fills a registered type's "{folder}" path ("" for the top of My drive). */
 export function filesTypePath(template: string, folderId: string | null | undefined): string {
   return template.replaceAll("{folder}", encodeURIComponent(folderId ?? ""));
-}
-
-/**
- * Parses CSV (RFC 4180: quoted fields, doubled quotes, newlines inside quotes) into rows,
- * stopping after `maxRows`. `truncated` says rows were left out.
- */
-export function filesParseCsv(text: string, maxRows = 500, delimiter = ","): { rows: string[][]; truncated: boolean } {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i++;
-        } else quoted = false;
-      } else field += c;
-      continue;
-    }
-    if (c === '"' && field === "") quoted = true;
-    else if (c === delimiter) {
-      row.push(field);
-      field = "";
-    } else if (c === "\n" || c === "\r") {
-      if (c === "\r" && text[i + 1] === "\n") i++;
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = "";
-      if (rows.length >= maxRows) return { rows, truncated: i < text.length - 1 };
-    } else field += c;
-  }
-  if (field !== "" || row.length > 0) {
-    row.push(field);
-    rows.push(row);
-  }
-  return { rows, truncated: false };
 }
 
 /** Splits a path into the folder names an upload needs ("a/b/c.txt" → ["a", "b"]) and the file name. */

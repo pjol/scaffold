@@ -9,6 +9,7 @@ import {
   calendarOnDay,
   calendarTodayKey,
   calendarWeekday,
+  calendarZoneLabel,
   formatCalendarTime,
   useNow,
   type CalendarExternalBusy,
@@ -16,7 +17,7 @@ import {
   type CalendarOccurrence,
 } from "@scaffoldapp/shared";
 import { cn } from "@scaffoldapp/ui-web";
-import { Repeat, Video } from "lucide-react";
+import { Focus, Plane, Repeat, Video } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { occurrenceClasses, SourceMark, sourceSuffix } from "./parts";
 
@@ -38,6 +39,8 @@ interface TimeGridProps {
   onCreateAllDay: (date: string) => void;
   onOpen: (o: CalendarOccurrence) => void;
   onMove: (o: CalendarOccurrence, startsAt: string, endsAt: string) => void;
+  /** A second clock beside the hours (settings' secondary zone). */
+  secondaryZone?: string | null;
 }
 
 type Drag =
@@ -51,7 +54,13 @@ const hourLabel = (h: number) => (h === 0 ? "" : `${h % 12 === 0 ? 12 : h % 12} 
  * days too), drag its bottom edge to resize. Keyboard: focus an event and press Alt+↑/↓ to
  * move 15 minutes, Alt+Shift+↑/↓ to change the end, Alt+←/→ to move a day; Enter opens it.
  */
-export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCreateAllDay, onOpen, onMove }: TimeGridProps) {
+export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCreateAllDay, onOpen, onMove, secondaryZone }: TimeGridProps) {
+  const second = secondaryZone && secondaryZone !== zone ? secondaryZone : null;
+  const secondLabel = (h: number) => {
+    if (!second || h === 0) return "";
+    const iso = calendarFromWall(days[0]!, h * 60, zone);
+    return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: calendarMinutesOfDay(iso, second) % 60 ? "2-digit" : undefined, timeZone: second });
+  };
   const now = useNow(60_000);
   const today = calendarTodayKey(zone);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -166,7 +175,12 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Day headers and all-day events */}
       <div className="flex border-b border-border">
-        <div className="w-14 shrink-0" />
+        {second ? (
+          <div className="flex w-14 shrink-0 items-end justify-end pb-1 pr-2 type-caption text-fg-subtle" title={second}>
+            {calendarZoneLabel(calendarFromWall(days[0]!, 12 * 60, zone), second)}
+          </div>
+        ) : null}
+        <div className={cn("w-14 shrink-0", second && "flex items-end justify-end pb-1 pr-2 type-caption text-fg-subtle")}>{second ? calendarZoneLabel(calendarFromWall(days[0]!, 12 * 60, zone), zone) : null}</div>
         <div className="grid min-w-0 flex-1" style={{ gridTemplateColumns: cols }}>
           {days.map((d) => {
             const isToday = d === today;
@@ -208,6 +222,15 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
       {/* Hours */}
       <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="flex">
+          {second ? (
+            <div className="relative w-14 shrink-0 bg-sunken" style={{ height: 24 * HOUR_PX }} aria-hidden>
+              {Array.from({ length: 24 }, (_, h) => (
+                <span key={h} className="absolute right-2 -translate-y-1/2 type-caption text-fg-subtle tabular-nums" style={{ top: h * HOUR_PX }}>
+                  {secondLabel(h)}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div className="relative w-14 shrink-0" style={{ height: 24 * HOUR_PX }} aria-hidden>
             {Array.from({ length: 24 }, (_, h) => (
               <span key={h} className="absolute right-2 -translate-y-1/2 type-caption text-fg-subtle tabular-nums" style={{ top: h * HOUR_PX }}>
@@ -287,6 +310,7 @@ export function TimeGrid({ days, zone, items, busy, workingHours, onCreate, onCr
                       >
                         <span className="flex min-w-0 items-center gap-1 type-caption font-semibold">
                           <SourceMark o={o} />
+                          {o.event_type === "out_of_office" ? <Plane className="size-3 shrink-0" aria-hidden /> : o.event_type === "focus" ? <Focus className="size-3 shrink-0" aria-hidden /> : null}
                           <span className="truncate">{o.title}</span>
                           {o.recurring ? <Repeat className="size-3 shrink-0 opacity-70" aria-hidden /> : null}
                           {o.conference_url ? <Video className="size-3 shrink-0 opacity-70" aria-hidden /> : null}

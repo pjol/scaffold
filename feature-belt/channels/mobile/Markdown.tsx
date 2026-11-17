@@ -1,7 +1,48 @@
 import { isChannelsEmojiOnly, parseChannelsMarkdown, type ChannelsBlock, type ChannelsInline, type ChannelsUser } from "@scaffoldapp/shared";
+import { filePreviewHighlight, type FilePreviewTokenRole } from "@scaffoldapp/shared/preview/highlight";
 import { Text, useTheme } from "@scaffoldapp/ui-native";
-import { Fragment, memo, type ReactNode } from "react";
-import { Linking, Platform, View, type TextStyle } from "react-native";
+import { Fragment, memo, useMemo, type ReactNode } from "react";
+import { Image, Linking, Platform, ScrollView, View, type TextStyle } from "react-native";
+import { useWorkspaceEmoji } from "./emoji";
+
+/** A code block, highlighted when the fence names a language (```ts). */
+function CodeBlock({ text, lang }: { text: string; lang: string }) {
+  const theme = useTheme();
+  const c = theme.colors;
+  const s = theme.space;
+  const lines = useMemo(() => (lang && text.length < 20_000 ? filePreviewHighlight(text, lang.toLowerCase()) : null), [text, lang]);
+  const color: Record<FilePreviewTokenRole, string | undefined> = {
+    keyword: c.primaryStrong,
+    string: c.successStrong,
+    number: c.warningStrong,
+    comment: c.textMuted,
+    function: c.infoStrong,
+    type: c.accentStrong,
+    attr: c.warningStrong,
+    meta: c.dangerStrong,
+    deletion: c.dangerStrong,
+    addition: c.successStrong,
+    plain: undefined,
+  };
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ borderRadius: theme.radius.md, borderWidth: 1, borderColor: c.border, backgroundColor: c.sunken }} contentContainerStyle={{ paddingHorizontal: s[3], paddingVertical: s[2] }}>
+      <Text role="label" selectable style={{ fontFamily: MONO, color: c.text }} accessibilityLabel={lang ? `${lang} code` : "Code"}>
+        {lines
+          ? lines.map((line, i) => (
+              <Fragment key={i}>
+                {i > 0 ? "\n" : null}
+                {line.map((t, j) => (
+                  <Text key={j} role="label" style={{ fontFamily: MONO, color: color[t.role] ?? c.text, fontStyle: t.role === "comment" ? "italic" : "normal" }}>
+                    {t.text}
+                  </Text>
+                ))}
+              </Fragment>
+            ))
+          : text}
+      </Text>
+    </ScrollView>
+  );
+}
 
 /** The system monospace face for code (palettes ship no mono font). */
 const MONO = Platform.OS === "ios" ? "Menlo" : "monospace";
@@ -30,6 +71,7 @@ export const ChannelsMarkdown = memo(function ChannelsMarkdown({ body, mentions,
   const c = theme.colors;
   const s = theme.space;
   const names = new Map(mentions.map((u) => [u.id, u]));
+  const { byName } = useWorkspaceEmoji();
   const base: TextStyle = { color: tone === "muted" ? c.textMuted : c.text };
 
   const inline = (nodes: ChannelsInline[], key = ""): ReactNode[] =>
@@ -95,6 +137,11 @@ export const ChannelsMarkdown = memo(function ChannelsMarkdown({ body, mentions,
               {n.text}
             </Text>
           );
+        case "custom_emoji": {
+          const e = byName.get(n.name);
+          if (!e) return <Fragment key={k}>{`:${n.name}:`}</Fragment>;
+          return <Image key={k} source={{ uri: e.url }} accessibilityLabel={`:${n.name}:`} resizeMode="contain" style={{ width: 20, height: 20 }} />;
+        }
       }
       return null;
     });
@@ -132,13 +179,7 @@ export const ChannelsMarkdown = memo(function ChannelsMarkdown({ body, mentions,
           </Text>
         );
       case "code":
-        return (
-          <View key={i} style={{ borderRadius: theme.radius.md, borderWidth: 1, borderColor: c.border, backgroundColor: c.sunken, paddingHorizontal: s[3], paddingVertical: s[2] }}>
-            <Text role="label" selectable style={{ fontFamily: MONO, color: c.text }}>
-              {b.text}
-            </Text>
-          </View>
-        );
+        return <CodeBlock key={i} text={b.text} lang={b.lang} />;
       case "quote":
         return (
           <View key={i} style={{ flexDirection: "row", gap: s[3] }}>

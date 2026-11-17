@@ -9,8 +9,9 @@
  * - `dev`       `DEV_IDENTITIES`, the seeded dev sign-ins
  * - `legal`     Terms and Privacy as structured data (`TERMS_VERSION`, `PRIVACY_VERSION`)
  * - `utils`     `generateId`, `stableStringify`, `computeBackoff`
+ * - `preview`   `filePreviewKind`, `fileFormatSize`, CSV/Markdown/JSON readers for `FilePreview` (highlighting: `/preview/highlight`, lazy)
  *
- * Server-safe subpaths (no React): `/api`, `/realtime`, `/types`, `/legal`, `/dev`, `/auth/env`, `/utils`.
+ * Server-safe subpaths (no React): `/api`, `/realtime`, `/types`, `/legal`, `/dev`, `/auth/env`, `/utils`, `/preview`.
  * Features add `src/<feature>/` and one export line above the anchor below.
  */
 export * from "./types";
@@ -22,4 +23,5 @@ export * from "./dev";
 export * from "./legal";
 export * from "./utils";
 export * from "./sources";
+export * from "./preview";
 // scaffold:exports

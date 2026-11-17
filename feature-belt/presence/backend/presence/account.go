@@ -16,13 +16,20 @@ import (
 
 // ---- deletion and export -------------------------------------------------------
 
-// DeleteAccount removes the person's devices, status and Do Not Disturb.
+// DeleteAccount removes the person's devices, status, Do Not Disturb,
+// schedule and saved statuses.
 func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM presence_devices WHERE user_id = $1`, userID); err != nil {
-		return err
+	for _, q := range []string{
+		`DELETE FROM presence_devices WHERE user_id = $1`,
+		`DELETE FROM presence_dnd_schedules WHERE user_id = $1`,
+		`DELETE FROM presence_status_presets WHERE user_id = $1`,
+		`DELETE FROM presence_status WHERE user_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, userID); err != nil {
+			return err
+		}
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM presence_status WHERE user_id = $1`, userID)
-	return err
+	return nil
 }
 
 type exportDevice struct {
@@ -40,12 +47,14 @@ type exportData struct {
 	DNDUntil   *time.Time     `json:"dnd_until"`
 	Away       bool           `json:"away"`
 	Devices    []exportDevice `json:"devices"`
+	Schedule   *Schedule      `json:"dnd_schedule"`
+	Presets    []StatusPreset `json:"status_presets"`
 }
 
 // ExportAccount returns the person's status settings and their devices'
 // platforms and heartbeat times (device ids are left out).
 func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, error) {
-	out := exportData{ClearAfter: "never", Devices: []exportDevice{}}
+	out := exportData{ClearAfter: "never", Devices: []exportDevice{}, Presets: []StatusPreset{}}
 	err := s.d.Pool.QueryRow(ctx, `
 		SELECT emoji, text, clear_after, expires_at, dnd_until, away FROM presence_status WHERE user_id = $1`, userID).
 		Scan(&out.Emoji, &out.Text, &out.ClearAfter, &out.ExpiresAt, &out.DNDUntil, &out.Away)
@@ -62,6 +71,19 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	}
 	if out.Devices == nil {
 		out.Devices = []exportDevice{}
+	}
+	if out.Schedule, _, err = loadSchedule(ctx, s.d.Pool, userID); err != nil {
+		return nil, err
+	}
+	rows, err = s.d.Pool.Query(ctx, `SELECT `+presetCols+` FROM presence_status_presets WHERE user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	if out.Presets, err = pgx.CollectRows(rows, pgx.RowToStructByPos[StatusPreset]); err != nil {
+		return nil, err
+	}
+	if out.Presets == nil {
+		out.Presets = []StatusPreset{}
 	}
 	return out, nil
 }

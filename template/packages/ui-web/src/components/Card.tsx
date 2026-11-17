@@ -33,8 +33,10 @@ export interface CardProps extends HTMLMotionProps<"div"> {
 }
 
 /**
- * Surface container. Interactive cards strengthen their border on hover and press down
- * on tap.
+ * Surface container for one object the design sets apart (a post, a plan, a home tile), not
+ * the default wrapper for a section or group: those sit on the canvas in `Section` and
+ * `ListGroup` (design.md, house rule 8). Interactive cards strengthen their border on hover
+ * and press down on tap.
  *
  * ```tsx
  * <Card interactive asChild><Link href="/settings">…</Link></Card>

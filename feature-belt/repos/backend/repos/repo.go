@@ -34,6 +34,8 @@ type Repo struct {
 	AllowMergeCommit    bool
 	AllowSquash         bool
 	DeleteBranchOnMerge bool
+	AllowRebase         bool
+	AllowAutoMerge      bool
 	SizeBytes           int64
 	CreatedBy           *uuid.UUID
 	PushedAt            *time.Time
@@ -46,7 +48,7 @@ var errRepoNotFound = httpx.NotFound("Repository not found.")
 
 const repoSelect = `
 	SELECT r.id, r.org_id, o.slug, i.name, r.slug, i.parent_id, r.default_branch, r.description,
-	       r.allow_merge_commit, r.allow_squash, r.delete_branch_on_merge, r.size_bytes, r.created_by,
+	       r.allow_merge_commit, r.allow_squash, r.delete_branch_on_merge, r.allow_rebase, r.allow_auto_merge, r.size_bytes, r.created_by,
 	       r.pushed_at, r.created_at, GREATEST(r.updated_at, i.updated_at), i.trashed_at IS NOT NULL
 	FROM repos_repos r
 	JOIN files_items i ON i.id = r.id
@@ -55,7 +57,7 @@ const repoSelect = `
 func scanRepo(row pgx.Row) (*Repo, error) {
 	var r Repo
 	err := row.Scan(&r.ID, &r.OrgID, &r.OrgSlug, &r.Name, &r.Slug, &r.FolderID, &r.DefaultBranch, &r.Description,
-		&r.AllowMergeCommit, &r.AllowSquash, &r.DeleteBranchOnMerge, &r.SizeBytes, &r.CreatedBy,
+		&r.AllowMergeCommit, &r.AllowSquash, &r.DeleteBranchOnMerge, &r.AllowRebase, &r.AllowAutoMerge, &r.SizeBytes, &r.CreatedBy,
 		&r.PushedAt, &r.CreatedAt, &r.UpdatedAt, &r.Trashed)
 	return &r, err
 }
@@ -128,7 +130,11 @@ type RepoView struct {
 	AllowMergeCommit    bool       `json:"allow_merge_commit"`
 	AllowSquash         bool       `json:"allow_squash"`
 	DeleteBranchOnMerge bool       `json:"delete_branch_on_merge"`
+	AllowRebase         bool       `json:"allow_rebase"`
+	AllowAutoMerge      bool       `json:"allow_auto_merge"`
 	OpenPulls           int        `json:"open_pulls"`
+	OpenIssues          int        `json:"open_issues"`
+	Releases            int        `json:"releases"`
 	SizeBytes           int64      `json:"size_bytes"`
 	PushedAt            *time.Time `json:"pushed_at"`
 	CreatedAt           time.Time  `json:"created_at"`
@@ -145,6 +151,7 @@ func (s *Service) view(ctx context.Context, r *Repo, lvl access.Level) (RepoView
 		DefaultBranch: r.DefaultBranch, CloneURL: s.cloneURL(r), Link: "/repos/" + r.ID.String(),
 		MyLevel: lvl.String(), CanPush: lvl >= access.Edit, CanManage: lvl >= access.Manage,
 		AllowMergeCommit: r.AllowMergeCommit, AllowSquash: r.AllowSquash, DeleteBranchOnMerge: r.DeleteBranchOnMerge,
+		AllowRebase: r.AllowRebase, AllowAutoMerge: r.AllowAutoMerge,
 		SizeBytes: r.SizeBytes, PushedAt: r.PushedAt, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 	head, err := s.git.RefValue(ctx, r.ID, "refs/heads/"+r.DefaultBranch)
@@ -158,7 +165,9 @@ func (s *Service) view(ctx context.Context, r *Repo, lvl access.Level) (RepoView
 		}
 		v.Empty = len(refs) == 0
 	}
-	if err := s.d.Pool.QueryRow(ctx, `SELECT count(*) FROM repos_pulls WHERE repo_id = $1 AND state = 'open'`, r.ID).Scan(&v.OpenPulls); err != nil {
+	if err := s.d.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM repos_pulls WHERE repo_id = $1 AND state = 'open'),
+		(SELECT count(*) FROM repos_issues WHERE repo_id = $1 AND state = 'open'),
+		(SELECT count(*) FROM repos_releases WHERE repo_id = $1 AND NOT draft)`, r.ID).Scan(&v.OpenPulls, &v.OpenIssues, &v.Releases); err != nil {
 		return v, err
 	}
 	return v, nil
@@ -364,6 +373,9 @@ func (s *Service) newRepo(ctx context.Context, tx pgx.Tx, me *auth.Identity, org
 	if _, err := tx.Exec(ctx, `INSERT INTO repos_protections (repo_id, pattern) VALUES ($1, $2)`, item.ID, branch); err != nil {
 		return nil, err
 	}
+	if err := seedDefaultLabels(ctx, tx, item.ID); err != nil {
+		return nil, err
+	}
 	if err := s.git.Init(ctx, item.ID, branch); err != nil {
 		return nil, err
 	}
@@ -511,6 +523,8 @@ type updateRepoReq struct {
 	AllowMergeCommit    *bool   `json:"allow_merge_commit"`
 	AllowSquash         *bool   `json:"allow_squash"`
 	DeleteBranchOnMerge *bool   `json:"delete_branch_on_merge"`
+	AllowRebase         *bool   `json:"allow_rebase"`
+	AllowAutoMerge      *bool   `json:"allow_auto_merge"`
 }
 
 // updateRepo is PATCH /v1/repos/{repoID}: manage level. The name is the
@@ -529,7 +543,7 @@ func (s *Service) updateRepo(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	desc, branch, slug := repo.Description, repo.DefaultBranch, repo.Slug
-	merge, squash, del := repo.AllowMergeCommit, repo.AllowSquash, repo.DeleteBranchOnMerge
+	merge, squash, del, rebase, auto := repo.AllowMergeCommit, repo.AllowSquash, repo.DeleteBranchOnMerge, repo.AllowRebase, repo.AllowAutoMerge
 	if req.Description != nil {
 		desc = strings.TrimSpace(*req.Description)
 		if len([]rune(desc)) > 350 {
@@ -561,14 +575,20 @@ func (s *Service) updateRepo(w http.ResponseWriter, r *http.Request) error {
 	if req.DeleteBranchOnMerge != nil {
 		del = *req.DeleteBranchOnMerge
 	}
-	if !merge && !squash {
+	if req.AllowRebase != nil {
+		rebase = *req.AllowRebase
+	}
+	if req.AllowAutoMerge != nil {
+		auto = *req.AllowAutoMerge
+	}
+	if !merge && !squash && !rebase {
 		return httpx.BadRequest("Allow at least one way to merge.")
 	}
 	err = s.withRepoLock(r.Context(), repo.ID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.Context(), `
 			UPDATE repos_repos SET description = $2, default_branch = $3, slug = $4, allow_merge_commit = $5,
-			       allow_squash = $6, delete_branch_on_merge = $7, updated_at = now()
-			WHERE id = $1`, repo.ID, desc, branch, slug, merge, squash, del)
+			       allow_squash = $6, delete_branch_on_merge = $7, allow_rebase = $8, allow_auto_merge = $9, updated_at = now()
+			WHERE id = $1`, repo.ID, desc, branch, slug, merge, squash, del, rebase, auto)
 		if db.IsUniqueViolation(err, "repos_repos_slug_key") {
 			return httpx.Conflict("Another repository in this workspace uses that URL name.")
 		}

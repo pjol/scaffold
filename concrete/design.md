@@ -11,6 +11,7 @@ All styling comes from `packages/tokens` (root-level definitions shared by web a
 5. **Every async view has skeleton, empty and error states.** Skeletons match the final layout; empty = short title + one action; error = what failed + Retry.
 6. **Not AI-looking.** No three-card feature rows, no left-border accent bars, no gradient text, no glow/neon, no emoji in chrome, no fake stats or decorative data, no pill-everything. Shadows only on floating layers.
 7. **Mobile first.** Every web screen works one-handed at 375 px; every mobile screen at the largest Dynamic Type size.
+8. **No Russian dolls as a pattern.** A kit or project doesn't make nesting its general pattern ("every section is a card, every card holds padded groups"). Each container that adds inset shrinks the column under it, so containers wrapping containers lose width and slickness level by level. The default is one page gutter, with sections and lists on the canvas, separated by hairlines and whitespace (`Section`, `ListGroup`). This is a default, not a ban: leaf components (a row, a chip, a tile, a set-apart `Card`) keep their own inset, overlays are their own surface, and a nested container is fine where it earns its place.
 
 A deliberately themed area (a game skin, a branded microsite) may break named house rules: uppercase, glows, a banned word that is the theme's own vocabulary. Keep it to one directory, keep its raw colours in that directory's theme file, and list each exception under Project rules in the project's CLAUDE.md. Everything outside the area follows the rules.
 
@@ -25,11 +26,12 @@ Semantic roles per palette and mode (`--app-*` CSS variables, Tailwind classes, 
 | `text` (≥7:1), `textMuted` (≥4.5:1), `textSubtle` (≥3:1, never essential), `textInverse` | copy |
 | `primary`, `accent`, `success`, `warning`, `danger`, `info` | each with `x` (fill), `xFg` (text on fill, AA), `xSoft` (tint), `xStrong` (intent-coloured text on surfaces, AA) |
 | `ink` 50–950 | brand-tinted neutrals for charts and illustration |
+| `swatch` gray, brown, orange, yellow, green, blue, purple, pink, red | content colours people pick (text colours, highlights, labels): `fg` ≥4.5:1 on surfaces, `bg` with body text ≥7:1; palette-independent (`swatches.ts`, `text-swatch-red`, `bg-swatch-red-bg`, `theme.swatches`) |
 
 - Light and dark ship for every palette; users choose System / Light / Dark. Palettes switch with `data-palette`; set before first paint (no flash).
 - One accent does the work. Colour marks state and action, not decoration.
 - `pnpm check` runs the contrast audit for every palette and mode and the Tailwind name check; it must pass.
-- Dark mode: shadows stop separating surfaces, so groups use a surface step or a low-alpha border.
+- Dark mode: shadows stop separating surfaces, so a set-apart surface uses a surface step or a low-alpha border.
 
 ## Spacing
 
@@ -45,16 +47,16 @@ Base unit **4 px**. Token name = multiple of 4 = Tailwind's number: `p-4` = 16 o
 |---|---|---|---|
 | L0 inside an element | parts of one thing? (icon↔label, value↔unit) | 4–8 | 4–8 |
 | L1 inside a group | belong together? (label↔input, chips, button group) | 8–12 | 8–12 |
-| L2 between groups | siblings? (field↔field, card↔card, paragraphs) | 16 | 16–24 |
+| L2 between groups | siblings? (field↔field, block↔block, paragraphs) | 16 | 16–24 |
 | L3 between sections | different topic? | 32 | 48 (96 marketing) |
 | L4 page edge | gutter | 16 | 24–32 |
 
 Rules:
-- **Internal ≤ external.** A container's padding ≤ the gap around it; its children's gap < its padding.
+- **Internal ≤ external**, where there is a container: its padding ≤ the gap around it; its children's gap < its padding.
 - **Headings belong to what follows**: space above ≥ 2× space below. Group heading + content in one `gap-3` stack; separate groups with `gap-section`. No `mt-*` on headings.
 - **Components own padding; parents own gaps.** Reusable components never set outer margins. Web: `flex`/`grid` + `gap-*`. Native: `gap`/`rowGap`.
 - Insets: square for cards (16/16), squish for buttons/chips/cells (vertical ≈ half horizontal), stretch for multiline inputs.
-- Nested radii: inner = outer − padding.
+- Nested radii, where a surface does sit inside a surface: inner = outer − padding.
 
 **Defaults**
 
@@ -62,8 +64,9 @@ Rules:
 |---|---|
 | Page gutter | 16 phone · 24 tablet · 32 desktop, content max 1152 (`max-w-content`) |
 | Section gap (app screens) | 32 · 40 · 48 |
-| Card padding / inner gap / grid gap | 16→24 / 8–12 / 16→24 |
-| List rows | 48 one-line (56 with avatar/icon) · 72 two-line · 88 three-line; padding-x 16 |
+| Sections and list groups | on the canvas, no box: heading→content 12 (`Section`), 8 (`ListGroup`) |
+| Set-apart card padding / inner gap / grid gap | 16→24 / 8–12 / 16→24 |
+| List rows | 48 one-line (56 with avatar/icon) · 72 two-line · 88 three-line; padding-x 16, 0 in a `ListGroup` (rows span the column, hairlines between) |
 | Forms | label→control 8 · control→hint 4–6 · field→field 16 (24 with hints) · fieldset→fieldset 32 · last field→actions 24–32 · max width 576 (`max-w-form`) |
 | Inputs | 48 tall on touch, 40 on desktop; text ≥16 px on touch (iOS zoom) |
 | Buttons (height / padding-x) | sm 32/12 (pointer only) · md 40/16 (web default) · lg 48/20 (mobile default) · icon-only square; icon↔label 8 (6 in sm) |
@@ -98,7 +101,7 @@ Tracking tightens as size grows (−0.01 → −0.03em). Never below 12/16 for c
 
 ## Shape and elevation
 
-Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or surface step; shadows (`elevation`) only on menus, popovers, dialogs, sheets and toasts. Layers come from `zIndex` (tokens): menus and selects open on the popover layer, above dialogs and sheets, so they work inside them.
+Radii `xs sm md lg xl 2xl pill` from the palette. A `Card` at rest, used for a set-apart object rather than as the default wrapper, takes a border or surface step; shadows (`elevation`) only on menus, popovers, dialogs, sheets and toasts. Layers come from `zIndex` (tokens): menus and selects open on the popover layer, above dialogs and sheets, so they work inside them.
 
 ## Logos and imagery
 
@@ -128,7 +131,7 @@ Radii `xs sm md lg xl 2xl pill` from the palette. Resting cards use a border or 
 
 ## Components and states
 
-Use the ui packages before writing new primitives: Button, IconButton, Field/Input/TextArea/Select/Switch/Checkbox/SegmentedControl, Card, ListRow, Avatar, BrandMark, Badge, Chip, Tabs, Dialog/ConfirmDialog, Sheet, Menu, Toast, Tooltip/InfoTip, Skeleton*, EmptyState, ErrorState, Spinner, AnimatedNumber, Presence/Stagger/SwapText, AppShell/TopBar/SideNav/BottomNav (web), Screen/TabBar (native), LegalDocument, ConsentForm. A new primitive goes into the ui package, uses tokens only, and has no subtitle prop.
+Use the ui packages before writing new primitives: Button, IconButton, Field/Input/TextArea/Select/Switch/Checkbox/SegmentedControl, ListRow, ListGroup, Card, Avatar, BrandMark, Badge, Chip, Tabs, Dialog/ConfirmDialog, Sheet, Menu, Toast, Tooltip/InfoTip, Skeleton*, EmptyState, ErrorState, Spinner, AnimatedNumber, Presence/Stagger/SwapText, AppShell/TopBar/SideNav/BottomNav (web), Screen/TabBar (native), LegalDocument, ConsentForm. Group with `ListGroup` and web's shell `Section` (`components/shell/PageHeader.tsx`), both on the canvas; `Card` is for one object set apart, not the default wrapper. A new primitive goes into the ui package, uses tokens only, and has no subtitle prop.
 
 ## Accessibility
 
@@ -149,3 +152,5 @@ Screenshot at 375 / 768 / 1440 (native: compact + largest text, light + dark). F
 10. there is a subtitle, a three-card row, decorative data, or a missing skeleton/empty/error state;
 11. card boundaries vanish in dark mode;
 12. anything animates without reduced-motion handling.
+
+A smell to look for, not a failure: a content column that narrows as you go down the tree, containers wrapping containers, each adding inset (house rule 8). To notice it, compare where the text of consecutive blocks starts. A step at a leaf is fine; steps level after level usually mean wrappers to remove.

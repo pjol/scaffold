@@ -62,7 +62,7 @@ export function JoinableOrgs({ onJoined }: { onJoined?: (org: Org) => void }) {
             leading={<Avatar name={j.org.name} src={j.org.avatar_url} size="md" />}
             {...(j.action === "requested" ? { trailing: <Badge tone="info">Requested</Badge> } : {})}
           />
-          <View style={{ paddingHorizontal: s[4] }}>
+          <View>
             <Button
               variant={j.action === "join" ? "primary" : j.action === "request" ? "secondary" : "ghost"}
               size="md"

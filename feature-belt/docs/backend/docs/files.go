@@ -19,11 +19,9 @@ import (
 	"scaffoldapp/backend/internal/storage"
 )
 
-// fileTypes are what pages accept: photos and the usual documents.
-var fileTypes = append([]string{"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic"}, storage.DocumentTypes...)
-
-// extTypes maps a storage key's extension (issued by storage.PresignPut for
-// the validated type) back to the content type.
+// extTypes maps a storage key's extension (issued by storage.PresignPut)
+// back to a content type, for registrations that don't declare one. Pages
+// take any type (uploads.go classifies and serves them).
 var extTypes = map[string]string{
 	"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif", "heic": "image/heic",
 	"pdf": "application/pdf", "txt": "text/plain", "csv": "text/csv", "zip": "application/zip",
@@ -46,9 +44,10 @@ type File struct {
 }
 
 type registerFileReq struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Size int64  `json:"size"` // ignored: the stored object's size counts
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`         // ignored: the stored object's size counts
+	ContentType string `json:"content_type"` // as uploaded; checked against the name and the bytes
 }
 
 // registerFile: POST /docs/pages/{id}/files (edit) {key, name, size}: attach
@@ -75,10 +74,6 @@ func (s *Service) registerFile(w http.ResponseWriter, r *http.Request) error {
 	if !storage.KeyOwnedBy(req.Key, FilePurpose, me) {
 		return httpx.BadRequest("Upload the file first.")
 	}
-	ct, ok := extTypes[strings.TrimPrefix(path.Ext(req.Key), ".")]
-	if !ok {
-		return httpx.BadRequest("That kind of file can't go on a page.")
-	}
 	name := strings.TrimSpace(cleanText(path.Base(strings.ReplaceAll(req.Name, `\`, "/"))))
 	if name == "" || name == "." || name == "/" {
 		name = "file" + path.Ext(req.Key)
@@ -100,17 +95,30 @@ func (s *Service) registerFile(w http.ResponseWriter, r *http.Request) error {
 	if info.Size > s.cfg.fileMax {
 		return httpx.BadRequest("That file is too large.")
 	}
+	declared := req.ContentType
+	if declared == "" {
+		declared = extTypes[strings.TrimPrefix(path.Ext(req.Key), ".")]
+	}
+	head, err := s.d.Storage.ReadPrefix(ctx, req.Key, 512)
+	if err != nil {
+		return err
+	}
+	ct, err := classifyUpload(declared, name, head)
+	if err != nil {
+		return err
+	}
 	f := File{PageID: id, Name: name, ContentType: ct, Size: info.Size}
 	if err := s.d.Pool.QueryRow(ctx, `
 		INSERT INTO docs_files (org_id, page_id, key, name, content_type, size, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		p.OrgID, id, req.Key, name, ct, req.Size, me).Scan(&f.ID); err != nil {
+		p.OrgID, id, req.Key, name, ct, info.Size, me).Scan(&f.ID); err != nil {
 		return err
 	}
 	httpx.JSON(w, http.StatusCreated, f)
 	return nil
 }
 
-// fileURL: GET /docs/files/{fileID} (view on its page): a download link.
+// fileURL: GET /docs/files/{fileID}?download=1 (view on its page): a link
+// that shows the file (by type, servePolicy) or, with download, saves it.
 func (s *Service) fileURL(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	me := auth.MustFromContext(ctx).UserID
@@ -125,7 +133,7 @@ func (s *Service) fileURL(w http.ResponseWriter, r *http.Request) error {
 	if _, err := access.Require(ctx, s.d.Pool, me, Kind, f.PageID, access.View); err != nil {
 		return httpx.NotFound("File not found.")
 	}
-	if err := s.sign(ctx, f, key); err != nil {
+	if err := s.signAs(ctx, f, key, r.URL.Query().Get("download") == "1"); err != nil {
 		return err
 	}
 	w.Header().Set("Cache-Control", "private, max-age=600")
@@ -149,12 +157,21 @@ var errStorageUnavailable = httpx.NewError(http.StatusServiceUnavailable, "stora
 // sign presigns a download that opens what the browser can show and saves
 // the rest under the file's name (not the storage key's).
 func (s *Service) sign(ctx context.Context, f *File, key string) error {
+	return s.signAs(ctx, f, key, false)
+}
+
+func (s *Service) signAs(ctx context.Context, f *File, key string, download bool) error {
 	if s.d.Storage == nil {
 		return errStorageUnavailable
 	}
-	url, err := s.d.Storage.PresignGetWith(ctx, key, fileURLTTL, storage.GetOptions{
-		ContentType: f.ContentType, Disposition: mime.FormatMediaType("inline", map[string]string{"filename": f.Name}),
-	})
+	ct, cd := servePolicy(f.ContentType, f.Name)
+	if download {
+		cd = mime.FormatMediaType("attachment", map[string]string{"filename": f.Name})
+		if scriptable(f.ContentType) {
+			ct = "application/octet-stream"
+		}
+	}
+	url, err := s.d.Storage.PresignGetWith(ctx, key, fileURLTTL, storage.GetOptions{ContentType: ct, Disposition: cd})
 	if err != nil {
 		return err
 	}

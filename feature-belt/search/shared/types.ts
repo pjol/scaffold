@@ -25,6 +25,8 @@ export interface SearchResult {
   context?: string;
   /** Set on hits that come live from a connected platform account; absent for the app's own content. */
   source?: SourceRef;
+  /** Who wrote or created it, when the feature says (what `from:` matches). */
+  author_id?: string;
 }
 
 /** Hits per source before the source filter: `app`, then `provider:<id>` per connected platform. */
@@ -34,12 +36,42 @@ export interface SearchSourceCount {
   count: number;
 }
 
-/** How one feature answered: `timeout` and `error` make the response partial. */
+/** How one feature answered: `timeout` and `error` make the response partial; `skipped` features can't apply an operator in the query (`reason`). */
 export interface SearchProviderStatus {
   name: string;
-  status: "ok" | "timeout" | "error";
+  status: "ok" | "timeout" | "error" | "skipped";
   count: number;
   took_ms: number;
+  reason?: string;
+}
+
+/** What the server read the query's operators as. */
+export interface SearchFilters {
+  /** The free text, operators removed. */
+  text: string;
+  /** Operators used: from, in, type, is, has, with, to, date. */
+  ops: string[];
+  /** Who each `from:` value matched (`me` → "You"). */
+  from: { value: string; names: string[] }[];
+}
+
+/** A search a person saved (`/v1/search/saved`). */
+export interface SearchSaved {
+  id: string;
+  name: string;
+  /** The query as typed, operators included. */
+  query: string;
+  /** Comma list of features or kinds; "" = all. */
+  kinds: string;
+  source: string;
+  created_at: string;
+}
+
+export interface SearchSaveRequest {
+  name: string;
+  query: string;
+  kinds?: string;
+  source?: string;
 }
 
 /** `GET /v1/search`. */
@@ -51,6 +83,7 @@ export interface SearchResponse {
   partial: boolean;
   /** Hit counts per source (the app's own and each connected platform), for filter chips. */
   sources?: SearchSourceCount[];
+  filters?: SearchFilters;
 }
 
 export interface SearchParams {
@@ -63,6 +96,8 @@ export interface SearchParams {
   orgId?: string;
   /** Only hits from one source: `app`, `connected`, `provider:<id>` or a connection id. */
   source?: string;
+  /** IANA zone the dates in before:/after:/on:/during: are read in (default: this device's). */
+  tz?: string;
 }
 
 /** Hits of one kind, in result order. */

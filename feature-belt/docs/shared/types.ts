@@ -1,8 +1,39 @@
 import type { AccessLevel } from "../access/types";
 import type { ConnectionOffer, FeatureSource, SourceRef } from "../sources";
+import type { DocsCoverGallery, DocsCustomIcon, DocsPageFont, DocsPublishSettings, DocsReaction, DocsTeamspace } from "./pages";
+import type { DocsProperty, DocsValue, DocsView } from "./database";
 
-/** A person, page or date shown as a chip inside text. `text` is the label when it was made; clients show live names. */
-export type DocsMention = { type: "user"; id: string } | { type: "page"; id: string } | { type: "date"; date: string };
+// Database DTOs live in database.ts (docs 1.2); re-exported here for existing imports.
+export type {
+  DocsColumn,
+  DocsCreateRowRequest,
+  DocsDateValue,
+  DocsFilter,
+  DocsOption,
+  DocsOptionColor,
+  DocsProperty,
+  DocsPropertyType,
+  DocsRow,
+  DocsRowPage,
+  DocsRowsParams,
+  DocsRowValuesRequest,
+  DocsSort,
+  DocsValue,
+  DocsView,
+  DocsViewConfig,
+  DocsViewRequest,
+  DocsViewType,
+} from "./database";
+
+/**
+ * A person, page or date shown as a chip inside text. `text` is the label when it was made; clients show live names.
+ * A date may carry a local time (`HH:MM`) and `remind_at` (UTC instant): whoever set it is notified then.
+ */
+export type DocsMention = { type: "user"; id: string } | { type: "page"; id: string } | { type: "date"; date: string; time?: string; remind_at?: string };
+
+/** Block and text colours (Notion's set): a hue for text, `<hue>_background` for a highlight; absent = default. */
+export type DocsColorHue = "gray" | "brown" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink" | "red";
+export type DocsColor = DocsColorHue | `${DocsColorHue}_background`;
 
 /** One run of rich text with the same formatting. Links are http(s) or mailto only (the server drops others). */
 export interface DocsSpan {
@@ -13,6 +44,10 @@ export interface DocsSpan {
   strike?: boolean;
   code?: boolean;
   link?: string;
+  /** Text colour or highlight. */
+  color?: DocsColor;
+  /** The text is TeX shown as one inline equation (never split by edits). */
+  equation?: boolean;
   mention?: DocsMention;
 }
 
@@ -23,6 +58,7 @@ export type DocsTextBlockType =
   | "heading_1"
   | "heading_2"
   | "heading_3"
+  | "heading_4"
   | "bulleted_list"
   | "numbered_list"
   | "to_do"
@@ -30,15 +66,55 @@ export type DocsTextBlockType =
   | "quote"
   | "callout";
 
-export type DocsBlockType = DocsTextBlockType | "code" | "divider" | "image" | "file" | "bookmark" | "page" | "table" | "database" | "connected_page";
+export type DocsBlockType =
+  | DocsTextBlockType
+  | "code"
+  | "divider"
+  | "image"
+  | "file"
+  | "bookmark"
+  | "page"
+  | "table"
+  | "database"
+  | "connected_page"
+  | "column_list"
+  | "column"
+  | "synced_block"
+  | "table_of_contents"
+  | "breadcrumb"
+  | "equation"
+  | "button"
+  | "link_to_page"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "embed";
+
+/** A block a button inserts (a template, not on the page). */
+export interface DocsBlockButtonBlock {
+  type: DocsBlockType;
+  props: DocsBlockProps;
+  children: DocsBlockButtonBlock[];
+}
+
+/** What a button does when clicked: insert its blocks below it, open a link, or add a database row with preset values (property id → value). */
+export type DocsBlockButtonAction =
+  | { type: "insert"; blocks: DocsBlockButtonBlock[] }
+  | { type: "link"; url: string }
+  | { type: "add_row"; database_id: string; title?: string; values: Record<string, DocsValue> };
 
 /**
- * Props by type: text types `{text}` (+ to_do `checked`, callout `icon`); code `{code, language}`;
- * image `{file_id, name, content_type, size, caption, width}`; file `{file_id, name, content_type, size, caption}`;
- * bookmark `{url, title, caption}`; page `{page_id}`; database `{database_id}`;
- * table `{rows: DocsSpan[][][], header_row, header_col}`; divider `{}`;
+ * Props by type (every block may carry `color`): text types `{text}` (+ to_do `checked`, callout `icon`, headings `toggleable`);
+ * code `{code, language, wrap?, caption}`; image `{file_id, name, content_type, size, caption, width, align?, alt?}`;
+ * video `{… width, align?}`; audio, file `{file_id, name, content_type, size, caption}`; pdf `{… height?}`;
+ * bookmark `{url, title, description?, site_name?, preview_id?, caption}`; embed `{url, provider, src, caption, height?, width?, align?}`
+ * (`src` is computed by the server from an allowlist); page and link_to_page `{page_id}`; database `{database_id}`;
+ * table `{rows: DocsSpan[][][], header_row, header_col}`; equation `{expression}` (TeX); button `{label, actions}`;
+ * column `{width?}` (a fraction; columns only inside a column_list); synced_block `{}` (an original holding blocks) or
+ * `{source_id, source_page_id}` (a copy: the original's blocks, opened with the viewer's own access);
+ * divider, table_of_contents, breadcrumb, column_list `{}`;
  * connected_page `{provider, account_id, ref, title, url}` (a Notion page or Google Doc each viewer opens with their own connection).
- * Blocks of connected pages: image and file carry `url` (the platform's link) instead of `file_id`.
+ * Blocks of connected pages: image, file, video, audio and pdf carry `url` (the platform's link) instead of `file_id`.
  */
 export interface DocsBlockProps {
   text?: DocsSpan[];
@@ -62,6 +138,21 @@ export interface DocsBlockProps {
   provider?: string;
   account_id?: string;
   ref?: string;
+  color?: DocsColor;
+  toggleable?: boolean;
+  wrap?: boolean;
+  align?: "left" | "center" | "right";
+  alt?: string;
+  height?: number;
+  description?: string;
+  site_name?: string;
+  preview_id?: string;
+  src?: string;
+  expression?: string;
+  label?: string;
+  actions?: DocsBlockButtonAction[];
+  source_id?: string;
+  source_page_id?: string;
 }
 
 export interface DocsBlock {
@@ -84,37 +175,13 @@ export type DocsCoverColor = "neutral" | "primary" | "accent" | "success" | "war
 export interface DocsCover {
   file_id?: string;
   color?: DocsCoverColor;
+  /** A built-in cover drawn from the palette (DOCS_COVER_GALLERY). */
+  gallery?: DocsCoverGallery;
   /** Vertical focus of an image cover, 0 (top) to 100. */
   position: number;
 }
 
 export type DocsMyLevel = AccessLevel | "none";
-
-export type DocsPropertyType = "title" | "text" | "number" | "select" | "multi_select" | "status" | "date" | "person" | "checkbox" | "url" | "email";
-
-export type DocsOptionColor = DocsCoverColor;
-
-export interface DocsOption {
-  id: string;
-  name: string;
-  color: DocsOptionColor;
-  /** Status options only. */
-  group?: "todo" | "doing" | "done";
-}
-
-export interface DocsProperty {
-  id: string;
-  name: string;
-  type: DocsPropertyType;
-  options?: DocsOption[];
-  number_format?: "number" | "percent" | "dollar" | "euro" | "pound";
-  /** Shown but not changed here (a connected database's formulas, rollups, people…). */
-  read_only?: boolean;
-}
-
-/** Row values by type: text/url/email string, number, select/status option id, multi_select option ids, date {start, end?}, person user ids, checkbox. */
-export type DocsDateValue = { start: string; end?: string };
-export type DocsValue = string | number | boolean | string[] | DocsDateValue | null;
 
 export interface DocsPage {
   id: string;
@@ -140,6 +207,17 @@ export interface DocsPage {
   updated_at: string;
   deleted_at: string | null;
   my_level: DocsMyLevel;
+  /** An icon from the app's set or an uploaded image (icon is null then). */
+  custom_icon?: DocsCustomIcon | null;
+  font?: DocsPageFont;
+  small_text?: boolean;
+  /** A workspace template (kept out of the tree and search). */
+  is_template?: boolean;
+  /** Verified and not expired. */
+  verified?: boolean;
+  verified_by?: string | null;
+  verified_at?: string | null;
+  verified_until?: string | null;
 }
 
 export interface DocsPageSummary {
@@ -155,10 +233,17 @@ export interface DocsPageSummary {
   updated_at: string;
   deleted_at?: string | null;
   snippet?: string;
+  custom_icon?: DocsCustomIcon | null;
+  /** Trash lists: who trashed it and the page it was in. */
+  deleted_by?: DocsRefUser | null;
+  parent_title?: string | null;
 }
 
 export interface DocsSidebar {
   favorites: DocsPageSummary[];
+  /** Teams the caller is on with the pages shared with them. */
+  teamspaces?: DocsTeamspace[];
+  hidden_teamspaces?: DocsTeamspace["team"][];
   shared: DocsPageSummary[];
   private: DocsPageSummary[];
   can_create_shared: boolean;
@@ -198,46 +283,6 @@ export interface DocsDatabaseInfo {
   schema: DocsProperty[];
 }
 
-export interface DocsFilter {
-  property: string;
-  op: string;
-  value?: unknown;
-}
-
-export interface DocsSort {
-  /** A property id, or created_time / last_edited_time. */
-  property: string;
-  direction: "asc" | "desc";
-}
-
-export interface DocsColumn {
-  property: string;
-  width?: number;
-  hidden?: boolean;
-}
-
-export interface DocsViewConfig {
-  filters: DocsFilter[];
-  sorts: DocsSort[];
-  group_by?: string;
-  columns: DocsColumn[];
-  card_properties: string[];
-  date_property?: string;
-}
-
-export type DocsViewType = "table" | "board" | "list" | "calendar";
-
-export interface DocsView {
-  id: string;
-  database_id: string;
-  name: string;
-  type: DocsViewType;
-  position: string;
-  config: DocsViewConfig;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface DocsPageDetail {
   page: DocsPage;
   path: DocsCrumb[];
@@ -249,6 +294,8 @@ export interface DocsPageDetail {
   /** Open threads per block id; "" = the page itself. */
   comment_counts: Record<string, number>;
   published: boolean;
+  /** The caller gets edits (batched) and comments. */
+  following?: boolean;
 }
 
 // ---- operations
@@ -287,38 +334,6 @@ export interface DocsSyncResult {
 
 // ---- databases
 
-export interface DocsRow {
-  id: string;
-  title: string;
-  icon: string | null;
-  props: Record<string, DocsValue>;
-  position: string;
-  created_by: string | null;
-  updated_by: string | null;
-  created_at: string;
-  updated_at: string;
-  my_level: DocsMyLevel;
-  /** Connected rows: where the row comes from, its platform id and its page there. */
-  source?: SourceRef;
-  ref?: string;
-  url?: string;
-}
-
-export interface DocsRowPage {
-  items: DocsRow[];
-  next_cursor: string | null;
-  refs: DocsRefs;
-}
-
-export interface DocsRowsParams {
-  view?: string;
-  filters?: DocsFilter[];
-  sorts?: DocsSort[];
-  q?: string;
-  cursor?: string;
-  limit?: number;
-}
-
 // ---- comments, history, presence, files
 
 export interface DocsComment {
@@ -338,6 +353,7 @@ export interface DocsComment {
   deleted: boolean;
   created_at: string;
   replies: DocsComment[];
+  reactions?: DocsReaction[];
 }
 
 export interface DocsSnapshot {
@@ -369,6 +385,19 @@ export interface DocsFile {
   expires_at?: string;
 }
 
+/** A link's preview (bookmark cards): the server fetched it once; `icon_url` and `image_url` are short-lived links to its copies. */
+export interface DocsLinkPreview {
+  id: string;
+  url: string;
+  title: string;
+  description: string;
+  site_name: string;
+  icon_url?: string;
+  image_url?: string;
+  /** The link can also be shown as an embed. */
+  embed?: { provider: string; name: string };
+}
+
 export interface DocsSearchHit extends DocsPageSummary {
   org_id: string;
   score: number;
@@ -383,6 +412,8 @@ export interface DocsPublicPage {
   path: DocsCrumb[];
   root_id: string;
   database: DocsDatabaseInfo | null;
+  /** The published page's options. */
+  settings?: DocsPublishSettings;
 }
 
 // ---- connected platforms (Notion, Google Docs)
@@ -485,11 +516,16 @@ export interface DocsCreatePageRequest {
   after_id?: string | null;
   /** A database shown as a block on its parent page. */
   inline?: boolean;
+  /** Top level only: a page in this teamspace (the team can edit it). */
+  team_id?: string | null;
 }
 
 export interface DocsUpdatePageRequest {
   title?: string;
   icon?: string | null;
+  custom_icon?: DocsCustomIcon | null;
+  font?: DocsPageFont;
+  small_text?: boolean;
   cover?: DocsCover | null;
   full_width?: boolean;
   locked?: boolean;
@@ -500,28 +536,6 @@ export interface DocsMoveRequest {
   parent_id: string | null;
   after_id?: string | null;
   last?: boolean;
-}
-
-export interface DocsRowValuesRequest {
-  title?: string;
-  values?: Record<string, DocsValue>;
-  after_id?: string | null;
-  first?: boolean;
-  position?: string;
-}
-
-export interface DocsCreateRowRequest {
-  title?: string;
-  values?: Record<string, DocsValue>;
-  after_id?: string | null;
-  first?: boolean;
-}
-
-export interface DocsViewRequest {
-  name?: string;
-  type?: DocsViewType;
-  config?: DocsViewConfig;
-  position?: string;
 }
 
 export interface DocsCommentRequest {
@@ -553,7 +567,8 @@ export interface DocsPresenceEvent {
 declare module "../types" {
   interface RealtimeEventMap {
     "docs.ops": DocsOpsResult;
-    "docs.page": { page: DocsPage };
+    /** A page changed; or { row_id, reload } for a row whose relation changed from the other side. */
+    "docs.page": { page?: DocsPage; row_id?: string; reload?: boolean };
     "docs.presence": DocsPresenceEvent;
     "docs.comments": { page_id: string; thread_id: string };
     "docs.reload": { page_id: string; version: number };

@@ -7,6 +7,7 @@ import {
   errorMessage,
   isCallsHostRole,
   useAdmitCallsLobby,
+  useAskCallsUnmute,
   useCallsLobby,
   useCallsMeetingRings,
   useDenyCallsLobby,
@@ -15,12 +16,13 @@ import {
   useRingCallsAgain,
   useSetCallsHand,
   useSetCallsInviteeRole,
+  useSetCallsSpotlight,
   type CallsRing,
   type CallsUser,
 } from "@scaffoldapp/shared";
 import { Avatar, Button, ConfirmDialog, Dialog, EmptyState, IconButton, InfoTip, Menu, MenuItem, Spinner, TextArea, cn, toast } from "@scaffoldapp/ui-web";
 import { Track, type Participant } from "livekit-client";
-import { Hand, MessageSquare, Mic, MicOff, MoreVertical, Phone, SendHorizontal, ShieldCheck, ShieldOff, UserMinus, UserPlus, VolumeX } from "lucide-react";
+import { Hand, Mic, MicOff, MessageSquare, MoreVertical, Phone, Pin, PinOff, SendHorizontal, ShieldCheck, ShieldOff, Star, StarOff, UserMinus, UserPlus, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CallsPeoplePicker } from "../PeoplePicker";
 import { useCallSession } from "./session";
@@ -28,8 +30,15 @@ import { useParticipantFacts } from "./Tile";
 
 // ───────────────────────────────────────────────────────────── people ──
 
+/** Pinning (yours) and the host's spotlight, for the people list. */
+export interface PeopleFocus {
+  pinned: string | null;
+  onPin: (identity: string | null) => void;
+  spotlight: string;
+}
+
 /** Everyone in the call, people waiting to join (hosts), and who an instant call is ringing. */
-export function PeoplePanel({ isHost }: { isHost: boolean }) {
+export function PeoplePanel({ isHost, focus }: { isHost: boolean; focus: PeopleFocus }) {
   const s = useCallSession();
   const participants = useParticipants();
   const mute = useMuteCallsParticipant(s.meetingId);
@@ -63,7 +72,7 @@ export function PeoplePanel({ isHost }: { isHost: boolean }) {
             </Button>
           )}
         </div>
-        <ParticipantList participants={participants} isHost={signedInHost} />
+        <ParticipantList participants={participants} isHost={signedInHost} focus={focus} />
         {signedInHost && (
           <Button variant="secondary" leftIcon={<UserPlus />} onClick={() => setAdding(true)}>
             Add people
@@ -75,7 +84,7 @@ export function PeoplePanel({ isHost }: { isHost: boolean }) {
   );
 }
 
-function ParticipantList({ participants, isHost }: { participants: Participant[]; isHost: boolean }) {
+function ParticipantList({ participants, isHost, focus }: { participants: Participant[]; isHost: boolean; focus: PeopleFocus }) {
   // You first, then raised hands (earliest first), then by name.
   const hand = (p: Participant) => Number(p.attributes["hand"] || 0);
   const sorted = [...participants].sort((a, b) => {
@@ -84,16 +93,18 @@ function ParticipantList({ participants, isHost }: { participants: Participant[]
     if (hand(a) && hand(b)) return hand(a) - hand(b);
     return (a.name ?? "").localeCompare(b.name ?? "");
   });
+  // Raised hands are numbered in the order they went up.
+  const order = new Map(sorted.filter((p) => hand(p)).map((p, i) => [p.identity, i + 1]));
   return (
     <ul className="flex flex-col">
       {sorted.map((p) => (
-        <ParticipantRow key={p.identity} participant={p} isHost={isHost} />
+        <ParticipantRow key={p.identity} participant={p} isHost={isHost} focus={focus} handOrder={order.get(p.identity) ?? null} />
       ))}
     </ul>
   );
 }
 
-function ParticipantRow({ participant: p, isHost }: { participant: Participant; isHost: boolean }) {
+function ParticipantRow({ participant: p, isHost, focus, handOrder }: { participant: Participant; isHost: boolean; focus: PeopleFocus; handOrder: number | null }) {
   const s = useCallSession();
   const facts = useParticipantFacts(p);
   const micOn = p.isMicrophoneEnabled;
@@ -102,7 +113,11 @@ function ParticipantRow({ participant: p, isHost }: { participant: Participant; 
   const remove = useRemoveCallsParticipant(s.meetingId);
   const role = useSetCallsInviteeRole(s.meetingId);
   const hand = useSetCallsHand(s.meetingId);
+  const spotlight = useSetCallsSpotlight(s.meetingId);
+  const askUnmute = useAskCallsUnmute(s.meetingId);
   const [removing, setRemoving] = useState(false);
+  const pinned = focus.pinned === p.identity;
+  const spotlit = focus.spotlight === p.identity;
   const userId = callsIdentityUserId(p.identity);
   const targetIsHost = facts.meta.role === "host";
   const canManage = isHost && !p.isLocal && !targetIsHost;
@@ -118,10 +133,33 @@ function ParticipantRow({ participant: p, isHost }: { participant: Participant; 
         </span>
         {(isCallsHostRole(facts.meta.role) || facts.meta.role === "guest") && <span className="type-caption text-fg-muted">{CALLS_ROLE_LABELS[facts.meta.role]}</span>}
       </div>
-      {facts.hand && <Hand className="size-5 shrink-0 text-warning-strong" aria-label="Hand raised" />}
+      {facts.hand && (
+        <span className="flex shrink-0 items-center gap-1 type-label tabular-nums text-warning-strong" aria-label={handOrder ? `Hand raised, number ${handOrder}` : "Hand raised"}>
+          <Hand className="size-5" aria-hidden />
+          {handOrder}
+        </span>
+      )}
+      {spotlit && <Star className="size-5 shrink-0 text-primary-strong" aria-label="Spotlighted for everyone" />}
       {hasMic ? micOn ? <Mic className="size-5 shrink-0 text-fg-muted" aria-label="Microphone on" /> : <MicOff className="size-5 shrink-0 text-danger-strong" aria-label="Muted" /> : null}
+      <Menu trigger={<IconButton label={`Options for ${facts.name}`} icon={<MoreVertical />} variant="ghost" size="sm" />}>
+        <MenuItem icon={pinned ? <PinOff /> : <Pin />} onSelect={() => focus.onPin(pinned ? null : p.identity)}>
+          {pinned ? "Unpin" : "Pin for me"}
+        </MenuItem>
+        {isHost && (
+          <MenuItem
+            icon={spotlit ? <StarOff /> : <Star />}
+            onSelect={() => spotlight.mutate(spotlit ? "" : p.identity, { onError: fail("Couldn't change the spotlight.") })}
+          >
+            {spotlit ? "Remove spotlight" : "Spotlight for everyone"}
+          </MenuItem>
+        )}
+        {canManage && !micOn && (
+          <MenuItem icon={<Mic />} onSelect={() => askUnmute.mutate(p.identity, { onSuccess: () => toast.success(`Asked ${facts.name} to unmute`), onError: fail("Couldn't ask them.") })}>
+            Ask to unmute
+          </MenuItem>
+        )}
       {canManage && (
-        <Menu trigger={<IconButton label={`Manage ${facts.name}`} icon={<MoreVertical />} variant="ghost" size="sm" />}>
+        <>
           {micOn && (
             <MenuItem icon={<MicOff />} onSelect={() => mute.mutate({ identity: p.identity }, { onSuccess: () => toast.success(`Muted ${facts.name}`), onError: fail("Couldn't mute.") })}>
               Mute
@@ -150,8 +188,9 @@ function ParticipantRow({ participant: p, isHost }: { participant: Participant; 
               Remove from call
             </MenuItem>
           )}
-        </Menu>
+        </>
       )}
+      </Menu>
       <ConfirmDialog
         open={removing}
         onOpenChange={setRemoving}
@@ -290,7 +329,21 @@ function AddPeopleDialog({ open, onOpenChange, inCall }: { open: boolean; onOpen
 // ───────────────────────────────────────────────────────────── chat ──
 
 /** In-call chat over the room's data channel: only people in the call see it, and it isn't kept. */
-export function ChatPanel({ messages, send, sending }: { messages: ReceivedChatMessage[]; send: (text: string) => Promise<unknown>; sending: boolean }) {
+export function ChatPanel({
+  messages,
+  send,
+  sending,
+  allowed,
+  saved,
+}: {
+  messages: ReceivedChatMessage[];
+  send: (text: string) => Promise<unknown>;
+  sending: boolean;
+  /** A host turned chat off for people who aren't hosts. */
+  allowed: boolean;
+  /** The meeting keeps chat messages. */
+  saved: boolean;
+}) {
   const [text, setText] = useState("");
   const listRef = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -308,10 +361,17 @@ export function ChatPanel({ messages, send, sending }: { messages: ReceivedChatM
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <p className="flex items-center gap-2 type-caption text-fg-muted">
-        Messages last only for this call
-        <InfoTip content="Only people in the call see them, from when they joined. Nothing is saved." />
-      </p>
+      {saved ? (
+        <p className="flex items-center gap-2 type-caption text-fg-muted">
+          Messages are saved with the meeting
+          <InfoTip content="People who can open the meeting's records read them afterwards. People in the call see them from when they joined." />
+        </p>
+      ) : (
+        <p className="flex items-center gap-2 type-caption text-fg-muted">
+          Messages last only for this call
+          <InfoTip content="Only people in the call see them, from when they joined. Nothing is saved." />
+        </p>
+      )}
       {messages.length === 0 ? (
         <EmptyState compact icon={<MessageSquare />} title="No messages yet" className="flex-1" />
       ) : (
@@ -333,6 +393,11 @@ export function ChatPanel({ messages, send, sending }: { messages: ReceivedChatM
           })}
         </ol>
       )}
+      {!allowed ? (
+        <p className="rounded-md bg-sunken px-3 py-2 type-label text-fg-muted" role="status">
+          A host turned off chat.
+        </p>
+      ) : (
       <form onSubmit={submit} className="flex items-end gap-2">
         <TextArea
           value={text}
@@ -352,6 +417,7 @@ export function ChatPanel({ messages, send, sending }: { messages: ReceivedChatM
         />
         <IconButton type="submit" label="Send" icon={sending ? <Spinner size={16} /> : <SendHorizontal />} variant="primary" disabled={!text.trim()} />
       </form>
+      )}
     </div>
   );
 }

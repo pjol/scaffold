@@ -79,7 +79,7 @@ func (s *Service) dashboard(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Service) loadDashboard(ctx context.Context, userID, orgID uuid.UUID, pid *uuid.UUID, tz string) (*Dashboard, error) {
-	board, err := s.boardTotals(ctx, userID, orgID, pid, listSpec{})
+	board, err := s.boardTotals(ctx, userID, orgID, objDeal, pid, listSpec{})
 	if err != nil {
 		return nil, err
 	}
@@ -164,10 +164,16 @@ func (s *Service) loadDashboard(ctx context.Context, userID, orgID uuid.UUID, pi
 }
 
 // boardTotals is the board without cards: each stage's visible count and sums.
-func (s *Service) boardTotals(ctx context.Context, userID, orgID uuid.UUID, pid *uuid.UUID, spec listSpec) (*Board, error) {
-	pipelines, err := s.loadPipelines(ctx, s.d.Pool, orgID)
+func (s *Service) boardTotals(ctx context.Context, userID, orgID uuid.UUID, o objectType, pid *uuid.UUID, spec listSpec) (*Board, error) {
+	all, err := s.loadPipelines(ctx, s.d.Pool, orgID)
 	if err != nil {
 		return nil, err
+	}
+	pipelines := []Pipeline{}
+	for _, p := range all {
+		if p.ObjectType == o {
+			pipelines = append(pipelines, p)
+		}
 	}
 	if len(pipelines) == 0 {
 		return nil, httpx.NotFound("Add a pipeline in CRM settings first.")
@@ -184,12 +190,12 @@ func (s *Service) boardTotals(ctx context.Context, userID, orgID uuid.UUID, pid 
 			return nil, httpx.NotFound("Pipeline not found.")
 		}
 	}
-	props, err := s.loadProperties(ctx, s.d.Pool, orgID, objDeal)
+	props, err := s.loadProperties(ctx, s.d.Pool, orgID, o)
 	if err != nil {
 		return nil, err
 	}
 	spec.where = append(append([]func(*sqlb) string{}, spec.where...), func(b *sqlb) string { return "r.pipeline_id = " + b.arg(pl.ID) })
-	totals, counts, err := s.stageTotals(ctx, userID, orgID, props, spec)
+	totals, counts, err := s.stageTotals(ctx, userID, orgID, o, props, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +400,7 @@ func (s *Service) Search(ctx context.Context, caller *auth.Identity, query strin
 		if !st.allowsConnected() {
 			continue
 		}
-		xhits := s.connectedSearch(ctx, caller.UserID, orgID, st, q, objectTypes, limit)
+		xhits := s.connectedSearch(ctx, caller.UserID, orgID, st, q, platformTypes, limit)
 		xhits, err := s.agentFilterHits(ctx, caller, xhits)
 		if err != nil {
 			return nil, err

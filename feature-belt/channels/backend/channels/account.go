@@ -28,11 +28,33 @@ func (s *Service) DeleteAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID
 		return err
 	}
 	s.deletedMembership.Store(userID, channelIDs)
+	// Uploads waiting in scheduled messages go to the clean-up queue.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO channel_deleted_objects (storage_key)
+		SELECT a->>'key' FROM channel_scheduled x, jsonb_array_elements(x.attachments) a
+		WHERE x.user_id = $1 AND a->>'key' IS NOT NULL
+		ON CONFLICT (storage_key) DO NOTHING`, userID); err != nil {
+		return err
+	}
 	for _, sql := range []string{
+		`DELETE FROM channel_drafts WHERE user_id = $1`,
+		`DELETE FROM channel_scheduled WHERE user_id = $1`,
+		`DELETE FROM channel_reminders WHERE user_id = $1`,
+		`DELETE FROM channel_poll_votes WHERE user_id = $1`,
+		`DELETE FROM channel_polls p USING channel_messages m WHERE m.id = p.message_id AND m.sender_id = $1`,
+		`DELETE FROM channel_message_links l USING channel_messages m WHERE m.id = l.message_id AND m.sender_id = $1`,
+		`DELETE FROM channel_user_prefs WHERE user_id = $1`,
+		`DELETE FROM channel_sidebar_sections WHERE user_id = $1`,
+		`UPDATE channel_emoji SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE channel_bookmarks SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE channel_webhooks SET created_by = NULL WHERE created_by = $1`,
+		`UPDATE channel_workspace_settings SET updated_by = NULL WHERE updated_by = $1`,
+		`UPDATE channel_polls SET closed_by = NULL WHERE closed_by = $1`,
 		`DELETE FROM channel_attachments a USING channel_messages m WHERE m.id = a.message_id AND m.sender_id = $1`,
 		`DELETE FROM channel_mentions WHERE user_id = $1 OR message_id IN (SELECT id FROM channel_messages WHERE sender_id = $1)`,
 		`UPDATE channel_messages SET body = '', title = CASE WHEN title IS NULL THEN NULL ELSE 'Deleted post' END, tags = '{}',
 		   client_id = NULL, edited_at = NULL, mention_channel = false, pinned_at = NULL, pinned_by = NULL,
+		   forward_of = NULL, is_forward = false, links_hidden = false,
 		   deleted_at = COALESCE(deleted_at, now()), deleted_by = COALESCE(deleted_by, 'account_deleted'), updated_at = now()
 		 WHERE sender_id = $1 AND kind <> 'system'`,
 		`DELETE FROM channel_reactions WHERE user_id = $1`,
@@ -114,11 +136,60 @@ type exportSaved struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
+type exportDraft struct {
+	ChannelID    uuid.UUID  `json:"channel_id"`
+	ThreadRootID *uuid.UUID `json:"thread_root_id"`
+	Body         string     `json:"body"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type exportScheduled struct {
+	ChannelID    uuid.UUID  `json:"channel_id"`
+	ThreadRootID *uuid.UUID `json:"thread_root_id"`
+	Body         string     `json:"body"`
+	SendAt       time.Time  `json:"send_at"`
+	Status       string     `json:"status"`
+}
+
+type exportReminder struct {
+	OrgID       uuid.UUID  `json:"org_id"`
+	MessageID   *uuid.UUID `json:"message_id"`
+	Text        string     `json:"text"`
+	RemindAt    time.Time  `json:"remind_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type exportPrefs struct {
+	OrgID       uuid.UUID `json:"org_id"`
+	SidebarSort string    `json:"sidebar_sort"`
+	Keywords    []string  `json:"keywords"`
+	SkinTone    int       `json:"skin_tone"`
+	Title       string    `json:"title"`
+	Timezone    string    `json:"timezone"`
+}
+
+type exportSection struct {
+	OrgID uuid.UUID `json:"org_id"`
+	Name  string    `json:"name"`
+}
+
+type exportVote struct {
+	MessageID uuid.UUID `json:"message_id"`
+	Option    string    `json:"option"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type exportData struct {
 	Memberships []exportMembership `json:"memberships"`
 	Messages    []exportMessage    `json:"messages"`
 	Reactions   []exportReaction   `json:"reactions"`
 	Saved       []exportSaved      `json:"saved"`
+	Drafts      []exportDraft      `json:"drafts"`
+	Scheduled   []exportScheduled  `json:"scheduled"`
+	Reminders   []exportReminder   `json:"reminders"`
+	Preferences []exportPrefs      `json:"preferences"`
+	Sections    []exportSection    `json:"sidebar_sections"`
+	PollVotes   []exportVote       `json:"poll_votes"`
 }
 
 // ExportAccount returns the person's channel memberships and preferences,
@@ -196,6 +267,62 @@ func (s *Service) ExportAccount(ctx context.Context, userID uuid.UUID) (any, err
 	}
 	if out.Saved, err = pgx.CollectRows(rows, pgx.RowToStructByPos[exportSaved]); err != nil {
 		return nil, err
+	}
+	type q struct {
+		sql string
+		dst func(pgx.Rows) error
+	}
+	for _, x := range []q{
+		{`SELECT channel_id, thread_root_id, body, updated_at FROM channel_drafts WHERE user_id = $1 ORDER BY updated_at`, func(r pgx.Rows) (err error) {
+			out.Drafts, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportDraft])
+			return err
+		}},
+		{`SELECT channel_id, thread_root_id, body, send_at, status FROM channel_scheduled WHERE user_id = $1 ORDER BY send_at`, func(r pgx.Rows) (err error) {
+			out.Scheduled, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportScheduled])
+			return err
+		}},
+		{`SELECT org_id, message_id, text, remind_at, completed_at FROM channel_reminders WHERE user_id = $1 ORDER BY remind_at`, func(r pgx.Rows) (err error) {
+			out.Reminders, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportReminder])
+			return err
+		}},
+		{`SELECT org_id, sidebar_sort, keywords, skin_tone, title, timezone FROM channel_user_prefs WHERE user_id = $1 ORDER BY created_at`, func(r pgx.Rows) (err error) {
+			out.Preferences, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportPrefs])
+			return err
+		}},
+		{`SELECT org_id, name FROM channel_sidebar_sections WHERE user_id = $1 ORDER BY org_id, position`, func(r pgx.Rows) (err error) {
+			out.Sections, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportSection])
+			return err
+		}},
+		{`SELECT v.message_id, o.text, v.created_at FROM channel_poll_votes v JOIN channel_poll_options o ON o.id = v.option_id WHERE v.user_id = $1 ORDER BY v.created_at`, func(r pgx.Rows) (err error) {
+			out.PollVotes, err = pgx.CollectRows(r, pgx.RowToStructByPos[exportVote])
+			return err
+		}},
+	} {
+		rows, err := s.d.Pool.Query(ctx, x.sql, userID)
+		if err != nil {
+			return nil, err
+		}
+		if err := x.dst(rows); err != nil {
+			return nil, err
+		}
+	}
+	if out.Drafts == nil {
+		out.Drafts = []exportDraft{}
+	}
+	if out.Scheduled == nil {
+		out.Scheduled = []exportScheduled{}
+	}
+	if out.Reminders == nil {
+		out.Reminders = []exportReminder{}
+	}
+	if out.Preferences == nil {
+		out.Preferences = []exportPrefs{}
+	}
+	if out.Sections == nil {
+		out.Sections = []exportSection{}
+	}
+	if out.PollVotes == nil {
+		out.PollVotes = []exportVote{}
 	}
 	if out.Memberships == nil {
 		out.Memberships = []exportMembership{}

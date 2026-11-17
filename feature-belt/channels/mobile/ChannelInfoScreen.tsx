@@ -105,9 +105,23 @@ export function ChannelInfoScreen() {
 
       {!direct ? (
         <ListGroup title="About">
-          <ListRow title={c.topic || "Add a topic"} {...(c.permissions.post ? { onPress: () => { setTopic(c.topic); setEditingTopic(true); } } : {})} />
+          <ListRow title={c.topic || "Add a topic"} {...(c.member && !c.archived ? { onPress: () => { setTopic(c.topic); setEditingTopic(true); } } : {})} />
           {c.description ? <ListRow title={c.description} /> : null}
           {c.created_by ? <ListRow title={`Created by ${c.created_by.display_name}`} trailing={<Text tone="muted">{channelsShortTime(c.created_at)}</Text>} /> : null}
+        </ListGroup>
+      ) : null}
+
+      {!direct && c.permissions.edit && !c.archived ? (
+        <ListGroup title="Posting">
+          <Switch
+            label="Only admins post"
+            info="For announcements: the channel's admins and the workspace's admins post; everyone else reads and reacts."
+            value={c.posting === "admins"}
+            onValueChange={(v) => update.mutate({ posting: v ? "admins" : "everyone" }, { onError: (e) => toast.error(errorMessage(e)) })}
+          />
+          {c.posting === "admins" ? (
+            <Switch label="Members can reply in threads" value={c.replies_open} onValueChange={(v) => update.mutate({ replies_open: v }, { onError: (e) => toast.error(errorMessage(e)) })} />
+          ) : null}
         </ListGroup>
       ) : null}
 
@@ -124,7 +138,7 @@ export function ChannelInfoScreen() {
           <Text role="titleSm" style={{ flex: 1 }} accessibilityRole="header">
             {`Members (${c.member_count})`}
           </Text>
-          {!direct && c.permissions.post ? (
+          {!direct && c.member && !c.archived ? (
             <Button size="md" variant="secondary" leftIcon={UserPlus} onPress={() => setAdding(true)}>
               Add
             </Button>

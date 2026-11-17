@@ -41,6 +41,9 @@ type PublicView struct {
 	RootID    uuid.UUID    `json:"root_id"`
 	Item      PublicItem   `json:"item"`
 	Path      []Crumb      `json:"path"` // from the link's item down to the parent
+	// AllowDownload is false when the link's owner turned downloads off
+	// (previews still show; the browser can't be stopped from saving them).
+	AllowDownload bool `json:"allow_download"`
 }
 
 var errPublicDisabled = httpx.NewError(http.StatusNotFound, "public_disabled", "This item isn't available publicly anymore.")
@@ -56,13 +59,16 @@ func toPublic(it *Item, root uuid.UUID) PublicItem {
 
 // publicTarget resolves a token and an item under it (nil: the link's own
 // item) to the item, the link and the path from the link's item.
-func (s *Service) publicTarget(ctx context.Context, token string, id *uuid.UUID) (*access.Link, *Item, []Crumb, error) {
+func (s *Service) publicTarget(ctx context.Context, token, proof string, id *uuid.UUID) (*access.Link, *Item, []Crumb, error) {
 	l, err := access.ResolveLink(ctx, s.d.Pool, token)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if l.Ref.Kind != Kind {
 		return nil, nil, nil, access.ErrLinkNotFound
+	}
+	if err := s.checkUnlocked(ctx, l.ID, proof); err != nil {
+		return nil, nil, nil, err
 	}
 	target := l.Ref.ID
 	if id != nil && *id != target {
@@ -123,19 +129,27 @@ func (s *Service) publicTarget(ctx context.Context, token string, id *uuid.UUID)
 	return l, it, path, nil
 }
 
-func (s *Service) publicView(ctx context.Context, w http.ResponseWriter, token string, id *uuid.UUID) error {
-	l, it, path, err := s.publicTarget(ctx, token, id)
+func (s *Service) publicView(ctx context.Context, w http.ResponseWriter, token, proof string, id *uuid.UUID) error {
+	l, it, path, err := s.publicTarget(ctx, token, proof, id)
 	if err != nil {
 		return err
 	}
+	opts, err := s.linkOptions(ctx, l.ID)
+	if err != nil {
+		return err
+	}
+	if id == nil {
+		s.countOpen(ctx, l)
+	}
 	s.addThumbs(ctx, s.d.Pool, []*Item{it})
-	httpx.OK(w, PublicView{Level: l.Level, ExpiresAt: l.ExpiresAt, RootID: l.Ref.ID, Item: toPublic(it, l.Ref.ID), Path: path})
+	httpx.OK(w, PublicView{Level: l.Level, ExpiresAt: l.ExpiresAt, RootID: l.Ref.ID, Item: toPublic(it, l.Ref.ID), Path: path,
+		AllowDownload: opts.AllowDownload})
 	return nil
 }
 
 // publicRoot: GET /v1/files/public/{token} (public, per-IP limit).
 func (s *Service) publicRoot(w http.ResponseWriter, r *http.Request) error {
-	return s.publicView(r.Context(), w, chi.URLParam(r, "token"), nil)
+	return s.publicView(r.Context(), w, chi.URLParam(r, "token"), r.URL.Query().Get("proof"), nil)
 }
 
 // publicItem: GET /v1/files/public/{token}/items/{id} — an item under a
@@ -145,7 +159,7 @@ func (s *Service) publicItem(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return access.ErrLinkNotFound
 	}
-	return s.publicView(r.Context(), w, chi.URLParam(r, "token"), &id)
+	return s.publicView(r.Context(), w, chi.URLParam(r, "token"), r.URL.Query().Get("proof"), &id)
 }
 
 // publicChildren: GET /v1/files/public/{token}/items/{id}/children?sort=&dir=&cursor=
@@ -158,7 +172,7 @@ func (s *Service) publicChildren(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return access.ErrLinkNotFound
 	}
-	l, folder, _, err := s.publicTarget(ctx, token, &id)
+	l, folder, _, err := s.publicTarget(ctx, token, r.URL.Query().Get("proof"), &id)
 	if err != nil {
 		return err
 	}
@@ -194,11 +208,20 @@ func (s *Service) publicURL(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return access.ErrLinkNotFound
 	}
-	_, it, _, err := s.publicTarget(ctx, chi.URLParam(r, "token"), &id)
+	l, it, _, err := s.publicTarget(ctx, chi.URLParam(r, "token"), r.URL.Query().Get("proof"), &id)
 	if err != nil {
 		return err
 	}
 	inline := r.URL.Query().Get("disposition") == "inline"
+	if !inline {
+		opts, err := s.linkOptions(ctx, l.ID)
+		if err != nil {
+			return err
+		}
+		if !opts.AllowDownload {
+			return errDownloadOff
+		}
+	}
 	u, err := s.signedURL(ctx, it, nil, inline)
 	if err != nil {
 		return err
@@ -224,7 +247,7 @@ func (s *Service) publicText(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return access.ErrLinkNotFound
 	}
-	_, it, _, err := s.publicTarget(ctx, chi.URLParam(r, "token"), &id)
+	_, it, _, err := s.publicTarget(ctx, chi.URLParam(r, "token"), r.URL.Query().Get("proof"), &id)
 	if err != nil {
 		return err
 	}

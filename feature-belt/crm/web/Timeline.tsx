@@ -44,6 +44,7 @@ import {
   Select,
   Skeleton,
   SkeletonGroup,
+  ProviderIcon,
   SourceBadge,
   TextArea,
   cn,
@@ -53,6 +54,8 @@ import {
 import {
   ArrowRightLeft,
   CheckSquare,
+  ClipboardList,
+  FileText,
   GitMerge,
   History,
   Link2,
@@ -221,6 +224,17 @@ function ActivityCard({ activity: a, record }: { activity: CrmActivity; record: 
                     {a.duration_minutes ? <Badge>{a.duration_minutes} min</Badge> : null}
                   </div>
                 ) : null}
+                {a.email ? (
+                  <p className="flex flex-wrap items-center gap-x-2 type-caption text-fg-muted">
+                    {a.email.from ? <span>From {a.email.from}</span> : null}
+                    {a.email.to.length ? <span>To {a.email.to.join(", ")}</span> : null}
+                    {a.email.cc?.length ? <span>Cc {a.email.cc.join(", ")}</span> : null}
+                    <span className="inline-flex items-center gap-1">
+                      <ProviderIcon provider={a.email.provider} size={12} />
+                      {a.email.provider === "google" ? "Gmail" : "Outlook"}
+                    </span>
+                  </p>
+                ) : null}
                 {a.subject ? <p className="type-label font-semibold text-fg">{a.subject}</p> : null}
                 {a.body ? <Body body={a.body} activity={a} /> : null}
               </>
@@ -279,7 +293,7 @@ function EventRow({ event: e, at, record }: { event: CrmEvent; at: string; recor
       icon = <PlusCircle className="size-4" aria-hidden />;
       text = (
         <>
-          <b className="font-semibold">{actor}</b> created this {record.type}
+          <b className="font-semibold">{actor}</b> created this {CRM_TYPE_LABEL[record.type].one}
         </>
       );
       break;
@@ -287,7 +301,7 @@ function EventRow({ event: e, at, record }: { event: CrmEvent; at: string; recor
       icon = <Upload className="size-4" aria-hidden />;
       text = (
         <>
-          <b className="font-semibold">{actor}</b> imported this {record.type}
+          <b className="font-semibold">{actor}</b> imported this {CRM_TYPE_LABEL[record.type].one}
         </>
       );
       break;
@@ -295,7 +309,7 @@ function EventRow({ event: e, at, record }: { event: CrmEvent; at: string; recor
       icon = <GitMerge className="size-4" aria-hidden />;
       text = (
         <>
-          <b className="font-semibold">{actor}</b> merged “{d.merged_name}” into this {record.type}
+          <b className="font-semibold">{actor}</b> merged “{d.merged_name}” into this {CRM_TYPE_LABEL[record.type].one}
         </>
       );
       break;
@@ -329,10 +343,50 @@ function EventRow({ event: e, at, record }: { event: CrmEvent; at: string; recor
       );
       break;
     }
+    case "quote": {
+      icon = <FileText className="size-4" aria-hidden />;
+      const ref = d.quote_id && d.action !== "deleted" ? (
+        <Link href={`/crm/quotes/${d.quote_id}`} className="font-semibold hover:underline">
+          {d.number} “{d.title}”
+        </Link>
+      ) : (
+        <b className="font-semibold">
+          {d.number} “{d.title}”
+        </b>
+      );
+      const verb: Record<string, string> = { drafted: "drafted quote", published: "published quote", unpublished: "took back quote", deleted: "deleted quote" };
+      text =
+        d.action === "accepted" || d.action === "declined" ? (
+          <>
+            <b className="font-semibold">{d.signer_name}</b> {d.action} quote {ref}
+          </>
+        ) : (
+          <>
+            <b className="font-semibold">{actor}</b> {verb[d.action ?? ""] ?? "changed quote"} {ref}
+            {d.action === "published" && d.total ? <span className="text-fg-muted"> · {d.total}</span> : null}
+          </>
+        );
+      break;
+    }
+    case "form_submitted": {
+      icon = <ClipboardList className="size-4" aria-hidden />;
+      const vals = Object.entries(d.values ?? {});
+      text = (
+        <>
+          {d.created ? "Created from" : "Filled in"} the form <b className="font-semibold">{d.form_name}</b>
+          {vals.length > 0 ? (
+            <span className="mt-1 block type-caption text-fg-muted">
+              {vals.map(([k, v]) => `${k.replace(/^(contact|company)\./, "").replace(/_/g, " ")}: ${v}`).join(" · ")}
+            </span>
+          ) : null}
+        </>
+      );
+      break;
+    }
     case "updated":
       text = (
         <>
-          <b className="font-semibold">{actor}</b> changed{" "}
+          <b className="font-semibold">{actor}</b> {d.from_line_items ? "updated from line items:" : "changed"}{" "}
           {(d.changes ?? []).map((c, i) => (
             <span key={c.key}>
               {i > 0 ? ", " : ""}

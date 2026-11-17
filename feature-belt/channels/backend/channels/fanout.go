@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -190,6 +193,8 @@ func (s *Service) announceNew(ctx context.Context, a *access, m *Message, ments 
 		kind string
 	}
 	var targets []target
+	keywords := s.memberKeywords(ctx, a.OrgID, members)
+	text := strings.ToLower(plainText(m.Body, m.Mentions) + " " + deref(m.Title))
 	for _, r := range members {
 		if (m.senderID != nil && r.id == *m.senderID) || blocked[r.id] || r.muted {
 			continue
@@ -210,6 +215,8 @@ func (s *Service) announceNew(ctx context.Context, a *access, m *Message, ments 
 			targets = append(targets, target{r.id, KindMention})
 		case m.ThreadRootID != nil && followers[r.id]:
 			targets = append(targets, target{r.id, KindThread})
+		case matchesKeyword(text, keywords[r.id]):
+			targets = append(targets, target{r.id, KindKeyword})
 		case timeline && pref == "all":
 			targets = append(targets, target{r.id, KindMessage})
 		}
@@ -241,6 +248,60 @@ func (s *Service) announceNew(ctx context.Context, a *access, m *Message, ments 
 		return nil
 	})
 }
+
+// memberKeywords reads the notification keywords of a channel's members.
+func (s *Service) memberKeywords(ctx context.Context, orgID uuid.UUID, members []recipient) map[uuid.UUID][]string {
+	out := map[uuid.UUID][]string{}
+	if len(members) == 0 {
+		return out
+	}
+	ids := make([]uuid.UUID, len(members))
+	for i, r := range members {
+		ids[i] = r.id
+	}
+	rows, err := s.d.Pool.Query(ctx, `SELECT user_id, keywords FROM channel_user_prefs WHERE org_id = $1 AND keywords <> '{}' AND user_id = ANY($2)`, orgID, ids)
+	if err != nil {
+		slog.WarnContext(ctx, "channels: keywords", "err", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var kw []string
+		if rows.Scan(&id, &kw) == nil {
+			out[id] = kw
+		}
+	}
+	return out
+}
+
+// matchesKeyword reports whether lowercased text contains one of the
+// keywords as a whole word (or phrase).
+func matchesKeyword(text string, keywords []string) bool {
+	for _, k := range keywords {
+		for i := 0; ; {
+			j := strings.Index(text[i:], k)
+			if j < 0 {
+				break
+			}
+			start, end := i+j, i+j+len(k)
+			before, after := ' ', ' '
+			if start > 0 {
+				before, _ = utf8.DecodeLastRuneInString(text[:start])
+			}
+			if end < len(text) {
+				after, _ = utf8.DecodeRuneInString(text[end:])
+			}
+			if !isWordRune(before) && !isWordRune(after) {
+				return true
+			}
+			i = start + 1
+		}
+	}
+	return false
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
 
 // notificationText: channels are titled "#name" (or "Thread in #name") and
 // say who spoke; a 1:1 DM is titled with the sender.
